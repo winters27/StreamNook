@@ -18,7 +18,7 @@ import { Logger } from '../../utils/logger';
 // registers via `plugins_provides` to take over the drop-progress display. The
 // core knows nothing else about who provides it. Rename in coordination with
 // the provider when its manifest is updated.
-const EXTERNAL_DROPS_FEATURE = 'drops.mining';
+const EXTERNAL_DROPS_FEATURE = 'drops.automation';
 // The generic status slot a provider pushes its live progress into.
 const EXTERNAL_DROPS_STATUS_SLOT = 'drops.status';
 
@@ -30,11 +30,11 @@ const EXTERNAL_DROPS_STATUS_SLOT = 'drops.status';
 const REFRESH_MS = 30_000;
 
 // Shape an external provider pushes into its status slot. `active` = a session/
-// target is set; `is_mining` = actively progressing a channel right now. These
+// target is set; `is_active` = actively progressing a channel right now. These
 // are the provider's contract field names (kept until a coordinated rename).
 interface ProviderStatusValue {
     active?: boolean;
-    is_mining?: boolean;
+    is_active?: boolean;
     game_name?: string | null;
     campaign_id?: string | null;
     channel_login?: string | null;
@@ -186,7 +186,7 @@ export default function DropProgressController() {
                         : null;
 
                     const status: DropProgressStatus = {
-                        active: !!v.is_mining,
+                        active: !!v.is_active,
                         current_channel: channel,
                         current_campaign: v.campaign_id ?? null,
                         current_drop: drop,
@@ -194,7 +194,7 @@ export default function DropProgressController() {
                         last_update: new Date().toISOString(),
                     };
                     emit('drop-progress', status).catch(() => {});
-                    useAppStore.getState().setDropProgressActive(!!v.is_mining);
+                    useAppStore.getState().setDropProgressActive(!!v.is_active);
                     useAppStore.getState().setLiveDropProgress(v.active ? status : null);
                 }
             );

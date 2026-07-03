@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { Settings, TrendingUp, X, Plus, Ban, Star, Shield, Lock, Users, ListFilter, LayoutList, Activity, Loader2 } from 'lucide-react';
+import { Settings, TrendingUp, X, Plus, Ban, Star, Shield, Lock, Users, ListFilter, LayoutList, Activity, Loader2, Heart } from 'lucide-react';
 import { Logger } from '../../utils/logger';
 import { useAppStore } from '../../stores/AppStore';
 import { Dropdown } from '../ui/Dropdown';
@@ -24,7 +24,7 @@ interface DropsSettings {
     notify_on_drop_claimed: boolean;
     notify_on_points_claimed: boolean;
     check_interval_seconds: number;
-    auto_mining_enabled: boolean;
+    automation_enabled: boolean;
     priority_games: string[];
     excluded_games: string[];
     priority_mode: 'PriorityOnly' | 'EndingSoonest' | 'LowAvailFirst';
@@ -33,7 +33,8 @@ interface DropsSettings {
     // Watch token allocation settings
     reserve_token_for_current_stream?: boolean;
     auto_reserve_on_watch?: boolean;
-    priority_farm_channels?: Array<{ channel_id: string; channel_login: string; display_name: string }>;
+    priority_channels?: Array<{ channel_id: string; channel_login: string; display_name: string }>;
+    prefer_favorites?: boolean;
 }
 
 interface ChannelSearchResult {
@@ -52,8 +53,8 @@ interface ChannelSearchResult {
 interface DropsSettingsTabProps {
     settings: DropsSettings | null;
     onUpdateSettings: (newSettings: Partial<DropsSettings>) => Promise<void>;
-    onStartAutoMining: () => Promise<void>;
-    onStopMining: () => void;
+    onStartAutomation: () => Promise<void>;
+    onStopAutomation: () => void;
 }
 
 function PriorityChannelRow({ 
@@ -132,8 +133,8 @@ function PriorityChannelRow({
 export default function DropsSettingsTab({
     settings,
     onUpdateSettings,
-    onStartAutoMining,
-    onStopMining
+    onStartAutomation,
+    onStopAutomation
 }: DropsSettingsTabProps) {
     const { followedStreams, loadFollowedStreams } = useAppStore();
     
@@ -147,7 +148,7 @@ export default function DropsSettingsTab({
     const [activeTab, setActiveTab] = useState<'drops' | 'channel_points'>('drops');
     const [priorityInput, setPriorityInput] = useState('');
     const [excludedInput, setExcludedInput] = useState('');
-    const [farmChannelInput, setFarmChannelInput] = useState('');
+    const [channelInput, setChannelInput] = useState('');
     const [isSearching, setIsSearching] = useState(false);
     const [searchResults, setSearchResults] = useState<ChannelSearchResult[]>([]);
     const [showDropdown, setShowDropdown] = useState(false);
@@ -169,7 +170,7 @@ export default function DropsSettingsTab({
 
     // Debounced Search Effect
     useEffect(() => {
-        if (!farmChannelInput.trim()) {
+        if (!channelInput.trim()) {
             setSearchResults([]);
             setIsSearching(false);
             return;
@@ -183,10 +184,10 @@ export default function DropsSettingsTab({
         searchTimeoutRefContainer.current = setTimeout(async () => {
             try {
                 // Returns an array of TwitchStreams
-                const results = await invoke('search_channels', { query: farmChannelInput }) as ChannelSearchResult[];
+                const results = await invoke('search_channels', { query: channelInput }) as ChannelSearchResult[];
                 
                 // Filter out channels already in the priority list
-                const existingLogins = (settings?.priority_farm_channels ?? []).map(c => c.channel_login);
+                const existingLogins = (settings?.priority_channels ?? []).map(c => c.channel_login);
                 const filtered = results.filter(r => !existingLogins.includes(r.user_login || r.broadcaster_login || ''));
                 
                 // Sort: Live followed > Offline followed > Live unfollowed > Offline unfollowed
@@ -225,7 +226,7 @@ export default function DropsSettingsTab({
         return () => {
             if (searchTimeoutRefContainer.current) clearTimeout(searchTimeoutRefContainer.current);
         };
-    }, [farmChannelInput, settings?.priority_farm_channels, followedStreams]);
+    }, [channelInput, settings?.priority_channels, followedStreams]);
 
     if (!settings) {
         return (
@@ -273,12 +274,12 @@ export default function DropsSettingsTab({
         onUpdateSettings({ excluded_games: newExcluded });
     };
 
-    const handleAutoMiningToggle = async (enabled: boolean) => {
-        await onUpdateSettings({ auto_mining_enabled: enabled });
+    const handleAutomationToggle = async (enabled: boolean) => {
+        await onUpdateSettings({ automation_enabled: enabled });
         if (enabled) {
-            await onStartAutoMining();
+            await onStartAutomation();
         } else {
-            onStopMining();
+            onStopAutomation();
         }
     };
 
@@ -313,12 +314,12 @@ export default function DropsSettingsTab({
 
                         <div className="h-px bg-borderLight mx-2" />
 
-                        {/* Auto-Mining */}
+                        {/* Automation */}
                         <ToggleSetting
-                            label="Enable Auto-Mining"
+                            label="Enable Automation"
                             description="Automatically watch streams to earn drops when app is open"
-                            checked={settings.auto_mining_enabled}
-                            onChange={handleAutoMiningToggle}
+                            checked={settings.automation_enabled}
+                            onChange={handleAutomationToggle}
                             highlight
                         />
                     </div>
@@ -375,7 +376,7 @@ export default function DropsSettingsTab({
                                 />
 
                                 <p className="text-xs text-textSecondary mt-2 px-1">
-                                    Determines which drop campaigns are mined first when multiple are available.
+                                    Determines which drop campaigns are collected first when multiple are available.
                                 </p>
                             </div>
 
@@ -387,7 +388,7 @@ export default function DropsSettingsTab({
                                         Priority Games
                                     </h4>
                                     <span className="text-xs text-textSecondary bg-glass px-2 py-1 rounded">
-                                        Mined first in order
+                                        Collected first in order
                                     </span>
                                 </div>
 
@@ -453,7 +454,7 @@ export default function DropsSettingsTab({
                                         Excluded Games
                                     </h4>
                                     <span className="text-xs text-textSecondary bg-glass px-2 py-1 rounded">
-                                        Never mined
+                                        Never collected
                                     </span>
                                 </div>
 
@@ -479,7 +480,7 @@ export default function DropsSettingsTab({
                                         ))
                                     ) : (
                                         <div className="text-xs text-textSecondary italic text-center p-4 bg-background/50 rounded-lg border border-dashed border-borderLight">
-                                            No excluded games. Add games to never mine them.
+                                            No excluded games. Add games to never collect them.
                                         </div>
                                     )}
                                 </div>
@@ -514,7 +515,7 @@ export default function DropsSettingsTab({
                                 <div className="flex justify-between items-center mb-4">
                                     <h4 className="text-base font-semibold text-textPrimary flex items-center gap-2">
                                         <Shield size={18} className="text-emerald-400" />
-                                        Mining Recovery
+                                        Automation Recovery
                                     </h4>
                                     <span className="text-xs text-textSecondary bg-glass px-2 py-1 rounded">
                                         Auto-recovery
@@ -522,7 +523,7 @@ export default function DropsSettingsTab({
                                 </div>
 
                                 <p className="text-xs text-textSecondary mb-4">
-                                    Configure how StreamNook handles stuck mining sessions, offline streamers, and stale progress.
+                                    Configure how StreamNook handles stuck automation sessions, offline streamers, and stale progress.
                                 </p>
 
                                 {/* Recovery Mode */}
@@ -547,7 +548,7 @@ export default function DropsSettingsTab({
                                         ]}
                                     />
                                     <p className="text-xs text-textSecondary mt-1">
-                                        How aggressively to handle stuck mining sessions
+                                        How aggressively to handle stuck automation sessions
                                     </p>
                                 </div>
 
@@ -635,14 +636,14 @@ export default function DropsSettingsTab({
                     {/* CHANNEL POINTS TAB */}
                     {activeTab === 'channel_points' && (
                         <div className="space-y-6 animate-in fade-in slide-in-from-bottom-2 duration-300">
-                            {/* Channel Points Farming Card */}
+                            {/* Channel Points Automation Card */}
                             <div className="glass-panel p-6 relative z-50">
                                 <h3 className="text-lg font-bold text-textPrimary mb-2 flex items-center gap-2">
                                     <svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-accent">
                                         <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
                                         <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
                                     </svg>
-                                    Channel Points Farming
+                                    Channel Points Automation
                                 </h3>
 
                                 {/* Slot Visualization */}
@@ -668,7 +669,7 @@ export default function DropsSettingsTab({
                                                 <p className="text-xs text-textSecondary mt-1">
                                                     {(settings.reserve_token_for_current_stream ?? true)
                                                         ? 'Reserved exclusively for your active window. Guarantees priority for the channel you are physically watching.'
-                                                        : 'Unlocked. The background miner will hijack this token to speed up rotation through background channels.'
+                                                        : 'Unlocked. The background automation will hijack this token to speed up rotation through background channels.'
                                                     }
                                                 </p>
                                             </div>
@@ -677,14 +678,16 @@ export default function DropsSettingsTab({
                                         {/* Token 2 */}
                                         <div className="relative">
                                             {/* Node Dot */}
-                                            <div className={`absolute -left-7 top-1 w-6 h-6 rounded-full flex items-center justify-center border-4 border-[#121415] z-10 ${(settings.priority_farm_channels ?? []).length > 0 ? 'bg-blue-500 shadow-[0_0_10px_rgba(59,130,246,0.3)]' : 'bg-textSecondary/50'}`}>
-                                                {(settings.priority_farm_channels ?? []).length > 0 ? <ListFilter size={10} className="text-white" /> : <LayoutList size={10} className="text-white" />}
+                                            <div className={`absolute -left-7 top-1 w-6 h-6 rounded-full flex items-center justify-center border-4 border-[#121415] z-10 ${(settings.prefer_favorites ?? false) ? 'bg-rose-500' : (settings.priority_channels ?? []).length > 0 ? 'bg-blue-500 shadow-[0_0_10px_rgba(59,130,246,0.3)]' : 'bg-textSecondary/50'}`}>
+                                                {(settings.prefer_favorites ?? false) ? <Heart size={10} className="text-white" /> : (settings.priority_channels ?? []).length > 0 ? <ListFilter size={10} className="text-white" /> : <LayoutList size={10} className="text-white" />}
                                             </div>
                                             <div className="ml-1 leading-snug">
-                                                <span className={`text-sm font-semibold ${(settings.priority_farm_channels ?? []).length > 0 ? 'text-blue-400' : 'text-textPrimary'}`}>Token 2: The Miner</span>
+                                                <span className={`text-sm font-semibold ${(settings.prefer_favorites ?? false) ? 'text-rose-400' : (settings.priority_channels ?? []).length > 0 ? 'text-blue-400' : 'text-textPrimary'}`}>Token 2: Background</span>
                                                 <p className="text-xs text-textSecondary mt-1">
-                                                    {(settings.priority_farm_channels ?? []).length > 0
-                                                        ? `Restricted. Actively targets and rotates between your ${settings.priority_farm_channels?.length} priority channels. Ignores all other followed streams.`
+                                                    {(settings.prefer_favorites ?? false)
+                                                        ? 'Restricted to favorites. Rotates through the channels you have favorited that are currently live, and ignores everything else.'
+                                                        : (settings.priority_channels ?? []).length > 0
+                                                        ? `Restricted. Actively targets and rotates between your ${settings.priority_channels?.length} priority channels. Ignores all other followed streams.`
                                                         : 'Unrestricted. Automatically cycles through your entire live followed list every 15 minutes.'
                                                     }
                                                 </p>
@@ -696,13 +699,17 @@ export default function DropsSettingsTab({
                                     <div className="bg-textSecondary/5 mt-5 p-3 rounded border border-borderLight flex items-start gap-2.5">
                                         <Activity size={14} className="text-textSecondary mt-0.5 shrink-0" />
                                         <p className="text-xs text-textSecondary leading-relaxed italic">
-                                            {(settings.reserve_token_for_current_stream ?? true)
-                                                ? ((settings.priority_farm_channels ?? []).length > 0
-                                                    ? `Currently: 1 token is locked. The remaining 1 token rotates through your ${settings.priority_farm_channels?.length} priority channels (mining 1 channel every 15 mins).`
-                                                    : `Currently: 1 token is locked. The remaining 1 token sweeps through your entire live followed list (mining 1 channel every 15 mins).`)
-                                                : ((settings.priority_farm_channels ?? []).length > 0
-                                                    ? `Currently: 0 tokens locked. Both 2 tokens rotate through your ${settings.priority_farm_channels?.length} priority channels (mining 2 channels every 15 mins).`
-                                                    : `Currently: 0 tokens locked. Both 2 tokens sweep through your entire live followed list (mining 2 channels every 15 mins).`)}
+                                            {(settings.prefer_favorites ?? false)
+                                                ? ((settings.reserve_token_for_current_stream ?? true)
+                                                    ? `Currently: 1 token is locked. The remaining 1 token rotates through your live favorited channels (collecting on 1 channel every 15 mins).`
+                                                    : `Currently: 0 tokens locked. Both 2 tokens rotate through your live favorited channels (collecting on 2 channels every 15 mins).`)
+                                                : (settings.reserve_token_for_current_stream ?? true)
+                                                ? ((settings.priority_channels ?? []).length > 0
+                                                    ? `Currently: 1 token is locked. The remaining 1 token rotates through your ${settings.priority_channels?.length} priority channels (collecting on 1 channel every 15 mins).`
+                                                    : `Currently: 1 token is locked. The remaining 1 token sweeps through your entire live followed list (collecting on 1 channel every 15 mins).`)
+                                                : ((settings.priority_channels ?? []).length > 0
+                                                    ? `Currently: 0 tokens locked. Both 2 tokens rotate through your ${settings.priority_channels?.length} priority channels (collecting on 2 channels every 15 mins).`
+                                                    : `Currently: 0 tokens locked. Both 2 tokens sweep through your entire live followed list (collecting on 2 channels every 15 mins).`)}
                                         </p>
                                     </div>
                                 </div>
@@ -726,9 +733,18 @@ export default function DropsSettingsTab({
                                             onChange={(checked) => onUpdateSettings({ auto_reserve_on_watch: checked })}
                                         />
                                     </div>
+
+                                    <div className="h-px bg-borderLight mx-2" />
+
+                                    <ToggleSetting
+                                        label="Use My Favorites"
+                                        description="Rotate only through your favorited channels that are live. Replaces the priority list below."
+                                        checked={settings.prefer_favorites ?? false}
+                                        onChange={(checked) => onUpdateSettings({ prefer_favorites: checked })}
+                                    />
                                 </div>
 
-                                {/* Priority Farm Channels — Always visible */}
+                                {/* Priority channels — ignored while favorites mode is on */}
                                 <div className="border-t border-borderLight pt-5 relative z-50">
                                     <div className="flex items-center justify-between mb-2">
                                         <h4 className="text-sm font-semibold text-textPrimary flex items-center gap-2">
@@ -736,23 +752,32 @@ export default function DropsSettingsTab({
                                             Priority Target List
                                         </h4>
                                     </div>
+                                    {(settings.prefer_favorites ?? false) && (
+                                        <div className="mb-4 flex items-start gap-2.5 rounded border border-borderLight bg-textSecondary/5 p-3">
+                                            <Heart size={14} className="mt-0.5 shrink-0 text-rose-400" />
+                                            <p className="text-xs leading-relaxed text-textSecondary italic">
+                                                Favorites mode is on. The automation rotates your live favorited channels and this list is ignored. Turn off <strong className="text-textPrimary">Use My Favorites</strong> to use it again.
+                                            </p>
+                                        </div>
+                                    )}
+                                    <div className={(settings.prefer_favorites ?? false) ? 'opacity-40 pointer-events-none' : ''}>
                                     <p className="text-xs text-textSecondary mb-4 leading-relaxed">
-                                        If you add any channels below, the background miner will <strong className="text-textPrimary">exclusively</strong> target them for farming and ignore the rest of your followed list. If this list is empty, the miner defaults to sweeping through all your followed channels sequentially.
+                                        If you add any channels below, the background automation will <strong className="text-textPrimary">exclusively</strong> target them and ignore the rest of your followed list. If this list is empty, the automation defaults to sweeping through all your followed channels sequentially.
                                     </p>
 
                                     {/* Channel List */}
                                     <div className="space-y-2 mb-4">
-                                        {(settings.priority_farm_channels ?? []).length > 0 ? (
-                                            (settings.priority_farm_channels ?? []).map((channel, index) => (
+                                        {(settings.priority_channels ?? []).length > 0 ? (
+                                            (settings.priority_channels ?? []).map((channel, index) => (
                                                 <PriorityChannelRow
                                                     key={channel.channel_id}
                                                     channel={channel}
                                                     index={index}
                                                     followedStreams={followedStreams}
                                                     onRemove={() => {
-                                                        const newChannels = [...(settings.priority_farm_channels ?? [])];
+                                                        const newChannels = [...(settings.priority_channels ?? [])];
                                                         newChannels.splice(index, 1);
-                                                        onUpdateSettings({ priority_farm_channels: newChannels });
+                                                        onUpdateSettings({ priority_channels: newChannels });
                                                     }}
                                                 />
                                             ))
@@ -770,30 +795,30 @@ export default function DropsSettingsTab({
                                                 <input
                                                     type="text"
                                                     placeholder="Search for a channel..."
-                                                    value={farmChannelInput}
+                                                    value={channelInput}
                                                     onChange={(e) => {
-                                                        setFarmChannelInput(e.target.value);
+                                                        setChannelInput(e.target.value);
                                                         setShowDropdown(true);
                                                     }}
                                                     onFocus={() => {
-                                                        if (farmChannelInput.trim()) setShowDropdown(true);
+                                                        if (channelInput.trim()) setShowDropdown(true);
                                                     }}
                                                     onKeyDown={async (e) => {
-                                                        if (e.key === 'Enter' && farmChannelInput.trim() && !showDropdown) {
+                                                        if (e.key === 'Enter' && channelInput.trim() && !showDropdown) {
                                                             // Fallback to strict exact-match lookup if dropdown is bypassed
-                                                            const channelName = farmChannelInput.trim().toLowerCase();
-                                                            const existing = settings.priority_farm_channels ?? [];
+                                                            const channelName = channelInput.trim().toLowerCase();
+                                                            const existing = settings.priority_channels ?? [];
                                                             if (existing.some(c => c.channel_login === channelName)) return;
                                                             try {
                                                                 const info = await invoke('get_user_by_login', { login: channelName }) as { id: string; login: string; display_name: string };
                                                                 await onUpdateSettings({
-                                                                    priority_farm_channels: [...existing, {
+                                                                    priority_channels: [...existing, {
                                                                         channel_id: info.id,
                                                                         channel_login: info.login,
                                                                         display_name: info.display_name,
                                                                     }]
                                                                 });
-                                                                setFarmChannelInput('');
+                                                                setChannelInput('');
                                                                 setShowDropdown(false);
                                                             } catch (err) {
                                                                 Logger.error('Could not find exact channel:', err);
@@ -811,7 +836,7 @@ export default function DropsSettingsTab({
                                         </div>
 
                                         {/* Dropdown Results */}
-                                        {showDropdown && farmChannelInput.trim() && (
+                                        {showDropdown && channelInput.trim() && (
                                             <div className="absolute z-50 left-0 right-0 mt-2 glass-panel overflow-hidden drop-shadow-2xl">
                                                 {isSearching && searchResults.length === 0 ? (
                                                     <div className="p-4 text-center text-xs text-textSecondary italic">Searching Twitch...</div>
@@ -827,17 +852,17 @@ export default function DropsSettingsTab({
                                                                 <button
                                                                     key={id}
                                                                     onClick={async () => {
-                                                                        const existing = settings.priority_farm_channels ?? [];
+                                                                        const existing = settings.priority_channels ?? [];
                                                                         if (existing.some(c => c.channel_id === id)) return;
                                                                         
                                                                         await onUpdateSettings({
-                                                                            priority_farm_channels: [...existing, {
+                                                                            priority_channels: [...existing, {
                                                                                 channel_id: id,
                                                                                 channel_login: login,
                                                                                 display_name: displayName,
                                                                             }]
                                                                         });
-                                                                        setFarmChannelInput('');
+                                                                        setChannelInput('');
                                                                         setShowDropdown(false);
                                                                     }}
                                                                     className="w-full px-4 py-3 text-left hover:bg-glass-hover focus:bg-glass-hover transition-colors flex items-center gap-3 group"
@@ -872,10 +897,11 @@ export default function DropsSettingsTab({
                                                         })}
                                                     </div>
                                                 ) : (
-                                                    <div className="p-4 text-center text-xs text-textSecondary italic">No channels found for "{farmChannelInput}"</div>
+                                                    <div className="p-4 text-center text-xs text-textSecondary italic">No channels found for "{channelInput}"</div>
                                                 )}
                                             </div>
                                         )}
+                                    </div>
                                     </div>
                                 </div>
                             </div>

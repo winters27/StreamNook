@@ -36,16 +36,16 @@ interface DropsSettings {
     notify_on_drop_claimed: boolean;
     notify_on_points_claimed: boolean;
     check_interval_seconds: number;
-    auto_mining_enabled: boolean;
+    automation_enabled: boolean;
     priority_games: string[];
     excluded_games: string[];
     priority_mode: 'PriorityOnly' | 'EndingSoonest' | 'LowAvailFirst';
     watch_interval_seconds: number;
-    favorite_games: string[];  // UI-only, for sorting/tracking - doesn't affect mining
+    favorite_games: string[];  // UI-only, for sorting/tracking - doesn't affect automation
     // Watch token allocation settings
     reserve_token_for_current_stream?: boolean;
     auto_reserve_on_watch?: boolean;
-    priority_farm_channels?: Array<{ channel_id: string; channel_login: string; display_name: string }>;
+    priority_channels?: Array<{ channel_id: string; channel_login: string; display_name: string }>;
 }
 
 export default function DropsCenter() {
@@ -69,16 +69,16 @@ export default function DropsCenter() {
     const [isAuthenticating, setIsAuthenticating] = useState(false);
     const [deviceCodeInfo, setDeviceCodeInfo] = useState<DropsDeviceCodeInfo | null>(null);
 
-    // Mining State
+    // Automation State
     const [dropProgress, setDropProgress] = useState<DropProgressStatus | null>(null);
-    // Id of a plugin that provides drops mining, or null. When set, the
-    // cockpit's mine controls drive the plugin through the general hooks
-    // instead of the built-in miner. Core never names the plugin.
+    // Id of a plugin that provides drops automation, or null. When set, the
+    // cockpit's collect controls drive the plugin through the general hooks
+    // instead of the built-in automation. Core never names the plugin.
     const [externalDropsProviderId, setExternalDropsProviderId] = useState<string | null>(null);
 
     // UI State
     const [activeTab, setActiveTab] = useState<Tab>('games');
-    // A drops-mining plugin contributes its automation settings panel into this
+    // A drops-automation plugin contributes its automation settings panel into this
     // slot; the Settings tab exists only while one does. If the plugin is
     // disabled while the tab is open, fall back to Games so the view never
     // strands on an empty tab.
@@ -100,11 +100,11 @@ export default function DropsCenter() {
     // Settings State
     const [dropsSettings, setDropsSettings] = useState<DropsSettings | null>(null);
 
-    // Ref for the games container to scroll to top when mining starts
+    // Ref for the games container to scroll to top when automation starts
     const gamesContainerRef = useRef<HTMLDivElement>(null);
 
-    // Track the previously mining game to detect when mining starts
-    const prevMiningGameRef = useRef<string | null>(null);
+    // Track the previously automation game to detect when automation starts
+    const prevAutomationGameRef = useRef<string | null>(null);
 
     // Track previous campaign IDs for notification detection
     const prevCampaignIdsRef = useRef<Set<string>>(new Set());
@@ -112,7 +112,7 @@ export default function DropsCenter() {
     // Derived state for filtering AND sorting (favorites first)
     const filteredGames = useMemo(() => {
         const favoriteGames = dropsSettings?.favorite_games || [];
-        // The actively-mining game pins above everything, even favorites: it's
+        // The actively-automation game pins above everything, even favorites: it's
         // the one thing happening right now. Derived straight from live
         // dropProgress so a reopened overlay restores the pin immediately,
         // not only after the next status push.
@@ -141,12 +141,12 @@ export default function DropsCenter() {
             return t;
         };
 
-        // Sort: actively-mining game first, then still-mineable favorites, then by the selected sort mode.
+        // Sort: actively-automation game first, then still-collectible favorites, then by the selected sort mode.
         return [...games].sort((a, b) => {
-            // Actively-mining game pinned at the very top, above favorites.
-            const aMining = progressGameName !== null && a.name.toLowerCase() === progressGameName;
-            const bMining = progressGameName !== null && b.name.toLowerCase() === progressGameName;
-            if (aMining !== bMining) return aMining ? -1 : 1;
+            // Actively-automation game pinned at the very top, above favorites.
+            const aAutomation = progressGameName !== null && a.name.toLowerCase() === progressGameName;
+            const bAutomation = progressGameName !== null && b.name.toLowerCase() === progressGameName;
+            if (aAutomation !== bAutomation) return aAutomation ? -1 : 1;
 
             // A favorite that's fully claimed is "done", so it drops out of the top
             // pin and sinks to the bottom with the other completed games.
@@ -164,7 +164,7 @@ export default function DropsCenter() {
             }
 
             // Recommended (default) relevance order:
-            // Mining games next
+            // Automation games next
             if (a.active !== b.active) return a.active ? -1 : 1;
             // Completed games (all drops claimed) go to bottom
             if (a.all_drops_claimed !== b.all_drops_claimed) return a.all_drops_claimed ? 1 : -1;
@@ -330,10 +330,10 @@ export default function DropsCenter() {
             setProgress(nextProgress);
 
             // A claim only moves a reward into your inventory. It does NOT change the
-            // active campaigns or the live mining-progress cache, so we deliberately
+            // active campaigns or the live automation-progress cache, so we deliberately
             // skip the full loadDropsData() reload here. That reload would blank the
             // panel behind a spinner AND re-fetch campaigns, which clears the backend's
-            // live progress map and makes the title-bar mining progress snap backwards
+            // live progress map and makes the title-bar automation progress snap backwards
             // until it slowly re-accumulates. Instead: refresh only the inventory
             // (silently) and patch the claimed game's flags in place.
             const inventoryData = await invoke<InventoryResponse>('get_drops_inventory').catch(() => null);
@@ -425,7 +425,7 @@ export default function DropsCenter() {
         let disposed = false;
         const refreshProvider = async () => {
             try {
-                const id = await invoke<string | null>('plugins_provides', { feature: 'drops.mining' });
+                const id = await invoke<string | null>('plugins_provides', { feature: 'drops.automation' });
                 if (!disposed) setExternalDropsProviderId(id ?? null);
             } catch { /* plugin host unavailable */ }
         };
@@ -451,14 +451,14 @@ export default function DropsCenter() {
     // provider's own per-card control, so core issues no start action. Stop is
     // the one provider-driven control core still issues, and only when a provider
     // is present (the Stop button is hidden otherwise).
-    const stopMining = async () => {
+    const stopAutomation = async () => {
         if (!externalDropsProviderId) return;
         await invoke('plugins_invoke_action', { action: 'drops.stop', args: {} });
     };
 
-    const handleStopMining = async () => {
+    const handleStopAutomation = async () => {
         try {
-            // Immediately update local state to reflect stopped mining
+            // Immediately update local state to reflect stopped automation
             setDropProgress(prev => prev ? {
                 ...prev,
                 active: false,
@@ -468,14 +468,14 @@ export default function DropsCenter() {
             } : null);
 
             // Clear ALL in-progress entries to prevent stale data when switching games
-            // We completely reset and let the new mining session repopulate fresh data
+            // We completely reset and let the new automation session repopulate fresh data
             setProgress([]);
 
             // Then call the backend to actually stop
-            await stopMining();
-            addToast('Mining stopped', 'info');
+            await stopAutomation();
+            addToast('Automation stopped', 'info');
         } catch (err) {
-            Logger.error('Failed to stop mining:', err);
+            Logger.error('Failed to stop automation:', err);
         }
     };
 
@@ -488,13 +488,14 @@ export default function DropsCenter() {
                 notify_on_drop_claimed: true,
                 notify_on_points_claimed: false,
                 check_interval_seconds: 60,
-                auto_mining_enabled: false,
+                automation_enabled: false,
                 priority_games: [],
                 excluded_games: [],
                 priority_mode: 'PriorityOnly' as const,
                 watch_interval_seconds: 20,
                 favorite_games: [],
-                priority_farm_channels: [],
+                priority_channels: [],
+                prefer_favorites: false,
             };
             const updatedSettings = { ...current, ...newSettings };
 
@@ -520,7 +521,7 @@ export default function DropsCenter() {
         void useAppStore.getState().startStream(channelName, streamInfo);
     };
 
-    // Toggle favorite (add/remove from favorite_games - visual only, doesn't affect mining)
+    // Toggle favorite (add/remove from favorite_games - visual only, doesn't affect automation)
     const handleToggleFavorite = async (gameName: string) => {
         if (!dropsSettings) return;
         
@@ -702,10 +703,10 @@ export default function DropsCenter() {
 
             const progressData = await invoke<DropProgress[]>('get_drop_progress').catch(() => [] as DropProgress[]);
 
-            // Seed mining status from the bridge-cached live status: a plugin
-            // powering mining reports through the bridge into the store and keeps
+            // Seed automation status from the bridge-cached live status: a plugin
+            // powering automation reports through the bridge into the store and keeps
             // it there even while this overlay is closed, so a reopened overlay
-            // immediately shows what is being mined.
+            // immediately shows what is being collected.
             const liveStatus = useAppStore.getState().liveDropProgress;
             if (liveStatus) {
                 setDropProgress(liveStatus);
@@ -744,13 +745,13 @@ export default function DropsCenter() {
             };
 
             // A campaign only belongs in the games grid if it has something you can
-            // still mine: at least one watch-time (mineable) drop. Event/special
-            // campaigns with no watch-time drops have "nothing to mine", so we skip
-            // them instead of surfacing dead entries that read "nothing to mine".
-            const campaignIsMineable = (c: DropCampaign): boolean =>
+            // still collect: at least one watch-time (collectible) drop. Event/special
+            // campaigns with no watch-time drops have "nothing to collect", so we skip
+            // them instead of surfacing dead entries that read "nothing to collect".
+            const campaignIsCollectible = (c: DropCampaign): boolean =>
                 (c.time_based_drops || []).some(d =>
-                    typeof d.is_mineable === 'boolean'
-                        ? d.is_mineable
+                    typeof d.is_collectible === 'boolean'
+                        ? d.is_collectible
                         : (d.required_minutes_watched || 0) > 0 ||
                           (d.progress?.required_minutes_watched || 0) > 0
                 );
@@ -758,7 +759,7 @@ export default function DropsCenter() {
             // Process Active Campaigns and merge progress data from inventory
             if (campaignsData) {
                 campaignsData.forEach(campaign => {
-                    // IMPORTANT: Merge progress data into each drop BEFORE the mineable
+                    // IMPORTANT: Merge progress data into each drop BEFORE the collectible
                     // check + adding to game, so embedded/inventory progress is counted.
                     const campaignWithProgress = {
                         ...campaign,
@@ -790,8 +791,8 @@ export default function DropsCenter() {
                         })
                     };
                     
-                    // Skip campaigns with nothing to mine (all event/special drops).
-                    if (!campaignIsMineable(campaignWithProgress)) {
+                    // Skip campaigns with nothing to collect (all event/special drops).
+                    if (!campaignIsCollectible(campaignWithProgress)) {
                         return;
                     }
 
@@ -825,12 +826,12 @@ export default function DropsCenter() {
                 });
             }
 
-            // Get the current mining game name (case-insensitive). Prefer the
+            // Get the current automation game name (case-insensitive). Prefer the
             // freshly-read live status (set by the plugin bridge and held in the
             // store while the overlay is closed) over the stale component state.
-            const activeMiningStatus = liveStatus || dropProgress;
-            const progressGameName = activeMiningStatus?.current_drop?.game_name?.toLowerCase() ||
-                activeMiningStatus?.current_channel?.game_name?.toLowerCase();
+            const activeAutomationStatus = liveStatus || dropProgress;
+            const progressGameName = activeAutomationStatus?.current_drop?.game_name?.toLowerCase() ||
+                activeAutomationStatus?.current_channel?.game_name?.toLowerCase();
 
             // Drops the user has genuinely EARNED, from unambiguous sources only: the
             // permanent gameEventDrops list + any inventory drop explicitly is_claimed.
@@ -856,7 +857,7 @@ export default function DropsCenter() {
 
             // Update active flag and calculate all_drops_claimed for each game
             gamesMap.forEach(game => {
-                if (activeMiningStatus?.active && progressGameName) {
+                if (activeAutomationStatus?.active && progressGameName) {
                     game.active = game.name.toLowerCase() === progressGameName;
                 }
 
@@ -871,7 +872,7 @@ export default function DropsCenter() {
                             const dp = progressData?.find(p => p.drop_id === drop.id) || drop.progress;
                             // Claimed here, OR already earned elsewhere (by benefit id/name) but
                             // ONLY when this drop isn't itself in progress. A drop with watch-time
-                            // is being actively mined and must not be counted as already-earned.
+                            // is being actively collected and must not be counted as already-earned.
                             const hasCurrentProgress = !!dp && ((dp.current_minutes_watched || 0) > 0 || dp.is_claimed === true);
                             const owned = dp?.is_claimed === true
                                 || (!hasCurrentProgress && (
@@ -897,10 +898,10 @@ export default function DropsCenter() {
             });
 
             // Only surface games that have at least one campaign with something left to
-            // mine. Games whose campaigns are all event-only, or that only appear via
+            // collect. Games whose campaigns are all event-only, or that only appear via
             // earned inventory, have nothing actionable here and live in the Inventory tab.
             setUnifiedGames(Array.from(gamesMap.values()).filter(g => g.active_campaigns.length > 0).sort((a, b) => {
-                // Mining games first
+                // Automation games first
                 if (a.active !== b.active) return a.active ? -1 : 1;
                 // Completed games (all drops claimed) go to bottom
                 if (a.all_drops_claimed !== b.all_drops_claimed) return a.all_drops_claimed ? 1 : -1;
@@ -1023,8 +1024,8 @@ export default function DropsCenter() {
             const auth = await checkAuthentication();
             if (auth) {
                 try {
-                    // Seed from the bridge-cached live status (a plugin mining),
-                    // so reopening mid-mining shows it.
+                    // Seed from the bridge-cached live status (a plugin automation),
+                    // so reopening mid-automation shows it.
                     const liveStatus = useAppStore.getState().liveDropProgress;
                     if (liveStatus) setDropProgress(liveStatus);
                     const settings = await invoke<DropsSettings>('get_drops_settings');
@@ -1049,10 +1050,10 @@ export default function DropsCenter() {
 
         const setupListeners = async () => {
             const uStatus = await listen<DropProgressStatus>('drop-progress', (event) => {
-                // Single source of truth for mining status. A mining plugin
-                // reports through the bridge (PluginMiningBridge), which emits
+                // Single source of truth for automation status. A automation plugin
+                // reports through the bridge (PluginAutomationBridge), which emits
                 // into this same event so the native UI lights up identically.
-                Logger.debug('[DropsCenter] Mining status update:', event.payload);
+                Logger.debug('[DropsCenter] Automation status update:', event.payload);
                 setDropProgress(event.payload);
                 useAppStore.getState().setDropProgressActive(event.payload.active);
             });
@@ -1130,15 +1131,15 @@ export default function DropsCenter() {
         const progressGameName = dropProgress?.current_drop?.game_name?.toLowerCase() ||
             dropProgress?.current_channel?.game_name?.toLowerCase();
 
-        Logger.debug('[DropsCenter] Updating active flag. Mining:', dropProgress.active, 'Game:', progressGameName);
+        Logger.debug('[DropsCenter] Updating active flag. Automation:', dropProgress.active, 'Game:', progressGameName);
 
-        // Detect if mining just started for a new game (to trigger scroll)
-        const currentMiningGame = dropProgress.active && progressGameName ? progressGameName : null;
-        const prevMiningGame = prevMiningGameRef.current;
+        // Detect if automation just started for a new game (to trigger scroll)
+        const currentAutomationGame = dropProgress.active && progressGameName ? progressGameName : null;
+        const prevAutomationGame = prevAutomationGameRef.current;
 
-        // If a new game started mining (different from previous), scroll to top
-        if (currentMiningGame && currentMiningGame !== prevMiningGame) {
-            Logger.debug('[DropsCenter] New mining game detected, scrolling to top:', currentMiningGame);
+        // If a new game started automation (different from previous), scroll to top
+        if (currentAutomationGame && currentAutomationGame !== prevAutomationGame) {
+            Logger.debug('[DropsCenter] New automation game detected, scrolling to top:', currentAutomationGame);
             // Small delay to allow the list to re-sort first
             setTimeout(() => {
                 if (gamesContainerRef.current) {
@@ -1151,7 +1152,7 @@ export default function DropsCenter() {
         }
 
         // Update the ref for next comparison
-        prevMiningGameRef.current = currentMiningGame;
+        prevAutomationGameRef.current = currentAutomationGame;
 
         setUnifiedGames(prevGames => {
             const updated = prevGames.map(game => ({
@@ -1163,7 +1164,7 @@ export default function DropsCenter() {
 
             // Re-sort with full sorting logic
             return updated.sort((a, b) => {
-                // Mining games first
+                // Automation games first
                 if (a.active !== b.active) return a.active ? -1 : 1;
                 // Completed games (all drops claimed) go to bottom
                 if (a.all_drops_claimed !== b.all_drops_claimed) return a.all_drops_claimed ? 1 : -1;
@@ -1256,7 +1257,7 @@ export default function DropsCenter() {
                         <div className="space-y-3 mb-8">
                             <h2 className="text-3xl font-bold text-textPrimary">Drops Center</h2>
                             <p className="text-textSecondary text-base leading-relaxed">
-                                Connect your Twitch account to unlock automatic drop mining, campaign tracking, and reward collection.
+                                Connect your Twitch account to unlock automatic drop automation, campaign tracking, and reward collection.
                             </p>
                         </div>
 
@@ -1500,7 +1501,7 @@ export default function DropsCenter() {
                                             pg => pg.toLowerCase() === game.name.toLowerCase()
                                         )}
                                         onClick={() => handleGameSelect(selectedGame?.id === game.id ? null : game)}
-                                        onStopMining={handleStopMining}
+                                        onStopAutomation={handleStopAutomation}
                                         onToggleFavorite={handleToggleFavorite}
                                     />
                                 ))}
@@ -1522,7 +1523,7 @@ export default function DropsCenter() {
 
                                 isOpen={!!selectedGame}
                                 onClose={() => setSelectedGame(null)}
-                                onStopMining={handleStopMining}
+                                onStopAutomation={handleStopAutomation}
                             />
                         )}
                     </div>
@@ -1540,14 +1541,14 @@ export default function DropsCenter() {
                                 ? completedDrops.reduce((sum, d) => sum + (d.total_count || 1), 0)
                                 : unifiedGames.reduce((sum, game) => sum + game.total_claimed, 0),
                             // In Progress = drops the account is actively working on, from the
-                            // freshest inventory snapshot; fall back to the live mining count.
+                            // freshest inventory snapshot; fall back to the live automation count.
                             drops_in_progress: Math.max(
                                 inventoryItems.reduce((sum, item) => sum + item.drops_in_progress, 0),
                                 statistics.drops_in_progress
                             ),
                         } : null}
                         dropProgress={dropProgress}
-                        onStopMining={handleStopMining}
+                        onStopAutomation={handleStopAutomation}
                         onStreamClick={handleStreamClick}
                     />
                 )}
@@ -1562,7 +1563,7 @@ export default function DropsCenter() {
                     />
                 )}
 
-                {/* Settings Tab — the automation panel a drops-mining plugin
+                {/* Settings Tab — the automation panel a drops-automation plugin
                     contributes into the drops.settings slot. Full-height + scroll
                     so a contribution that manages its own scroll (h-full) is
                     bounded, and a plain one still scrolls here. */}

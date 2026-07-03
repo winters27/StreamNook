@@ -14,7 +14,7 @@ use tokio::time::Duration;
 use uuid::Uuid;
 
 // Use Twitch ANDROID APP client ID for GQL operations (required for drops API access)
-// This is what TwitchDropsMiner uses - it works with NO SCOPES
+// This is what the Twitch web client uses - it works with NO SCOPES
 const CLIENT_ID: &str = env!("TWITCH_ANDROID_CLIENT_ID");
 const CLIENT_URL: &str = "https://www.twitch.tv";
 
@@ -143,7 +143,7 @@ pub struct DropsService {
     claimed_drops: Arc<RwLock<Vec<ClaimedDrop>>>,
     channel_points_history: Arc<RwLock<Vec<ChannelPointsClaim>>>,
     /// Cumulative channel points the app has auto-claimed, persisted across sessions.
-    lifetime_points_mined: Arc<RwLock<i64>>,
+    lifetime_points_collected: Arc<RwLock<i64>>,
     channel_points_balances: Arc<RwLock<HashMap<String, ChannelPointsBalance>>>,
     monitoring_active: Arc<RwLock<bool>>,
     current_channel: Arc<RwLock<Option<(String, String)>>>, // (channel_id, channel_name)
@@ -154,7 +154,7 @@ pub struct DropsService {
     session_id: String,
 }
 
-/// File (in the app data dir) that persists lifetime drops-mining stats across sessions.
+/// File (in the app data dir) that persists lifetime drops-automation stats across sessions.
 const LIFETIME_STATS_FILE: &str = "drops_lifetime_stats.json";
 
 fn lifetime_stats_path() -> Option<std::path::PathBuf> {
@@ -164,7 +164,7 @@ fn lifetime_stats_path() -> Option<std::path::PathBuf> {
 }
 
 /// Read the persisted cumulative auto-claimed channel points. Returns 0 if absent or unreadable.
-fn load_lifetime_points_mined() -> i64 {
+fn load_lifetime_points_collected() -> i64 {
     let path = match lifetime_stats_path() {
         Some(p) => p,
         None => return 0,
@@ -172,17 +172,19 @@ fn load_lifetime_points_mined() -> i64 {
     match std::fs::read_to_string(&path) {
         Ok(contents) => serde_json::from_str::<serde_json::Value>(&contents)
             .ok()
-            .and_then(|v| v["points_mined"].as_i64())
+            // Prefer the current key; fall back to the legacy key so an existing
+            // stats file keeps its cumulative total across the rename.
+            .and_then(|v| v["points_collected"].as_i64().or_else(|| v["points_mined"].as_i64()))
             .unwrap_or(0),
         Err(_) => 0,
     }
 }
 
 /// Persist the cumulative auto-claimed channel points. Best-effort; IO errors are ignored.
-fn save_lifetime_points_mined(points: i64) {
+fn save_lifetime_points_collected(points: i64) {
     if let Some(path) = lifetime_stats_path() {
         if let Ok(json) =
-            serde_json::to_string_pretty(&serde_json::json!({ "points_mined": points }))
+            serde_json::to_string_pretty(&serde_json::json!({ "points_collected": points }))
         {
             let _ = std::fs::write(&path, json);
         }
@@ -197,7 +199,7 @@ impl DropsService {
     /// Create a new DropsService with the given initial settings
     /// Use this to restore persisted settings on app startup
     pub fn new_with_settings(initial_settings: DropsSettings) -> Self {
-        // Generate persistent device ID and session ID (like TwitchDropsMiner does)
+        // Generate persistent device ID and session ID (like the Twitch web client does)
         let device_id = Uuid::new_v4().to_string().replace("-", "");
         let session_id = Uuid::new_v4().to_string().replace("-", "");
 
@@ -207,7 +209,7 @@ impl DropsService {
             drop_progress: Arc::new(RwLock::new(HashMap::new())),
             claimed_drops: Arc::new(RwLock::new(Vec::new())),
             channel_points_history: Arc::new(RwLock::new(Vec::new())),
-            lifetime_points_mined: Arc::new(RwLock::new(load_lifetime_points_mined())),
+            lifetime_points_collected: Arc::new(RwLock::new(load_lifetime_points_collected())),
             channel_points_balances: Arc::new(RwLock::new(HashMap::new())),
             monitoring_active: Arc::new(RwLock::new(false)),
             current_channel: Arc::new(RwLock::new(None)),
@@ -219,7 +221,7 @@ impl DropsService {
         }
     }
 
-    /// Create headers for GQL requests (mimicking TwitchDropsMiner's auth_state.headers())
+    /// Create headers for GQL requests (mimicking the Twitch web client's auth_state.headers())
     fn create_gql_headers(&self, token: &str) -> HeaderMap {
         Self::gql_headers(token, &self.device_id, &self.session_id)
     }
@@ -256,7 +258,7 @@ impl DropsService {
     }
 
     /// Fetch inventory (in-progress campaigns) using the Inventory GQL operation
-    /// This matches TwitchDropsMiner's fetch_inventory() function
+    /// This matches the Twitch web client's fetch_inventory() function
     pub async fn fetch_inventory(&self) -> Result<InventoryResponse> {
         debug!("[fetch_inventory] Fetching inventory (in-progress campaigns)...");
 
@@ -271,7 +273,7 @@ impl DropsService {
             }
         };
 
-        // Use the exact same GQL operation as TwitchDropsMiner
+        // Use the exact same GQL operation as the Twitch web client
         let response = self.client
             .post("https://gql.twitch.tv/gql")
             .headers(self.create_gql_headers(&token))
@@ -509,8 +511,8 @@ impl DropsService {
                         required_minutes_watched: required_minutes,
                         benefit_edges,
                         progress,
-                        // Drops with 0 required minutes are event-based/badge drops that cannot be auto-mined
-                        is_mineable: required_minutes > 0,
+                        // Drops with 0 required minutes are event-based/badge drops that cannot be auto-collected
+                        is_collectible: required_minutes > 0,
                     });
                 }
             }
@@ -633,14 +635,14 @@ impl DropsService {
         // Keep the internal drop_progress map in sync with what the UI receives.
         // The UI calls `get_drop_progress` separately from `get_active_drop_campaigns`,
         // so if we don't update the progress map here, the frontend will see 0 minutes
-        // watched for every campaign until a mining websocket event happens.
+        // watched for every campaign until a automation websocket event happens.
         self.update_campaigns_and_progress(&campaigns).await;
 
         Ok(campaigns)
     }
 
     /// Internal method to fetch campaigns from API (no caching)
-    /// This should only be called by get_all_active_campaigns_cached or during mining operations
+    /// This should only be called by get_all_active_campaigns_cached or during automation operations
     pub(crate) async fn fetch_all_active_campaigns_from_api(&self) -> Result<Vec<DropCampaign>> {
         Self::fetch_active_campaigns(&self.client, &self.device_id, &self.session_id).await
     }
@@ -918,11 +920,11 @@ impl DropsService {
                         };
 
                         // Determine if drop is mineable (has watch time requirement)
-                        // Drops with 0 required minutes are event-based/badge drops that cannot be auto-mined
-                        let is_mineable = required_minutes > 0;
+                        // Drops with 0 required minutes are event-based/badge drops that cannot be auto-collected
+                        let is_collectible = required_minutes > 0;
 
-                        debug!("[fetch_all_active_campaigns] Drop '{}': required_minutes={}, is_mineable={}", 
-                            drop_name, required_minutes, is_mineable);
+                        debug!("[fetch_all_active_campaigns] Drop '{}': required_minutes={}, is_collectible={}", 
+                            drop_name, required_minutes, is_collectible);
 
                         time_based_drops.push(TimeBasedDrop {
                             id: drop_id,
@@ -930,7 +932,7 @@ impl DropsService {
                             required_minutes_watched: required_minutes,
                             benefit_edges,
                             progress,
-                            is_mineable,
+                            is_collectible,
                         });
                     }
                 }
@@ -1015,12 +1017,12 @@ impl DropsService {
         let mut cached_count = self.cached_active_campaigns_count.write().await;
         *cached_count = campaigns.len() as i32;
 
-        // Update campaigns cache when mining fetches them
+        // Update campaigns cache when automation fetches them
         let mut cache = self.cached_campaigns.write().await;
         *cache = Some((campaigns.to_vec(), Utc::now()));
     }
 
-    /// Get active campaigns with settings filters applied (for mining)
+    /// Get active campaigns with settings filters applied (for automation)
     pub async fn get_active_campaigns(&self) -> Result<Vec<DropCampaign>> {
         // First get all campaigns from the API
         let all_campaigns = self.fetch_all_active_campaigns_from_api().await?;
@@ -1096,7 +1098,7 @@ impl DropsService {
                 instance_id
             } else {
                 // Fallback: Generate dropInstanceID in format: user_id#campaign_id#drop_id
-                // This is how TwitchDropsMiner constructs the claim ID when not available
+                // This is how the Twitch web client constructs the claim ID when not available
                 let user_id = self.get_user_id_from_token(&token).await?;
 
                 if campaign_id.is_empty() {
@@ -1116,7 +1118,7 @@ impl DropsService {
             drop_id, drop_instance_id
         );
 
-        // Use persisted query format like TwitchDropsMiner does
+        // Use persisted query format like the Twitch web client does
         let response = self
             .client
             .post("https://gql.twitch.tv/gql")
@@ -1215,7 +1217,7 @@ impl DropsService {
     ) -> Result<Option<ChannelPointsClaim>> {
         let token = DropsAuthService::get_token().await?;
 
-        // Use persisted query like TwitchDropsMiner
+        // Use persisted query like the Twitch web client
         let response = self
             .client
             .post("https://gql.twitch.tv/gql")
@@ -1390,7 +1392,7 @@ impl DropsService {
         // Lifetime cumulative of points the app has auto-claimed, persisted across sessions,
         // rather than only this session's history. Clamp into the i32 wire type.
         let total_channel_points_earned: i32 =
-            (*self.lifetime_points_mined.read().await).clamp(0, i32::MAX as i64) as i32;
+            (*self.lifetime_points_collected.read().await).clamp(0, i32::MAX as i64) as i32;
 
         let drops_in_progress = drop_progress
             .values()
@@ -1428,11 +1430,11 @@ impl DropsService {
         }
         if claimed_points > 0 {
             let total = {
-                let mut lifetime = self.lifetime_points_mined.write().await;
+                let mut lifetime = self.lifetime_points_collected.write().await;
                 *lifetime += claimed_points;
                 *lifetime
             };
-            save_lifetime_points_mined(total);
+            save_lifetime_points_collected(total);
         }
     }
 
@@ -1451,7 +1453,7 @@ impl DropsService {
 
     /// Upsert a channel's current balance. Fed by the realtime points-earned
     /// socket, which reports the new balance with every earn — the only thing
-    /// that keeps this store current now that the farming loop is gone. Powers
+    /// that keeps this store current now that the automation loop is gone. Powers
     /// the channel-points leaderboard and the points accolades.
     pub async fn update_channel_points_balance(
         &self,
@@ -1522,7 +1524,7 @@ impl DropsService {
 
             // Watched-channel drop progress is account-wide: the heartbeat earns
             // it server-side, and this poll reads it back so the Drops center and
-            // the finished-drop auto-claim below work with no background miner.
+            // the finished-drop auto-claim below work with no background plugin.
             // Refreshed on its own cadence rather than every check tick.
             const PROGRESS_REFRESH_SECS: i64 = 120;
             let mut last_progress_refresh: Option<DateTime<Utc>> = None;
@@ -1545,13 +1547,13 @@ impl DropsService {
                     // The watched channel's bonus chest is claimed by the
                     // frontend (ChatWidget, `auto_claim_points_watching`), the
                     // single user-present surface. The background multi-channel
-                    // sweep lives in the opt-in farming plugin. This loop only
+                    // sweep lives in the opt-in automation plugin. This loop only
                     // keeps drop progress fresh and claims finished drops below.
 
                     // Refresh account-wide drop progress so the watched channel's
                     // earned minutes (credited by the heartbeat) reach the Drops
                     // center display and the auto-claim below. This is the core,
-                    // always-on watched-channel path; the background miner is a
+                    // always-on watched-channel path; the background plugin is a
                     // separate opt-in plugin.
                     let refresh_due = last_progress_refresh
                         .map(|t| {
@@ -1582,7 +1584,7 @@ impl DropsService {
                             .filter(|p| {
                                 !p.is_claimed
                                     && p.current_minutes_watched >= p.required_minutes_watched
-                                    && p.required_minutes_watched > 0 // Only mineable drops
+                                    && p.required_minutes_watched > 0 // Only collectible drops
                                     && !attempted.contains(&p.drop_id) // Skip already-attempted
                             })
                             .cloned()
@@ -1816,7 +1818,7 @@ impl DropsService {
                             })
                             .collect(),
                         progress: None,
-                        is_mineable: drop.required_minutes_watched > 0,
+                        is_collectible: drop.required_minutes_watched > 0,
                     }
                 })
                 .collect();

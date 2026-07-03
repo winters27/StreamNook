@@ -46,15 +46,15 @@ pub async fn update_drops_settings(
     std::fs::write(&settings_path, json)
         .map_err(|e| format!("Failed to write settings file: {}", e))?;
 
-    // Keep the realtime points socket in line with the farming master toggle so
-    // the farmer's background earns start (or stop) producing channel-points
+    // Keep the realtime points socket in line with the automation master toggle so
+    // the plugin's background earns start (or stop) producing channel-points
     // notifications immediately, without waiting for a relaunch. No-op when the
     // flag is unchanged.
     state
         .background_service
         .lock()
         .await
-        .set_farming_active(settings.auto_claim_channel_points)
+        .set_automation_active(settings.auto_claim_channel_points)
         .await;
 
     Ok(())
@@ -135,7 +135,7 @@ pub async fn claim_channel_points(
     // decommissioned pubsub-edge, so this re-emits the same event shape the socket
     // used. DynamicIsland's listener (gated by show_channel_points_notifications)
     // and the lifetime/history accumulator in background_service then behave
-    // exactly as they did when the socket worked. Background-farmed channels are
+    // exactly as they did when the socket worked. Background-collected channels are
     // covered separately by the GQL balance poll in background_service.
     if result.points_earned > 0 {
         let _ = app.emit(
@@ -283,7 +283,7 @@ pub async fn refresh_followed_channel_points(
     }
     "#;
 
-    // Collect off-lock so the network walk never stalls chat/mining, which also
+    // Collect off-lock so the network walk never stalls chat/automation, which also
     // hold the drops service mutex.
     let mut found: Vec<(String, String, i32)> = Vec::new(); // (channel_id, login, balance)
     for chunk in channels.chunks(35) {

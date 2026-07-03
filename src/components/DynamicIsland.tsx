@@ -667,7 +667,7 @@ const DynamicIsland = () => {
             'WATCH': 'watching',
             'WATCH_STREAK': 'watch streak',
             'CLAIM': 'bonus claim',
-            'FARM': 'farming',
+            'AUTOMATION': 'automation',
             'RAID': 'raid',
             'PREDICTION': 'prediction',
             'BITS': 'bits',

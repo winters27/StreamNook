@@ -5,10 +5,10 @@ import { Tooltip } from '../ui/Tooltip';
 import { deriveDropProgressDisplay } from '../../utils/dropProgressDisplay';
 import { useAppStore } from '../../stores/AppStore';
 
-// Helper to check if a campaign is mineable (has time-based drops that require watching)
-function isCampaignMineable(campaign: DropCampaign): boolean {
-    // Campaign is mineable if it has any time_based_drops
-    // The API only gives us time_based_drops, so if we have them, they're mineable
+// Helper to check if a campaign is collectible (has time-based drops that require watching)
+function isCampaignCollectible(campaign: DropCampaign): boolean {
+    // Campaign is collectible if it has any time_based_drops
+    // The API only gives us time_based_drops, so if we have them, they're collectible
     // Subscription/gift-based campaigns won't have time_based_drops populated
     if (!campaign.time_based_drops || campaign.time_based_drops.length === 0) {
         return false;
@@ -19,7 +19,7 @@ function isCampaignMineable(campaign: DropCampaign): boolean {
     // Also fallback to true if we have drops but required_minutes_watched isn't set
     const hasWatchTimeDrops = campaign.time_based_drops.some(drop => {
         const minutes = drop.required_minutes_watched;
-        // If required_minutes_watched is not set or is positive, it's mineable
+        // If required_minutes_watched is not set or is positive, it's collectible
         return minutes === undefined || minutes === null || minutes > 0;
     });
     
@@ -34,7 +34,7 @@ interface GameCardProps {
     isSelected: boolean;
     isFavorite: boolean;
     onClick: () => void;
-    onStopMining?: () => void;
+    onStopAutomation?: () => void;
     onToggleFavorite?: (gameName: string) => void;
 }
 
@@ -57,7 +57,7 @@ export default function GameCard({
     isSelected,
     isFavorite,
     onClick,
-    onStopMining,
+    onStopAutomation,
     onToggleFavorite
 }: GameCardProps) {
     // Stop only applies when a provider is driving; native watch-to-earn stops
@@ -67,7 +67,7 @@ export default function GameCard({
     const containerRef = useRef<HTMLDivElement>(null);
     const [fontSize, setFontSize] = useState(14); // Start with default size in px
 
-    // Check if this game is currently being mined
+    // Check if this game is currently being collected
     // Use case-insensitive comparison and also check the game's active flag
     const isDropProgressing = dropProgress?.active && (
         game.active ||
@@ -98,7 +98,7 @@ export default function GameCard({
         });
     });
 
-    // Derive the mining drop to display through the shared rule so this card,
+    // Derive the automation drop to display through the shared rule so this card,
     // the title-bar badge, and the detail panel never disagree: the backend
     // picks WHICH drop (current_drop), but the minutes always come from the
     // freshest live progress[] value rather than current_drop's slower-moving
@@ -118,8 +118,8 @@ export default function GameCard({
         };
     })();
 
-    // Mining progress from best drop
-    const miningProgress = isDropProgressing && bestDrop
+    // Automation progress from best drop
+    const collectProgress = isDropProgressing && bestDrop
         ? {
             current: bestDrop.current,
             required: bestDrop.required,
@@ -127,8 +127,8 @@ export default function GameCard({
         : null;
 
     // Get the benefit image/name from best drop
-    const miningDropBenefitImage = bestDrop?.benefitImage;
-    const miningDropBenefitName = bestDrop?.benefitName || dropProgress?.current_drop?.drop_name || 'Drop';
+    const collectDropBenefitImage = bestDrop?.benefitImage;
+    const collectDropBenefitName = bestDrop?.benefitName || dropProgress?.current_drop?.drop_name || 'Drop';
 
     // Transform box art URL to high resolution (1200x1600)
     // GQL API returns URLs with fixed dimensions (e.g., "52x72"), not placeholders
@@ -191,16 +191,16 @@ export default function GameCard({
         });
     });
 
-    // Use mining progress if available, otherwise use calculated progress
-    const progressPercent = miningProgress
-        ? Math.min(100, Math.round((miningProgress.current / miningProgress.required) * 100))
+    // Use automation progress if available, otherwise use calculated progress
+    const progressPercent = collectProgress
+        ? Math.min(100, Math.round((collectProgress.current / collectProgress.required) * 100))
         : totalMinutesRequired > 0
             ? Math.min(100, Math.round((totalMinutesWatched / totalMinutesRequired) * 100))
             : 0;
 
-    // Calculate time remaining for current mining drop
-    const timeRemaining = miningProgress
-        ? Math.max(0, miningProgress.required - miningProgress.current)
+    // Calculate time remaining for current automation drop
+    const timeRemaining = collectProgress
+        ? Math.max(0, collectProgress.required - collectProgress.current)
         : 0;
 
     // Count total active drops and categorize by type
@@ -248,7 +248,7 @@ export default function GameCard({
             onClick={onClick}
             className={`glass-panel cursor-pointer hover:bg-glass-hover transition-all duration-200 group overflow-hidden relative
                 ${isSelected ? 'ring-2 ring-accent' : 'hover:ring-1 hover:ring-accent/40'}
-                ${isDropProgressing ? 'ring-2 ring-accent-neon mining-shimmer-overlay' : ''}
+                ${isDropProgressing ? 'ring-2 ring-accent-neon automation-shimmer-overlay' : ''}
             `}
         >
             {/* Image Container */}
@@ -260,7 +260,7 @@ export default function GameCard({
                     loading="lazy"
                 />
 
-                {/* Top-Left: Status Badges - only READY (removed MINING badge) */}
+                {/* Top-Left: Status Badges - only READY (removed AUTOMATION badge) */}
                 <div className="absolute top-2 left-2 z-10 flex flex-col gap-1.5">
                     {/* Claimable badge */}
                     {claimableCount > 0 && (
@@ -315,31 +315,31 @@ export default function GameCard({
                     </Tooltip>
                 </div>
 
-                {/* Mining State: Show progress info with drop reward */}
+                {/* Automation State: Show progress info with drop reward */}
                 {isDropProgressing ? (
                     <div className="mt-1.5 space-y-1.5">
                         {/* Drop reward info row */}
                         <div className="flex items-center gap-2">
                             {/* Drop reward image */}
-                            {miningDropBenefitImage && (
+                            {collectDropBenefitImage && (
                                 <img
-                                    src={miningDropBenefitImage}
-                                    alt={miningDropBenefitName}
+                                    src={collectDropBenefitImage}
+                                    alt={collectDropBenefitName}
                                     className="w-8 h-8 rounded object-cover border border-accent-neon/60 shrink-0"
                                 />
                             )}
                             <div className="flex-1 min-w-0 space-y-1">
                                 {/* Drop name */}
-                                <Tooltip content={miningDropBenefitName} delay={300} side="top">
+                                <Tooltip content={collectDropBenefitName} delay={300} side="top">
                                     <p className="text-[10px] text-accent-neon truncate w-fit max-w-full">
-                                        {miningDropBenefitName}
+                                        {collectDropBenefitName}
                                     </p>
                                 </Tooltip>
                                 {/* Progress bar with stop button */}
                                 <div className="flex items-center gap-1.5">
                                     <div className="flex-1 h-1.5 bg-black/30 rounded-full overflow-hidden">
                                         <div
-                                            className="h-full mining-progress-bar rounded-full transition-all duration-500"
+                                            className="h-full automation-progress-bar rounded-full transition-all duration-500"
                                             style={{ width: `${progressPercent}%` }}
                                         />
                                     </div>
@@ -349,7 +349,7 @@ export default function GameCard({
                                         <button
                                             onClick={(e) => {
                                                 e.stopPropagation();
-                                                if (onStopMining) onStopMining();
+                                                if (onStopAutomation) onStopAutomation();
                                             }}
                                             className="w-5 h-5 flex items-center justify-center rounded bg-red-500/20 hover:bg-red-500/40 border border-red-500/40 hover:border-red-500/60 transition-all shrink-0"
                                         >
@@ -373,7 +373,7 @@ export default function GameCard({
                         </div>
                     </div>
                 ) : (
-                    /* Normal State: Show campaign/drop info with Mine All button */
+                    /* Normal State: Show campaign/drop info with Collect All button */
                     <div className="flex items-center justify-between mt-0.5">
                         <div className="flex items-center gap-2 text-textSecondary text-xs min-w-0">
                             {/* Campaign count */}
@@ -429,7 +429,7 @@ export default function GameCard({
                             )}
                         </div>
 
-                        {/* Mine All button removed - users can click into game details to start mining specific campaigns */}
+                        {/* Collect All button removed - users can click into game details to start automation specific campaigns */}
                     </div>
                 )}
             </div>

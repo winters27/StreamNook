@@ -42,20 +42,20 @@ pub struct TimeBasedDrop {
     /// Progress data for this drop - NOT renamed to "self" so frontend can access as "progress"
     #[serde(default)]
     pub progress: Option<DropProgress>,
-    /// Whether this drop can be auto-mined (time-based drops with required_minutes > 0)
+    /// Whether this drop can be auto-collected (time-based drops with required_minutes > 0)
     /// Drops with required_minutes_watched == 0 are event-based, badge-based, or require
-    /// special actions (subscriptions, purchases, etc.) and cannot be auto-mined
-    #[serde(default = "default_mineable")]
-    pub is_mineable: bool,
+    /// special actions (subscriptions, purchases, etc.) and cannot be auto-collected
+    #[serde(default = "default_collectible", alias = "is_mineable")]
+    pub is_collectible: bool,
 }
 
-fn default_mineable() -> bool {
+fn default_collectible() -> bool {
     true
 }
 
 impl TimeBasedDrop {
-    /// Calculate if this drop is mineable based on required minutes
-    pub fn calculate_is_mineable(&self) -> bool {
+    /// Calculate if this drop is collectible based on required minutes
+    pub fn calculate_is_collectible(&self) -> bool {
         self.required_minutes_watched > 0
     }
 }
@@ -201,7 +201,7 @@ pub struct ReservedStreamSlot {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct FarmChannel {
+pub struct PriorityChannel {
     pub channel_id: String,
     pub channel_login: String,
     pub display_name: String,
@@ -215,31 +215,39 @@ pub struct DropsSettings {
     pub notify_on_drop_claimed: bool,
     pub notify_on_points_claimed: bool,
     pub check_interval_seconds: u64,
-    // Mining-specific settings
-    pub auto_mining_enabled: bool,
+    // Automation-specific settings
+    #[serde(alias = "auto_mining_enabled")]
+    pub automation_enabled: bool,
     pub priority_games: Vec<String>,
     pub excluded_games: HashSet<String>,
     pub priority_mode: PriorityMode,
     pub watch_interval_seconds: u64,
-    // UI-only settings (not used for mining logic)
+    // UI-only settings (not used for automation logic)
     /// Games the user has favorited for visual tracking - sorts them to top of list
-    /// This is separate from priority_games which affects auto-mining behavior
+    /// This is separate from priority_games which affects automation behavior
     #[serde(default)]
     pub favorite_games: Vec<String>,
     // Watch token allocation settings
     /// When TRUE (default), one watch token is always reserved for the currently-watched stream
     /// This ensures presence in chat for gifted sub eligibility
-    /// Power users can set this FALSE to reclaim the token for more efficient channel points mining
+    /// Power users can set this FALSE to reclaim the token for more efficient channel points collection
     #[serde(default = "default_true")]
     pub reserve_token_for_current_stream: bool,
     /// When TRUE (default), automatically reserves token when user starts watching a stream
     /// When FALSE, user must manually trigger reservation
     #[serde(default = "default_true")]
     pub auto_reserve_on_watch: bool,
-    /// Channels the user wants to prioritize for channel points farming
+    /// Channels the user wants to prioritize for background channel-points collection.
     /// When non-empty, rotation only selects from this list (falls back to all if none are live)
-    #[serde(default)]
-    pub priority_farm_channels: Vec<FarmChannel>,
+    #[serde(default, alias = "priority_farm_channels")]
+    pub priority_channels: Vec<PriorityChannel>,
+    /// When true, background collection ignores `priority_channels` and instead
+    /// rotates through the channels the user has favorited that are currently
+    /// live. The favorites themselves live in `AppSettings.favorite_streamers`;
+    /// the host tags each live channel it hands the plugin with a `favorite`
+    /// flag, so the plugin just filters to those.
+    #[serde(default, alias = "farm_from_favorites")]
+    pub prefer_favorites: bool,
     // Recovery settings
     #[serde(default)]
     pub recovery_settings: RecoverySettings,
@@ -251,7 +259,7 @@ fn default_true() -> bool {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum PriorityMode {
-    PriorityOnly,  // Only mine priority games
+    PriorityOnly,  // Only collect priority games
     EndingSoonest, // Prioritize campaigns ending soon
     LowAvailFirst, // Prioritize low availability campaigns
 }
@@ -265,8 +273,8 @@ impl Default for DropsSettings {
             notify_on_drop_claimed: true,
             notify_on_points_claimed: false,
             check_interval_seconds: 60,
-            // Mining defaults
-            auto_mining_enabled: false,
+            // Automation defaults
+            automation_enabled: false,
             priority_games: Vec::new(),
             excluded_games: HashSet::new(),
             priority_mode: PriorityMode::PriorityOnly,
@@ -276,8 +284,10 @@ impl Default for DropsSettings {
             // Watch token allocation defaults (ON by default - matches Twitch native behavior)
             reserve_token_for_current_stream: true,
             auto_reserve_on_watch: true,
-            // Priority farm channels defaults (empty = rotate all followed)
-            priority_farm_channels: Vec::new(),
+            // Priority channels default (empty = rotate all followed)
+            priority_channels: Vec::new(),
+            // Prefer-favorites off by default (uses the priority list / all followed)
+            prefer_favorites: false,
             // Recovery defaults
             recovery_settings: RecoverySettings::default(),
         }
@@ -288,10 +298,10 @@ impl Default for DropsSettings {
 // RECOVERY SYSTEM MODELS
 // ============================================
 
-/// Settings for automatic mining recovery behavior
+/// Settings for automatic collection recovery behavior
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RecoverySettings {
-    /// How long without progress before considering mining "stale" (in seconds)
+    /// How long without progress before considering collection "stale" (in seconds)
     /// Default: 420 (7 minutes)
     pub stale_progress_threshold_seconds: u64,
     /// How long to blacklist a streamer after issues (in seconds)
@@ -411,12 +421,12 @@ pub struct RecoveryEventDetails {
     pub reason: String,
 }
 
-/// Extended mining status with recovery tracking
+/// Extended automation status with recovery tracking
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MiningStatusExtended {
-    /// Base mining status
+pub struct AutomationStatusExtended {
+    /// Base automation status
     #[serde(flatten)]
-    pub base: MiningStatus,
+    pub base: AutomationStatus,
     /// When progress last increased (for stale detection)
     pub last_progress_increase_at: Option<DateTime<Utc>>,
     /// Last known progress value (for detecting increases)
@@ -427,10 +437,10 @@ pub struct MiningStatusExtended {
     pub recent_recovery_events: Vec<RecoveryEvent>,
 }
 
-impl Default for MiningStatusExtended {
+impl Default for AutomationStatusExtended {
     fn default() -> Self {
         Self {
-            base: MiningStatus::default(),
+            base: AutomationStatus::default(),
             last_progress_increase_at: None,
             last_known_progress_minutes: 0,
             current_streamer_game: None,
@@ -563,9 +573,9 @@ impl RecoveryWatchdogState {
     }
 }
 
-// Channel information for mining
+// Channel information for automation
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MiningChannel {
+pub struct ActiveChannel {
     pub id: String,
     #[serde(rename = "display_name")]
     pub name: String,
@@ -579,14 +589,14 @@ pub struct MiningChannel {
     pub is_acl_based: bool,
 }
 
-// Mining status information
+// Automation status information
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MiningStatus {
-    pub is_mining: bool,
-    pub current_channel: Option<MiningChannel>,
+pub struct AutomationStatus {
+    pub is_running: bool,
+    pub current_channel: Option<ActiveChannel>,
     pub current_campaign: Option<String>,
     pub current_drop: Option<CurrentDropInfo>,
-    pub eligible_channels: Vec<MiningChannel>,
+    pub eligible_channels: Vec<ActiveChannel>,
     pub last_update: DateTime<Utc>,
 }
 
@@ -603,10 +613,10 @@ pub struct CurrentDropInfo {
     pub estimated_completion: Option<DateTime<Utc>>,
 }
 
-impl Default for MiningStatus {
+impl Default for AutomationStatus {
     fn default() -> Self {
         Self {
-            is_mining: false,
+            is_running: false,
             current_channel: None,
             current_campaign: None,
             current_drop: None,

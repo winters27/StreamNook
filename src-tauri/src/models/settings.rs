@@ -363,7 +363,7 @@ impl Default for LiveNotificationSettings {
 }
 
 // Re-export DropsSettings from the drops module to avoid duplication
-// The drops module has the complete struct with mining fields (priority_games, etc.)
+// The drops module has the complete struct with automation fields (priority_games, etc.)
 pub use crate::models::drops::DropsSettings;
 
 #[derive(Serialize, Deserialize, Clone, Default)]

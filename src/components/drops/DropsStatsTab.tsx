@@ -7,14 +7,14 @@ import { useAppStore } from '../../stores/AppStore';
 interface DropsStatsTabProps {
     statistics: DropsStatistics | null;
     dropProgress: DropProgressStatus | null;
-    onStopMining: () => void;
+    onStopAutomation: () => void;
     onStreamClick: (channelName: string) => void;
 }
 
 export default function DropsStatsTab({
     statistics,
     dropProgress,
-    onStopMining,
+    onStopAutomation,
     onStreamClick
 }: DropsStatsTabProps) {
     // Stop only applies when a provider is driving; native watch-to-earn stops
@@ -22,7 +22,7 @@ export default function DropsStatsTab({
     const externalDropsProvider = useAppStore((s) => s.externalDropsProvider);
     // Account-wide channel points (sum across every followed channel), reported
     // by the leaderboard below once it pulls the full balance set. Falls back to
-    // the session/mined figure until that first load lands.
+    // the session/collected figure until that first load lands.
     const [channelPointsTotal, setChannelPointsTotal] = useState<number | null>(null);
     if (!statistics) {
         return (
@@ -31,7 +31,7 @@ export default function DropsStatsTab({
                     <Gift size={48} className="mx-auto text-textSecondary opacity-40 mb-4" />
                     <h3 className="text-lg font-bold text-textPrimary mb-2">No Statistics Yet</h3>
                     <p className="text-sm text-textSecondary">
-                        Start mining drops to see your statistics here.
+                        Start collecting drops to see your statistics here.
                     </p>
                 </div>
             </div>
@@ -69,7 +69,7 @@ export default function DropsStatsTab({
                     />
                 </div>
 
-                {/* Active Mining Status Card */}
+                {/* Active Automation Status Card */}
                 {dropProgress?.active && dropProgress.current_channel && (
                     <div className="glass-panel p-6 border border-green-500/30 bg-green-500/5 relative overflow-hidden group">
                         {/* Background decoration */}
@@ -82,7 +82,7 @@ export default function DropsStatsTab({
                                 <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
                                 <span className="relative inline-flex rounded-full h-3 w-3 bg-green-500"></span>
                             </span>
-                            Currently Mining
+                            Currently Collecting
                         </h4>
 
                         <div className="space-y-3 text-sm relative z-10">
@@ -142,7 +142,7 @@ export default function DropsStatsTab({
                         {externalDropsProvider && (
                         <div className="mt-4 flex justify-end">
                             <button
-                                onClick={onStopMining}
+                                onClick={onStopAutomation}
                                 className="glass-button px-4 py-2 text-xs font-semibold text-red-300 flex items-center gap-2"
                             >
                                 <Pause size={14} />
@@ -153,7 +153,7 @@ export default function DropsStatsTab({
                     </div>
                 )}
 
-                {/* Not Mining State */}
+                {/* Idle State */}
                 {!dropProgress?.active && (
                     <div className="glass-panel p-6 border border-dashed border-borderLight text-center">
                         <Pickaxe size={32} className="mx-auto text-textSecondary opacity-40 mb-3" />

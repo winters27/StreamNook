@@ -8,13 +8,13 @@ import { DROPS_CARD_ACTION_SLOT, type DropCardActionContext, type PickedDropChan
 import ChannelPickerModal, { type PickableChannel } from './ChannelPickerModal';
 
 import { Logger } from '../../utils/logger';
-// Helper to check if a drop is mineable
-// Uses the is_mineable field from backend, with fallback to checking required_minutes_watched
+// Helper to check if a drop is collectible
+// Uses the is_collectible field from backend, with fallback to checking required_minutes_watched
 // Also checks inventory data as a secondary source since it has more accurate progress info
-function isDropMineable(drop: TimeBasedDrop, inventoryItems?: InventoryItem[]): boolean {
-    // If is_mineable is explicitly set, use it
-    if (typeof drop.is_mineable === 'boolean') {
-        return drop.is_mineable;
+function isDropCollectible(drop: TimeBasedDrop, inventoryItems?: InventoryItem[]): boolean {
+    // If is_collectible is explicitly set, use it
+    if (typeof drop.is_collectible === 'boolean') {
+        return drop.is_collectible;
     }
     
     // Check if required_minutes_watched is set and > 0
@@ -28,9 +28,9 @@ function isDropMineable(drop: TimeBasedDrop, inventoryItems?: InventoryItem[]): 
         for (const item of inventoryItems) {
             const inventoryDrop = item.campaign.time_based_drops.find(d => d.id === drop.id);
             if (inventoryDrop) {
-                // Check inventory drop's is_mineable
-                if (typeof inventoryDrop.is_mineable === 'boolean') {
-                    return inventoryDrop.is_mineable;
+                // Check inventory drop's is_collectible
+                if (typeof inventoryDrop.is_collectible === 'boolean') {
+                    return inventoryDrop.is_collectible;
                 }
                 // Check inventory drop's required_minutes_watched
                 if (inventoryDrop.required_minutes_watched > 0) {
@@ -49,18 +49,18 @@ function isDropMineable(drop: TimeBasedDrop, inventoryItems?: InventoryItem[]): 
         return true;
     }
     
-    // Default: not mineable if we can't determine watch time requirement
+    // Default: not collectible if we can't determine watch time requirement
     return false;
 }
 
-// Helper to check if a campaign is mineable
-// A campaign is mineable if it has at least one mineable time_based_drop
-function isCampaignMineable(campaign: DropCampaign, inventoryItems?: InventoryItem[]): boolean {
+// Helper to check if a campaign is collectible
+// A campaign is collectible if it has at least one collectible time_based_drop
+function isCampaignCollectible(campaign: DropCampaign, inventoryItems?: InventoryItem[]): boolean {
     if (!campaign.time_based_drops || campaign.time_based_drops.length === 0) {
         return false;
     }
-    // Campaign is mineable if ANY of its drops are mineable
-    return campaign.time_based_drops.some(drop => isDropMineable(drop, inventoryItems));
+    // Campaign is collectible if ANY of its drops are collectible
+    return campaign.time_based_drops.some(drop => isDropCollectible(drop, inventoryItems));
 }
 
 // Get the drop type label for a campaign
@@ -69,12 +69,12 @@ function getCampaignDropType(campaign: DropCampaign, inventoryItems?: InventoryI
         return { type: 'other', label: 'Event/Special' };
     }
     
-    const mineableCount = campaign.time_based_drops.filter(d => isDropMineable(d, inventoryItems)).length;
-    const nonMineableCount = campaign.time_based_drops.length - mineableCount;
+    const collectibleCount = campaign.time_based_drops.filter(d => isDropCollectible(d, inventoryItems)).length;
+    const nonCollectibleCount = campaign.time_based_drops.length - collectibleCount;
     
-    if (mineableCount > 0 && nonMineableCount > 0) {
+    if (collectibleCount > 0 && nonCollectibleCount > 0) {
         return { type: 'mixed', label: 'Mixed' };
-    } else if (mineableCount > 0) {
+    } else if (collectibleCount > 0) {
         return { type: 'time', label: 'Watch Time' };
     } else {
         return { type: 'instant', label: 'Event/Special' };
@@ -169,7 +169,7 @@ interface GameDetailPanelProps {
 
     isOpen: boolean;
     onClose: () => void;
-    onStopMining: () => void;
+    onStopAutomation: () => void;
     onClaimDrop: (dropId: string, dropInstanceId?: string) => void;
     onWatchChannel: (channelLogin: string, streamInfo?: TwitchStream) => void; // open a channel in the player to watch (native earn)
 }
@@ -208,7 +208,7 @@ export function mergeProgressFromInventory(
                 progress: inventoryDrop.progress,
                 // Also copy over required_minutes_watched from inventory if our drop has 0
                 required_minutes_watched: drop.required_minutes_watched || inventoryDrop.required_minutes_watched,
-                is_mineable: drop.is_mineable ?? (inventoryDrop.required_minutes_watched > 0),
+                is_collectible: drop.is_collectible ?? (inventoryDrop.required_minutes_watched > 0),
             };
         }
         
@@ -233,7 +233,7 @@ export default function GameDetailPanel({
 
     isOpen,
     onClose,
-    onStopMining,
+    onStopAutomation,
     onClaimDrop,
     onWatchChannel,
 }: GameDetailPanelProps) {
@@ -241,8 +241,8 @@ export default function GameDetailPanel({
     // "stop". Native watch-to-earn is stopped simply by not watching.
     const externalDropsProvider = useAppStore((s) => s.externalDropsProvider);
 
-    // Channel picker shared by core and the farming plugin. Core picks a channel to
-    // WATCH; the plugin (via pickChannel) picks one to mine. A pending resolver lets
+    // Channel picker shared by core and the automation plugin. Core picks a channel to
+    // WATCH; the plugin (via pickChannel) picks one to collect. A pending resolver lets
     // the plugin's pickChannel() await the user's choice.
     const [picker, setPicker] = useState<{ campaign: DropCampaign; actionLabel: string; onPick: (c: PickableChannel) => void } | null>(null);
     const pickResolverRef = useRef<((c: PickedDropChannel | null) => void) | null>(null);
@@ -260,7 +260,7 @@ export default function GameDetailPanel({
             pickResolverRef.current = resolve;
             setPicker({
                 campaign,
-                actionLabel: 'Mine',
+                actionLabel: 'Collect',
                 onPick: (c) => {
                     setPicker(null);
                     const r = pickResolverRef.current; pickResolverRef.current = null;
@@ -303,7 +303,7 @@ export default function GameDetailPanel({
             }
         });
     });
-    // A reward counts as already-owned ONLY when this drop isn't being actively mined
+    // A reward counts as already-owned ONLY when this drop isn't being actively collected
     // here. If it has its own claim, that wins. Otherwise cross-instance matching (by
     // drop id / benefit id / benefit name / earned badge title) applies ONLY when the
     // drop has no current progress: a drop you have watch-time on is a fresh in-progress
@@ -325,7 +325,7 @@ export default function GameDetailPanel({
         // reading 0 while the badge sits claimed in the collection.
         return matchesEarnedBadge(drop.benefit_edges?.[0]?.name, earnedBadgeTitles);
     };
-    // Check if mining this game
+    // Check if automation this game
     // Use current_drop.game_name OR current_channel.game_name as fallback (current_drop may not be set immediately)
     const isProgressingThisGame = dropProgress?.active && (
         dropProgress.current_drop?.game_name?.toLowerCase() === game.name?.toLowerCase() ||
@@ -357,34 +357,34 @@ export default function GameDetailPanel({
 
     const boxArtUrl = getHighResBoxArt(game.box_art_url);
 
-    // Calculate mining progress for this game
-    let miningProgress = 0;
-    let miningDropName = '';
+    // Calculate automation progress for this game
+    let collectProgress = 0;
+    let collectDropName = '';
 
-    let miningDropImage = '';
-    let miningBenefitName = '';
-    let miningCurrentMins = 0;
-    let miningRequiredMins = 0;
+    let collectDropImage = '';
+    let collectBenefitName = '';
+    let collectCurrentMins = 0;
+    let collectRequiredMins = 0;
 
     if (isProgressingThisGame && dropProgress?.current_drop) {
         const { drop_id, drop_name } = dropProgress.current_drop;
         const liveProgress = progress.find(p => p.drop_id === drop_id);
 
-        miningCurrentMins = liveProgress ? liveProgress.current_minutes_watched : (dropProgress.current_drop.current_minutes ?? 0);
-        miningRequiredMins = liveProgress ? liveProgress.required_minutes_watched : (dropProgress.current_drop.required_minutes ?? 1);
+        collectCurrentMins = liveProgress ? liveProgress.current_minutes_watched : (dropProgress.current_drop.current_minutes ?? 0);
+        collectRequiredMins = liveProgress ? liveProgress.required_minutes_watched : (dropProgress.current_drop.required_minutes ?? 1);
 
-        miningProgress = miningRequiredMins > 0 ? (miningCurrentMins / miningRequiredMins) * 100 : 0;
-        miningDropName = drop_name || '';
+        collectProgress = collectRequiredMins > 0 ? (collectCurrentMins / collectRequiredMins) * 100 : 0;
+        collectDropName = drop_name || '';
 
 
         // Find the actual drop object to get its benefit image
-        const miningDrop = game.active_campaigns
+        const collectDrop = game.active_campaigns
             .flatMap(c => c.time_based_drops)
             .find(d => d.id === drop_id);
 
-        if (miningDrop?.benefit_edges?.[0]) {
-            miningDropImage = miningDrop.benefit_edges[0].image_url || '';
-            miningBenefitName = miningDrop.benefit_edges[0].name || miningDropName;
+        if (collectDrop?.benefit_edges?.[0]) {
+            collectDropImage = collectDrop.benefit_edges[0].image_url || '';
+            collectBenefitName = collectDrop.benefit_edges[0].name || collectDropName;
         }
     }
 
@@ -471,7 +471,7 @@ export default function GameDetailPanel({
                                 const isClaimed = isRewardOwned(drop, dp);
                                 const current = isClaimed ? required : (dp?.current_minutes_watched || 0);
                                 const percent = required > 0 ? Math.min((current / required) * 100, 100) : 0;
-                                const isMineable = isDropMineable(drop, game.inventory_items);
+                                const isCollectible = isDropCollectible(drop, game.inventory_items);
                                 return {
                                     dropId: drop.id,
                                     image: benefit?.image_url || '',
@@ -481,12 +481,12 @@ export default function GameDetailPanel({
                                     isClaimed,
                                     isReady: !isClaimed && percent >= 100,
                                     isInProgress: !isClaimed && percent > 0 && percent < 100,
-                                    isMineable,
+                                    isCollectible,
                                     kind: getRewardKind(benefit, knownBadgeTitles),
                                     // Only locked, unearned rewards need a "how to unlock" hint.
                                     // The reward name is the strongest signal (e.g. "Gifted Sub Drop"),
                                     // with the campaign description as the fallback source.
-                                    requirement: !isMineable && !isClaimed ? unlockRequirementText(benefit?.name || drop.name, campaignDescription) : null,
+                                    requirement: !isCollectible && !isClaimed ? unlockRequirementText(benefit?.name || drop.name, campaignDescription) : null,
                                 };
                             })
                             .sort((a, b) => {
@@ -556,7 +556,7 @@ export default function GameDetailPanel({
                                                         </div>
                                                     )}
 
-                                                    {!r.isMineable && !r.isClaimed && (
+                                                    {!r.isCollectible && !r.isClaimed && (
                                                         <div className="absolute top-1 left-1 text-yellow-500">
                                                             <Ban size={11} />
                                                         </div>
@@ -583,9 +583,9 @@ export default function GameDetailPanel({
                         );
                     })()}
 
-                    {/* Currently Mining Section - Shows ONLY drops from the specific campaign being mined */}
+                    {/* Currently Automation Section - Shows ONLY drops from the specific campaign being collected */}
                     {(() => {
-                        // Get the current campaign being mined (from dropProgress)
+                        // Get the current campaign being collected (from dropProgress)
                         const currentCampaignName = dropProgress?.current_campaign;
                         
                         // Get ALL drops from this game's campaigns
@@ -615,7 +615,7 @@ export default function GameDetailPanel({
                         });
 
                         // Build a GLOBAL drop map from ALL games' campaigns and inventory
-                        // This allows us to find metadata for drops we're mining that aren't in the current game's data
+                        // This allows us to find metadata for drops we're automation that aren't in the current game's data
                         const globalDropMap = new Map<string, { drop: typeof allDropsForGame[0]; gameName: string; campaignName: string }>();
                         allGames.forEach(g => {
                             // From active campaigns
@@ -636,15 +636,15 @@ export default function GameDetailPanel({
 
                         // DEBUG: Log all IDs for comparison
                         Logger.debug('[GameDetailPanel] Game:', game.name);
-                        Logger.debug('[GameDetailPanel] Current campaign being mined:', currentCampaignName);
+                        Logger.debug('[GameDetailPanel] Current campaign being collected:', currentCampaignName);
                         Logger.debug('[GameDetailPanel] Drops from this game:', localDropMap.size);
                         Logger.debug('[GameDetailPanel] Global drops available:', globalDropMap.size);
                         Logger.debug('[GameDetailPanel] All progress entries:', progress.length);
                         Logger.debug('[GameDetailPanel] Progress drop_ids:', progress.map(p => p.drop_id));
 
-                        // Filter progress entries that are actively being mined:
+                        // Filter progress entries that are actively being collected:
                         // - Has some progress (current_minutes > 0)
-                        // - NOT yet 100% complete (still mining)
+                        // - NOT yet 100% complete (still automation)
                         // - NOT claimed
                         // Drops at 100% go to "Your Collection" section instead
                         const _totalMinutesWatched = progress.filter(p =>
@@ -653,7 +653,7 @@ export default function GameDetailPanel({
                             p.current_minutes_watched < p.required_minutes_watched // Not yet 100%
                         );
 
-                        // ONLY show progress for drops that belong to the SPECIFIC CAMPAIGN being mined
+                        // ONLY show progress for drops that belong to the SPECIFIC CAMPAIGN being collected
                         // This prevents showing drops from other campaigns in the same game
                         const progressForThisGame = _totalMinutesWatched.filter(p => {
                             // First check if this drop belongs to this game
@@ -663,11 +663,11 @@ export default function GameDetailPanel({
                             const belongsToThisGame = localLookup || (globalLookup && globalLookup.gameName === game.name);
                             if (!belongsToThisGame) return false;
                             
-                            // If we know what campaign is being mined, filter to ONLY that campaign's drops
+                            // If we know what campaign is being collected, filter to ONLY that campaign's drops
                             if (currentCampaignName) {
                                 const dropCampaignName = localLookup?.campaignName || globalLookup?.campaignName;
                                 if (dropCampaignName && dropCampaignName !== currentCampaignName) {
-                                    Logger.debug(`[GameDetailPanel] Filtering out drop ${p.drop_id} - belongs to "${dropCampaignName}", mining "${currentCampaignName}"`);
+                                    Logger.debug(`[GameDetailPanel] Filtering out drop ${p.drop_id} - belongs to "${dropCampaignName}", automation "${currentCampaignName}"`);
                                     return false;
                                 }
                             }
@@ -728,8 +728,8 @@ export default function GameDetailPanel({
 
                         Logger.debug('[GameDetailPanel] Final drops with progress:', dropsWithProgress.length, 'matched:', dropsWithProgress.filter(d => d.hasDropObject).length);
 
-                        // Only show "Currently Mining" section if we are actually mining THIS specific game
-                        // This prevents showing the mining UI when viewing a different game's panel
+                        // Only show "Currently Automation" section if we are actually automation THIS specific game
+                        // This prevents showing the automation UI when viewing a different game's panel
                         if (!isProgressingThisGame) return null;
 
                         // Don't show section if no drops with progress for this game
@@ -754,7 +754,7 @@ export default function GameDetailPanel({
                                         watch-to-earn is stopped by not watching. */}
                                     {externalDropsProvider && (
                                         <button
-                                            onClick={onStopMining}
+                                            onClick={onStopAutomation}
                                             className="glass-button px-2.5 py-1.5 text-xs font-medium text-red-400 flex items-center gap-1.5"
                                         >
                                             <Pause size={12} />
@@ -818,25 +818,25 @@ export default function GameDetailPanel({
                                         })}
                                     </div>
                                 ) : (
-                                    // Fallback when mining but no WebSocket progress yet
+                                    // Fallback when automation but no WebSocket progress yet
                                     <div className="flex items-center gap-3 p-2 bg-background/50 rounded-lg border border-green-500/20">
-                                        {miningDropImage && (
+                                        {collectDropImage && (
                                             <img
-                                                src={miningDropImage}
-                                                alt={miningBenefitName}
+                                                src={collectDropImage}
+                                                alt={collectBenefitName}
                                                 className="w-12 h-12 rounded-lg object-contain border border-green-500/40 bg-background shrink-0"
                                             />
                                         )}
                                         <div className="flex-1 min-w-0">
-                                            <Tooltip content={miningBenefitName || miningDropName} delay={300} side="top">
+                                            <Tooltip content={collectBenefitName || collectDropName} delay={300} side="top">
                                                 <span className="text-sm font-medium text-textPrimary truncate block">
-                                                    {miningBenefitName || miningDropName || 'Starting...'}
+                                                    {collectBenefitName || collectDropName || 'Starting...'}
                                                 </span>
                                             </Tooltip>
                                             <div className="h-2 w-full bg-background rounded-full mt-1.5 overflow-hidden">
                                                 <div
                                                     className="h-full rounded-full animate-progress-shimmer"
-                                                    style={{ width: `${Math.min(miningProgress, 100)}%` }}
+                                                    style={{ width: `${Math.min(collectProgress, 100)}%` }}
                                                 />
                                             </div>
                                             <p className="text-xs text-green-400 font-mono mt-1">
@@ -943,7 +943,7 @@ export default function GameDetailPanel({
                         // - Is NOT claimed (priority check - works for ALL drop types including badges)
                         // - Is NOT completed via benefit ID (works for time-based DIRECT_ENTITLEMENT drops)
                         // - Is NOT 100% complete (or has no progress data yet)
-                        // - Has required_minutes > 0 (is a time-based mineable drop)
+                        // - Has required_minutes > 0 (is a time-based collectible drop)
                         const incompleteCampaigns = mergedCampaigns.filter(campaign => {
                             // DEBUG: Track how many drops are checked vs how many are incomplete
                             const totalDrops = campaign.time_based_drops.length;
@@ -982,7 +982,7 @@ export default function GameDetailPanel({
                                     return false; // This drop is complete
                                 }
                                 
-                                // DEBUG: Log badge drops specifically (non-mineable drops)
+                                // DEBUG: Log badge drops specifically (non-collectible drops)
                                 if ((drop.required_minutes_watched || 0) <= 0) {
                                     Logger.debug(`[Active Campaigns] Badge drop "${drop.name}": is_claimed=${dropProgress?.is_claimed}, has_progress=${!!dropProgress}, progress=`, dropProgress);
                                 }
@@ -995,7 +995,7 @@ export default function GameDetailPanel({
                                 }
                                 
                                 
-                                // Check if drop has required minutes (is mineable)
+                                // Check if drop has required minutes (is collectible)
                                 const requiredMins = dropProgress?.required_minutes_watched || drop.required_minutes_watched || 0;
                                 if (requiredMins <= 0) return false; // Not a time-based drop, check others
                                 
@@ -1131,7 +1131,7 @@ export default function GameDetailPanel({
                             benefitImage: string;
                             benefitName: string;
                             isClaimed: boolean;
-                            isMineable: boolean; // Track if this drop can be mined (time-based)
+                            isCollectible: boolean; // Track if this drop can be collected (time-based)
                         }> = [];
 
                         // Track which drops we've added to avoid duplicates
@@ -1183,7 +1183,7 @@ export default function GameDetailPanel({
                                             benefitImage: drop.benefit_edges?.[0]?.image_url || '',
                                             benefitName: drop.benefit_edges?.[0]?.name || drop.name,
                                             isClaimed: isClaimed || isClaimedByIndex,
-                                            isMineable: isDropMineable(drop, game.inventory_items),
+                                            isCollectible: isDropCollectible(drop, game.inventory_items),
                                         });
                                         Logger.debug('  ✓ Added to collection, drop_instance_id:', dropProgress?.drop_instance_id);
                                     }
@@ -1234,7 +1234,7 @@ export default function GameDetailPanel({
                                                 benefitImage: drop.benefit_edges?.[0]?.image_url || '',
                                                 benefitName: drop.benefit_edges?.[0]?.name || drop.name,
                                                 isClaimed,
-                                                isMineable: isDropMineable(drop, game.inventory_items),
+                                                isCollectible: isDropCollectible(drop, game.inventory_items),
                                             });
 
                                         }
@@ -1281,7 +1281,7 @@ export default function GameDetailPanel({
                                         benefitImage: drop.benefit_edges?.[0]?.image_url || '',
                                         benefitName: drop.benefit_edges?.[0]?.name || drop.name,
                                         isClaimed: true, // Treat benefit-matched drops as claimed
-                                        isMineable: false, // No progress data means not currently mineable
+                                        isCollectible: false, // No progress data means not currently collectible
                                     });
 
                                 }
@@ -1298,7 +1298,7 @@ export default function GameDetailPanel({
                             // Some claimed drops don't always keep an intuitive minutes state, so
                             // we treat `is_claimed` as authoritative for "completed".
                             const isComplete = p.current_minutes_watched >= p.required_minutes_watched &&
-                                p.required_minutes_watched > 0; // Only if mineable (has required watch time)
+                                p.required_minutes_watched > 0; // Only if collectible (has required watch time)
                             if (isComplete || p.is_claimed) {
                                 const dropInfo = dropInfoMap.get(p.drop_id);
                                 if (dropInfo) {
@@ -1308,7 +1308,7 @@ export default function GameDetailPanel({
                                         benefitImage: dropInfo.benefitImage,
                                         benefitName: dropInfo.benefitName,
                                         isClaimed: p.is_claimed,
-                                        isMineable: p.required_minutes_watched > 0, // Mineable if has required watch time
+                                        isCollectible: p.required_minutes_watched > 0, // Collectible if has required watch time
                                     });
                                 }
                             }
@@ -1485,13 +1485,13 @@ function CampaignCard({
         return progress.find(p => p.drop_id === dropId) || embedded || null;
     };
     
-    // Check if we're mining this campaign AND there are still drops being actively mined (< 100%)
-    // Don't show "Mining" badge once all drops are 100% complete (ready to claim)
-    const hasActivelyMiningDrops = campaign.time_based_drops.some(drop => {
+    // Check if we're automation this campaign AND there are still drops being actively collected (< 100%)
+    // Don't show "Automation" badge once all drops are 100% complete (ready to claim)
+    const hasActivelyCollectingDrops = campaign.time_based_drops.some(drop => {
         const dropProgress = resolveDropProgress(drop.id, drop.progress);
         if (!dropProgress) return false;
         
-        // A drop is "actively mining" if it has progress but is not yet 100%
+        // A drop is "actively automation" if it has progress but is not yet 100%
         const required = dropProgress.required_minutes_watched || drop.required_minutes_watched || 0;
         const current = dropProgress.current_minutes_watched || 0;
         
@@ -1500,11 +1500,11 @@ function CampaignCard({
     
     const isProgressingThisCampaign = dropProgress?.current_campaign === campaign.name && 
         dropProgress?.active && 
-        hasActivelyMiningDrops; // Only show "Mining" if there are drops still being mined
+        hasActivelyCollectingDrops; // Only show "Automation" if there are drops still being collected
     
-    // Check if this campaign is mineable (has time-based drops with watch time requirements)
+    // Check if this campaign is collectible (has time-based drops with watch time requirements)
     // Pass inventory items to check them as a fallback source for required_minutes_watched
-    const isMineable = isCampaignMineable(campaign, inventoryItems);
+    const isCollectible = isCampaignCollectible(campaign, inventoryItems);
     const dropType = getCampaignDropType(campaign, inventoryItems);
 
     // Get all drop rewards with their images - directly from drops
@@ -1536,7 +1536,7 @@ function CampaignCard({
             isClaimed: dropProgress?.is_claimed || false, // Only trust actual claim status, not benefit ID matching
             progressPercent, // Show actual progress, not forced 100%
             isInProgress: progressPercent > 0 && progressPercent < 100 && !dropProgress?.is_claimed,
-            isMineable: isDropMineable(drop, inventoryItems), // Track if drop is mineable - check inventory as fallback
+            isCollectible: isDropCollectible(drop, inventoryItems), // Track if drop is collectible - check inventory as fallback
             isGloballyCompleted, // Track if this drop was earned from a previous/expired campaign
         };
     });
@@ -1580,7 +1580,7 @@ function CampaignCard({
                     it. A provider (opt-in plugin) can hang its own control in the
                     drops.card-action slot to take this over (e.g. earn without
                     watching), in which case we render that instead. */}
-                {!isProgressingThisCampaign && isMineable && (
+                {!isProgressingThisCampaign && isCollectible && (
                     cardActions.length > 0
                         ? cardActions.map((c) => {
                             const Control = c.Component as React.ComponentType<DropCardActionContext>;
@@ -1590,7 +1590,7 @@ function CampaignCard({
                                     campaignId={campaign.id}
                                     campaignName={campaign.name}
                                     gameName={campaign.game_name}
-                                    earnable={isMineable}
+                                    earnable={isCollectible}
                                     progressing={false}
                                     isAclBased={campaign.is_acl_based}
                                     allowedChannels={campaign.allowed_channels}

@@ -4,12 +4,12 @@ import type { InventoryItem, DropProgress, CampaignStatus, CompletedDrop, TimeBa
 import { Tooltip } from '../ui/Tooltip';
 import { Dropdown } from '../ui/Dropdown';
 
-// Helper to check if a drop is mineable (time-based with watch requirement)
+// Helper to check if a drop is collectible (time-based with watch requirement)
 // Drops with required_minutes_watched = 0 are event-based, gift-based, or sub-based
-function isDropMineable(drop: TimeBasedDrop): boolean {
-    // If is_mineable is explicitly set, use it
-    if (typeof drop.is_mineable === 'boolean') {
-        return drop.is_mineable;
+function isDropCollectible(drop: TimeBasedDrop): boolean {
+    // If is_collectible is explicitly set, use it
+    if (typeof drop.is_collectible === 'boolean') {
+        return drop.is_collectible;
     }
     
     // Check if required_minutes_watched is set and > 0
@@ -22,7 +22,7 @@ function isDropMineable(drop: TimeBasedDrop): boolean {
         return true;
     }
     
-    // Default: not mineable if we can't determine watch time requirement
+    // Default: not collectible if we can't determine watch time requirement
     return false;
 }
 
@@ -91,10 +91,10 @@ export default function DropsInventoryTab({
             item.campaign.time_based_drops.forEach(drop => {
                 const dropProgress = drop.progress || progress.find(p => p.drop_id === drop.id);
                 
-                // Only count mineable (time-based) drops for claimable/in-progress stats
-                const mineable = isDropMineable(drop);
+                // Only count collectible (time-based) drops for claimable/in-progress stats
+                const collectible = isDropCollectible(drop);
                 
-                if (dropProgress && mineable) {
+                if (dropProgress && collectible) {
                     const requiredMins = dropProgress.required_minutes_watched || drop.required_minutes_watched;
                     const isComplete = requiredMins > 0 && dropProgress.current_minutes_watched >= requiredMins;
                     if (isComplete && !dropProgress.is_claimed) {
@@ -154,15 +154,15 @@ export default function DropsInventoryTab({
         });
     };
 
-    // Get all claimable drops for a game group (only mineable drops)
+    // Get all claimable drops for a game group (only collectible drops)
     const getClaimableDropsForGame = useCallback((group: typeof gameGroups[0]) => {
         const claimableDrops: { dropId: string; dropInstanceId?: string }[] = [];
 
         group.items.forEach(item => {
             item.campaign.time_based_drops.forEach(drop => {
-                // Only include mineable (time-based) drops
-                const mineable = isDropMineable(drop);
-                if (!mineable) return;
+                // Only include collectible (time-based) drops
+                const collectible = isDropCollectible(drop);
+                if (!collectible) return;
                 
                 const dropProgress = drop.progress || progress.find(p => p.drop_id === drop.id);
                 if (dropProgress) {
@@ -589,16 +589,16 @@ function CampaignSection({ item, progress, onClaimDrop, getStatusBadge }: Campai
                     const currentMinutes = dropProgress?.current_minutes_watched || 0;
                     const requiredMinutes = dropProgress?.required_minutes_watched || drop.required_minutes_watched;
                     
-                    // Check if this drop is mineable (time-based with watch requirement)
-                    const mineable = isDropMineable(drop);
+                    // Check if this drop is collectible (time-based with watch requirement)
+                    const collectible = isDropCollectible(drop);
                     
                     // For time-based drops: complete when watched >= required
                     // For non-time-based drops: never consider them "complete" via watching
-                    const isComplete = mineable && requiredMinutes > 0 && currentMinutes >= requiredMinutes;
+                    const isComplete = collectible && requiredMinutes > 0 && currentMinutes >= requiredMinutes;
                     const isClaimed = dropProgress?.is_claimed || false;
                     
-                    // Only claimable if: mineable, complete, and not already claimed
-                    const isClaimable = isComplete && !isClaimed && mineable;
+                    // Only claimable if: collectible, complete, and not already claimed
+                    const isClaimable = isComplete && !isClaimed && collectible;
                     const progressPercent = requiredMinutes > 0 ? (currentMinutes / requiredMinutes) * 100 : 0;
 
                     const benefit = drop.benefit_edges[0];
@@ -610,7 +610,7 @@ function CampaignSection({ item, progress, onClaimDrop, getStatusBadge }: Campai
                                 ? 'bg-green-500/10 border border-green-500/20'
                                 : isClaimable
                                     ? 'bg-yellow-500/10 border border-yellow-500/30'
-                                    : !mineable
+                                    : !collectible
                                         ? 'bg-purple-500/5 border border-purple-500/20'
                                         : 'bg-background/50 border border-borderLight'
                                 }`}
@@ -639,8 +639,8 @@ function CampaignSection({ item, progress, onClaimDrop, getStatusBadge }: Campai
                                         <span className="text-[8px] font-bold text-black">!</span>
                                     </div>
                                 )}
-                                {/* Special indicator for non-mineable drops */}
-                                {!mineable && !isClaimed && (
+                                {/* Special indicator for non-collectible drops */}
+                                {!collectible && !isClaimed && (
                                     <div className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-purple-500 flex items-center justify-center shadow-lg">
                                         <Star size={8} className="text-white" />
                                     </div>
@@ -659,8 +659,8 @@ function CampaignSection({ item, progress, onClaimDrop, getStatusBadge }: Campai
                                         <span className="text-[10px] text-green-400 font-medium">Claimed</span>
                                     ) : isClaimable ? (
                                         <span className="text-[10px] text-yellow-400 font-semibold animate-pulse">Ready to claim!</span>
-                                    ) : !mineable ? (
-                                        // Non-mineable drop: show what's required
+                                    ) : !collectible ? (
+                                        // Non-collectible drop: show what's required
                                         <span className="text-[10px] text-purple-400 font-medium flex items-center gap-1">
                                             <Ban size={10} />
                                             Requires gift/sub or special action
@@ -682,7 +682,7 @@ function CampaignSection({ item, progress, onClaimDrop, getStatusBadge }: Campai
                                 </div>
                             </div>
 
-                            {/* Claim Button - only for mineable drops that are complete */}
+                            {/* Claim Button - only for collectible drops that are complete */}
                             {isClaimable && (
                                 <button
                                     onClick={(e) => {
@@ -695,8 +695,8 @@ function CampaignSection({ item, progress, onClaimDrop, getStatusBadge }: Campai
                                 </button>
                             )}
 
-                            {/* Event/Special Badge for non-mineable drops */}
-                            {!mineable && !isClaimed && (
+                            {/* Event/Special Badge for non-collectible drops */}
+                            {!collectible && !isClaimed && (
                                 <span className="px-2 py-1 text-[9px] font-semibold rounded bg-purple-500/20 text-purple-400 border border-purple-500/30 shrink-0 whitespace-nowrap">
                                     Event Only
                                 </span>

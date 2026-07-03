@@ -12,10 +12,10 @@ pub struct ResumeSnapshot {
     /// 'live' | 'clip' | 'video' | etc. Only live streams are restored today.
     pub media_type: Option<String>,
     pub original_media_url: Option<String>,
-    /// Whether the opt-in drops/points miner was running.
-    pub was_mining: bool,
-    /// Campaign being mined, if a specific one (vs auto-mine).
-    pub mining_campaign_id: Option<String>,
+    /// Whether the opt-in drops/points automation was running.
+    pub was_running: bool,
+    /// Campaign being collected, if a specific one (vs auto-collect).
+    pub automation_campaign_id: Option<String>,
 }
 
 fn resume_snapshot_path() -> Result<std::path::PathBuf, String> {

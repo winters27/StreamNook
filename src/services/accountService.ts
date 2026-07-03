@@ -3,7 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 /**
  * Multi-account registry (frontend wrapper). Mirrors the Rust `StoredAccount`
  * in `services/account_store.rs`. The primary is the account you watch / stream
- * as; secondaries are "action" accounts (chat send, and later mining / mod).
+ * as; secondaries are "action" accounts (chat send, and later automation / mod).
  */
 export interface StoredAccount {
   user_id: string;

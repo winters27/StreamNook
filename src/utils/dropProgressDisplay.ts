@@ -1,6 +1,6 @@
 import type { DropProgressStatus, DropProgress } from '../types';
 
-export interface MiningDisplay {
+export interface AutomationDisplay {
   dropId: string;
   currentMinutes: number;
   requiredMinutes: number;
@@ -12,9 +12,9 @@ export interface MiningDisplay {
 }
 
 /**
- * Single source of truth for "what drop is being mined, and how far along."
+ * Single source of truth for "what drop is being collected, and how far along."
  *
- * The drops UI shows mining progress in three places that must never disagree:
+ * The drops UI shows automation progress in three places that must never disagree:
  * the title-bar badge, the overlay game cards, and the game detail panel. Each
  * used to derive the number its own way, so they drifted apart — most visibly,
  * the detail panel (which reads the live progress[] array) stayed current while
@@ -24,7 +24,7 @@ export interface MiningDisplay {
  * Rule:
  *  - WHICH drop is shown is the backend's call, delivered via
  *    dropProgress.current_drop (the reward finishing first). We only derive the
- *    drop ourselves when current_drop is missing or points at a non-mineable
+ *    drop ourselves when current_drop is missing or points at a non-collectible
  *    (0-minute) reward.
  *  - HOW FAR along always prefers the freshest per-drop value from the live
  *    progress[] stream. progress[] is updated by every 'drops-progress-update'
@@ -32,12 +32,12 @@ export interface MiningDisplay {
  *    inventory is fetched, whereas current_drop's own minutes only move on the
  *    slower backend poll — so progress[] is the value to trust when present.
  *
- * Returns null when nothing is being mined (or no progress is known yet).
+ * Returns null when nothing is being collected (or no progress is known yet).
  */
 export function deriveDropProgressDisplay(
   dropProgress: DropProgressStatus | null,
   progress: DropProgress[],
-): MiningDisplay | null {
+): AutomationDisplay | null {
   if (!dropProgress?.active) return null;
 
   const liveFor = (dropId: string) =>

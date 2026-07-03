@@ -13,29 +13,29 @@ use crate::services::channel_points_websocket_service::ChannelPointsWebSocketSer
 use crate::services::drops_auth_service::DropsAuthService;
 use crate::services::drops_service::DropsService;
 
-/// How often the farming balance poll re-reads followed-channel balances. The
-/// farmer earns ~10 points/min passively and sweeps bonus chests every few
+/// How often the automation balance poll re-reads followed-channel balances. The
+/// plugin earns ~10 points/min passively and sweeps bonus chests every few
 /// minutes, so a 3-minute cadence catches every grab with tolerable latency
 /// while keeping GQL/integrity load low (this walks the full followed list).
-const FARM_POLL_INTERVAL: Duration = Duration::from_secs(180);
+const AUTOMATION_POLL_INTERVAL: Duration = Duration::from_secs(180);
 
 /// Realtime support for the channel the user is actually watching, plus the
 /// channel-points notification path. Owns the single-channel PubSub socket
 /// (instant bonus-chest availability + that channel's predictions) and a
-/// GQL balance-increase poll that surfaces points the Autopilot plugin farms on
+/// GQL balance-increase poll that surfaces points the Autopilot plugin collects on
 /// background channels. The watched channel's own claims are notified by the
-/// `claim_channel_points` command; background-farmed channels are notified here.
+/// `claim_channel_points` command; background-collected channels are notified here.
 pub struct BackgroundService {
     is_running: Arc<RwLock<bool>>,
     pub websocket_service: Arc<Mutex<ChannelPointsWebSocketService>>,
     drops_service: Arc<Mutex<DropsService>>,
     app_handle: AppHandle,
-    /// The channel currently on screen, if any. The farming poll excludes it so
+    /// The channel currently on screen, if any. The automation poll excludes it so
     /// its claims aren't double-notified (the `claim_channel_points` command
     /// already emits for the watched channel).
     watched: Arc<RwLock<Option<(String, String)>>>,
-    /// Handle to the running farming balance poll, if farming is active. Tracks
-    /// the Autopilot master toggle (auto_claim_channel_points): `set_farming_active`
+    /// Handle to the running automation balance poll, if automation is active. Tracks
+    /// the Autopilot master toggle (auto_claim_channel_points): `set_automation_active`
     /// spawns it on, aborts it off. `None` means no poll is running.
     points_poll: Arc<Mutex<Option<JoinHandle<()>>>>,
 }
@@ -65,7 +65,7 @@ impl BackgroundService {
         }
 
         // Accumulate lifetime/history from every channel-points-earned event
-        // (the watched channel's claims via claim_channel_points, and farmed
+        // (the watched channel's claims via claim_channel_points, and collected
         // channels via the balance poll). The single source for the lifetime
         // stats the Drops center shows.
         let drops_service_for_stats = self.drops_service.clone();
@@ -106,7 +106,7 @@ impl BackgroundService {
                             claimed_at: Utc::now(),
                             claim_type: match reason {
                                 "WATCH" | "watch" => ChannelPointsClaimType::Watch,
-                                "CLAIM" | "claim" | "FARM" | "farm" => {
+                                "CLAIM" | "claim" | "AUTOMATION" | "automation" => {
                                     ChannelPointsClaimType::Bonus
                                 }
                                 _ => ChannelPointsClaimType::Watch,
@@ -157,28 +157,28 @@ impl BackgroundService {
         self.websocket_service.lock().await.disconnect_all().await;
     }
 
-    /// Reflect the farming master toggle (auto_claim_channel_points). On, it
+    /// Reflect the automation master toggle (auto_claim_channel_points). On, it
     /// starts a recurring GQL balance-increase poll so points the Autopilot
-    /// plugin farms on background channels surface as channel-points-earned
+    /// plugin collects on background channels surface as channel-points-earned
     /// notifications (the plugin earns in its own process and has no way to emit
     /// the event itself). Off, it stops the poll. Idempotent: a no-op when the
     /// desired state already matches, so repeated drops-settings saves don't
     /// churn the task.
-    pub async fn set_farming_active(&self, active: bool) {
+    pub async fn set_automation_active(&self, active: bool) {
         let mut guard = self.points_poll.lock().await;
         if active {
             if guard.is_some() {
                 return;
             }
             *guard = Some(self.spawn_points_poll());
-            debug!("[CP-Farm-Poll] started");
+            debug!("[CP-Auto-Poll] started");
         } else if let Some(handle) = guard.take() {
             handle.abort();
-            debug!("[CP-Farm-Poll] stopped");
+            debug!("[CP-Auto-Poll] stopped");
         }
     }
 
-    /// Spawn the farming balance poll: every `FARM_POLL_INTERVAL`, read every
+    /// Spawn the automation balance poll: every `AUTOMATION_POLL_INTERVAL`, read every
     /// followed channel's balance via GQL and emit channel-points-earned for any
     /// channel whose balance rose since the last cycle (excluding the watched
     /// channel, which `claim_channel_points` already notifies). The first cycle
@@ -191,7 +191,7 @@ impl BackgroundService {
         tokio::spawn(async move {
             let mut baseline: HashMap<String, i32> = HashMap::new();
             let mut first = true;
-            let mut ticker = tokio::time::interval(FARM_POLL_INTERVAL);
+            let mut ticker = tokio::time::interval(AUTOMATION_POLL_INTERVAL);
 
             loop {
                 ticker.tick().await;
@@ -228,7 +228,7 @@ impl BackgroundService {
                     }
 
                     debug!(
-                        "[CP-Farm-Poll] +{} on {} (balance {})",
+                        "[CP-Auto-Poll] +{} on {} (balance {})",
                         delta, login, balance
                     );
                     let _ = app_handle.emit(
@@ -238,7 +238,7 @@ impl BackgroundService {
                             "channel_login": login,
                             "channel_display_name": login,
                             "points": delta,
-                            "reason": "farm",
+                            "reason": "automation",
                             "balance": balance,
                         }),
                     );
@@ -292,7 +292,7 @@ impl BackgroundService {
                     }
                 }
                 Err(e) => {
-                    debug!("[CP-Farm-Poll] followed-list lookup failed: {}", e);
+                    debug!("[CP-Auto-Poll] followed-list lookup failed: {}", e);
                     return None;
                 }
             }
@@ -321,7 +321,7 @@ impl BackgroundService {
             {
                 Ok(r) => r,
                 Err(e) => {
-                    debug!("[CP-Farm-Poll] balance batch failed: {}", e);
+                    debug!("[CP-Auto-Poll] balance batch failed: {}", e);
                     continue;
                 }
             };
@@ -329,7 +329,7 @@ impl BackgroundService {
             let parsed: serde_json::Value = match resp.json().await {
                 Ok(v) => v,
                 Err(e) => {
-                    debug!("[CP-Farm-Poll] balance batch parse failed: {}", e);
+                    debug!("[CP-Auto-Poll] balance batch parse failed: {}", e);
                     continue;
                 }
             };

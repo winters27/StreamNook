@@ -7,8 +7,8 @@ interface ResumeSnapshot {
   stream_login?: string | null;
   media_type?: string | null;
   original_media_url?: string | null;
-  was_mining: boolean;
-  mining_campaign_id?: string | null;
+  was_running: boolean;
+  automation_campaign_id?: string | null;
 }
 
 /**
@@ -25,8 +25,8 @@ export async function captureResumeSnapshot(): Promise<void> {
     stream_login: login,
     media_type: s.currentMediaType,
     original_media_url: s.originalMediaUrl ?? null,
-    was_mining: s.dropProgressActive,
-    mining_campaign_id: s.liveDropProgress?.current_campaign ?? null,
+    was_running: s.dropProgressActive,
+    automation_campaign_id: s.liveDropProgress?.current_campaign ?? null,
   };
 
   try {
@@ -39,7 +39,7 @@ export async function captureResumeSnapshot(): Promise<void> {
 /**
  * Consume the resume snapshot (if any) and put the user back. Reopening the
  * stream via startStream also re-arms chat and the built-in watched-channel
- * drops monitor, so only the opt-in plugin miner needs an explicit replay.
+ * drops monitor, so only the opt-in plugin automation needs an explicit replay.
  * Best-effort throughout — a failure here must never block app boot.
  */
 export async function resumePreviousSession(): Promise<void> {
@@ -60,38 +60,38 @@ export async function resumePreviousSession(): Promise<void> {
     return;
   }
 
-  if (snap.was_mining) {
-    void replayMining(snap.mining_campaign_id ?? null);
+  if (snap.was_running) {
+    void replayAutomation(snap.automation_campaign_id ?? null);
   }
 }
 
 /**
- * Re-arm the opt-in plugin miner. The plugin host launches enabled plugins on
- * startup, but the drops-mining provider may not be registered the instant we
+ * Re-arm the opt-in plugin automation. The plugin host launches enabled plugins on
+ * startup, but the drops-automation provider may not be registered the instant we
  * get here, so poll briefly for it before replaying the action.
  */
-async function replayMining(campaignId: string | null): Promise<void> {
+async function replayAutomation(campaignId: string | null): Promise<void> {
   for (let attempt = 0; attempt < 10; attempt++) {
     try {
       const providerId = await invoke<string | null>('plugins_provides', {
-        feature: 'drops.mining',
+        feature: 'drops.automation',
       });
       if (providerId) {
         if (campaignId) {
           await invoke('plugins_invoke_action', {
-            action: 'drops.mine',
+            action: 'drops.run',
             args: { campaign_id: campaignId },
           });
         } else {
-          await invoke('plugins_invoke_action', { action: 'drops.mine-auto', args: {} });
+          await invoke('plugins_invoke_action', { action: 'drops.run-auto', args: {} });
         }
-        Logger.info('[resume] Mining resumed.');
+        Logger.info('[resume] Automation resumed.');
         return;
       }
     } catch (e) {
-      Logger.error('[resume] Mining replay attempt failed:', e);
+      Logger.error('[resume] Automation replay attempt failed:', e);
     }
     await new Promise((r) => setTimeout(r, 1000));
   }
-  Logger.warn('[resume] No drops.mining provider became available; skipped mining resume.');
+  Logger.warn('[resume] No drops.automation provider became available; skipped automation resume.');
 }

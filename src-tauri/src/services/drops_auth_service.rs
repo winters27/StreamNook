@@ -14,7 +14,7 @@ use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::time::Duration;
 
-// Twitch Android App credentials (used by TwitchDropsMiner)
+// Twitch Android App credentials
 const DROPS_CLIENT_ID: &str = env!("TWITCH_ANDROID_CLIENT_ID");
 const DROPS_TOKEN_FILE_NAME: &str = ".twitch_drops_token";
 
@@ -34,7 +34,7 @@ struct StorableDropsToken {
     // We store it anyway for potential future use, but never attempt to refresh
     refresh_token: String,
     // NOTE: expires_at is not used - we simply use the token until it's rejected by Twitch
-    // This matches TwitchDropsMiner's behavior
+    // This matches the official Android app's behavior
     expires_at: i64, // Unix timestamp (unused but kept for compatibility)
 }
 
@@ -386,7 +386,7 @@ impl DropsAuthService {
     /// NOTE: We don't attempt token refresh because the Android client ID doesn't support it
     /// without a client secret. Instead, we use the token until Twitch rejects it (401),
     /// at which point validate_token() will delete it and require re-authentication.
-    /// This matches TwitchDropsMiner's behavior.
+    /// This matches the official Android app's behavior.
     pub async fn get_token() -> Result<String> {
         // Try to load from file first (primary storage)
         match Self::load_token_from_file() {

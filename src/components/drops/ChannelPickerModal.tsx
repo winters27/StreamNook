@@ -3,7 +3,7 @@
 //    their live status, so the user knows if any are live to earn on right now.
 //  - Open campaigns list the live channels currently streaming the game.
 // Picking a live channel hands it back via onPick; the caller decides what that
-// means (core opens the player to watch; the farming plugin mines it). The whole
+// means (core opens the player to watch; the automation plugin collects it). The whole
 // point is feedback: an ACL campaign with nothing live says so instead of doing
 // nothing.
 
@@ -37,7 +37,7 @@ interface ChannelPickerModalProps {
   gameName: string;
   allowedChannels: AllowedChannel[];
   isAclBased: boolean;
-  /** Verb for the action, e.g. "Watch" (core) or "Mine" (farming plugin). */
+  /** Verb for the action, e.g. "Watch" (core) or "Collect" (automation plugin). */
   actionLabel?: string;
   onPick: (channel: PickableChannel) => void;
 }
@@ -82,7 +82,7 @@ export default function ChannelPickerModal({
       let result: PickableChannel[];
       if (isAclBased && allowedChannels.length > 0) {
         // Allow-listed campaign: only the permitted channels that are LIVE right now
-        // (offline ones can't be watched/mined, so we don't list them at all).
+        // (offline ones can't be watched/collected, so we don't list them at all).
         const checked = await Promise.all(
           allowedChannels.map(async (ch): Promise<PickableChannel | null> => {
             try {
