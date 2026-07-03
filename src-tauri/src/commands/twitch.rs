@@ -73,7 +73,7 @@ pub async fn get_live_broadcast(broadcaster_id: String) -> Result<LiveBroadcast,
 // --- VOD clip creation via the GQL "raw media" pipeline ---------------------
 // Helix Create Clip is live-only; clipping a VOD at a timestamp uses Twitch's
 // web GQL flow (CreateRawMedia -> CreateClipFromRawMedia). Reuses the Android-
-// client, no-integrity GQL pattern that mining_service's sendSpadeEvents uses,
+// client, no-integrity GQL pattern the watch-event path's sendSpadeEvents uses,
 // with the drops (Android-client) token. Hashes/shape were reverse-engineered
 // from a real capture (see Brain: references/Twitch_Clip_Creation_GQL).
 
@@ -1065,6 +1065,19 @@ pub async fn search_channels(
     query: String,
 ) -> Result<Vec<TwitchStream>, String> {
     TwitchService::search_channels(&state, &query)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Live streams in a category filtered by freeform tags (server-side via GQL).
+#[tauri::command]
+pub async fn get_streams_by_game_with_tags(
+    game_name: String,
+    tags: Vec<String>,
+    cursor: Option<String>,
+    limit: u32,
+) -> Result<(Vec<TwitchStream>, Option<String>), String> {
+    TwitchService::get_streams_by_game_with_tags(&game_name, tags, cursor, limit)
         .await
         .map_err(|e| e.to_string())
 }

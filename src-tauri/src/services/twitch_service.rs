@@ -1922,6 +1922,7 @@ impl TwitchService {
                             has_shared_chat: None, // Will be populated later
                             profile_image_url: Some(thumbnail_url.clone()), // Preserve the actual profile picture from search
                             is_live: channel.get("is_live").and_then(|v| v.as_bool()),
+                            tags: None,
                         });
                     }
                 }
@@ -2023,6 +2024,7 @@ impl TwitchService {
                             has_shared_chat: None,
                             profile_image_url: exact_user.profile_image_url,
                             is_live: Some(false),
+                            tags: None,
                         };
                         streams.insert(0, synthesize);
                     }
@@ -2407,6 +2409,7 @@ impl TwitchService {
                             has_shared_chat: None,
                             profile_image_url: None,
                             is_live: Some(false),
+                            tags: None,
                         });
                     }
                 }
@@ -2903,6 +2906,169 @@ impl TwitchService {
         }
 
         Ok(None)
+    }
+
+    /// Live streams in a category filtered by freeform tags, server-side, via
+    /// GQL. Helix can't filter streams by tag, so this is the only way to match
+    /// Twitch's directory tag filter (returns every matching stream by viewer
+    /// count, not just whatever happens to be on the loaded Helix pages). `tags`
+    /// are tag display names (e.g. "Speedrun"); a stream must carry all of them.
+    pub async fn get_streams_by_game_with_tags(
+        game_name: &str,
+        tags: Vec<String>,
+        cursor: Option<String>,
+        limit: u32,
+    ) -> Result<(Vec<TwitchStream>, Option<String>)> {
+        let client = crate::services::http::client().clone();
+
+        // `options.freeformTags` is the field that actually filters by freeform
+        // tag NAME (case-insensitive), server-side, ranked by viewer count — this
+        // is Twitch's directory tag filter. The plain `tags` argument is silently
+        // ignored (legacy), so it must NOT be used. Partner status comes from
+        // `roles` (GQL `User` has no `broadcasterType`).
+        let query = "query($name: String!, $first: Int!, $after: Cursor, $tags: [String!]) { \
+            game(name: $name) { id name \
+                streams(first: $first, after: $after, options: { sort: VIEWER_COUNT, freeformTags: $tags }) { \
+                    edges { cursor node { \
+                        id title viewersCount createdAt type \
+                        previewImageURL \
+                        freeformTags { name } \
+                        broadcaster { id login displayName profileImageURL(width: 70) roles { isPartner isAffiliate } } \
+                    } } \
+                    pageInfo { hasNextPage } \
+                } \
+            } }";
+
+        let body = serde_json::json!({
+            "query": query,
+            "variables": {
+                "name": game_name,
+                "first": limit,
+                "after": cursor,
+                "tags": tags,
+            }
+        });
+
+        let response = client
+            .post("https://gql.twitch.tv/gql")
+            .header("Client-Id", TWITCH_GQL_CLIENT_ID)
+            .json(&body)
+            .send()
+            .await?
+            .json::<serde_json::Value>()
+            .await?;
+
+        let game_id = response
+            .pointer("/data/game/id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let resolved_game_name = response
+            .pointer("/data/game/name")
+            .and_then(|v| v.as_str())
+            .unwrap_or(game_name)
+            .to_string();
+
+        let streams_node = response.pointer("/data/game/streams");
+        let edges = streams_node
+            .and_then(|s| s.get("edges"))
+            .and_then(|e| e.as_array());
+
+        let mut streams: Vec<TwitchStream> = Vec::new();
+        let mut last_cursor: Option<String> = None;
+
+        if let Some(edges) = edges {
+            for edge in edges {
+                if let Some(c) = edge.get("cursor").and_then(|c| c.as_str()) {
+                    last_cursor = Some(c.to_string());
+                }
+                let node = match edge.get("node") {
+                    Some(n) if !n.is_null() => n,
+                    _ => continue,
+                };
+                let broadcaster = match node.get("broadcaster") {
+                    Some(b) if !b.is_null() => b,
+                    _ => continue,
+                };
+
+                let user_login = broadcaster
+                    .get("login")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let user_name = broadcaster
+                    .get("displayName")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or(&user_login)
+                    .to_string();
+                let roles = broadcaster.get("roles");
+                let broadcaster_type = if roles
+                    .and_then(|r| r.get("isPartner"))
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false)
+                {
+                    Some("partner".to_string())
+                } else if roles
+                    .and_then(|r| r.get("isAffiliate"))
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false)
+                {
+                    Some("affiliate".to_string())
+                } else {
+                    None
+                };
+                let profile_image_url = broadcaster
+                    .get("profileImageURL")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+
+                let stream_tags: Vec<String> = node
+                    .get("freeformTags")
+                    .and_then(|t| t.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|t| {
+                                t.get("name").and_then(|n| n.as_str()).map(|s| s.to_string())
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+
+                streams.push(TwitchStream {
+                    id: node.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                    user_id: broadcaster.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                    user_name,
+                    user_login,
+                    title: node.get("title").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                    viewer_count: node
+                        .get("viewersCount")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0) as u32,
+                    game_id: game_id.clone(),
+                    game_name: resolved_game_name.clone(),
+                    thumbnail_url: node
+                        .get("previewImageURL")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string(),
+                    started_at: node.get("createdAt").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                    broadcaster_type,
+                    has_shared_chat: None,
+                    profile_image_url,
+                    is_live: Some(true),
+                    tags: if stream_tags.is_empty() { None } else { Some(stream_tags) },
+                });
+            }
+        }
+
+        let has_next = streams_node
+            .and_then(|s| s.get("pageInfo"))
+            .and_then(|p| p.get("hasNextPage"))
+            .and_then(|h| h.as_bool())
+            .unwrap_or(false);
+
+        Ok((streams, if has_next { last_cursor } else { None }))
     }
 
     pub async fn get_clips_by_game(

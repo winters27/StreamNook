@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useState, useRef, useCallback } from 'react';
+import { useEffect, useLayoutEffect, useState, useRef, useCallback, useMemo } from 'react';
 import { useAppStore, HomeTab } from '../stores/AppStore';
 import { createPortal } from 'react-dom';
 import { Search, ArrowLeft, Heart, Maximize2, X, Gift, Pickaxe, LayoutGrid, Flame, ArrowUpRight, Undo2, Users, User, Loader2, MessageSquare } from 'lucide-react';
@@ -9,9 +9,11 @@ import { invoke } from '@tauri-apps/api/core';
 import type { TwitchStream, TwitchCategory, CategoryInfo, TwitchClip, TwitchVideo } from '../types';
 import LoadingWidget from './LoadingWidget';
 import StreamTitleWithEmojis from './StreamTitleWithEmojis';
+import { StreamTileTags } from './StreamTileTags';
 import { useContextMenuStore } from '../stores/contextMenuStore';
 import { Tooltip } from './ui/Tooltip';
 import { GlassSelect } from './ui/GlassSelect';
+import { CategorySearchBox } from './ui/CategorySearchBox';
 
 import { Logger } from '../utils/logger';
 import { useVisibleInterval } from '../utils/useVisibleInterval';
@@ -467,7 +469,24 @@ const Home = () => {
     const [hasMoreCategoryStreams, setHasMoreCategoryStreams] = useState(true);
     const [isLoadingMoreCategoryStreams, setIsLoadingMoreCategoryStreams] = useState(false);
     const [isLoadingCategoryStreams, setIsLoadingCategoryStreams] = useState(false);
-    
+
+    // Tag-filtered live streams: fetched server-side (GQL) so a tag filter
+    // returns every matching stream by viewer count, like Twitch's directory —
+    // not just whatever happens to be on the loaded Helix pages. Active only
+    // while one or more tags are selected; otherwise the Helix `categoryStreams`
+    // above is shown.
+    const [tagStreams, setTagStreams] = useState<TwitchStream[]>([]);
+    const [tagStreamsCursor, setTagStreamsCursor] = useState<string | null>(null);
+    const [hasMoreTagStreams, setHasMoreTagStreams] = useState(false);
+    const [isLoadingTagStreams, setIsLoadingTagStreams] = useState(false);
+    const [isLoadingMoreTagStreams, setIsLoadingMoreTagStreams] = useState(false);
+
+    // Live-tab tag filter. `Draft` is the text in the search box (used to
+    // autocomplete tag suggestions); committing a tag pushes it into
+    // `selectedCategoryTags`, which drives the server-side tag fetch.
+    const [categoryLiveDraft, setCategoryLiveDraft] = useState('');
+    const [selectedCategoryTags, setSelectedCategoryTags] = useState<string[]>([]);
+
     // Category Tabs State
     const [categoryActiveTab, setCategoryActiveTabLocal] = useState<'live' | 'clips' | 'videos'>(homeCategoryTab);
     // Wrapper that syncs local and store state
@@ -645,8 +664,8 @@ const Home = () => {
                 setDropsGameNames(dropsNameMap);
                 Logger.debug(`[Home] Found ${dropsIdMap.size} categories with active drops`);
 
-                // Also sync the active-mining highlight from the bridge-cached
-                // status (a plugin powering mining reports through it).
+                // Also sync the active-automation highlight from the bridge-cached
+                // status (a plugin powering automation reports through it).
                 try {
                     const dropProgress = useAppStore.getState().liveDropProgress;
                     if (dropProgress?.active) {
@@ -656,15 +675,15 @@ const Home = () => {
                         if (progressGameName) {
                             for (const campaign of campaigns) {
                                 if (campaign.game_name?.toLowerCase() === progressGameName) {
-                                    Logger.debug(`[Home] Already mining campaign: ${campaign.name}`);
-                                    setActiveMiningIds(prev => new Set(prev).add(campaign.id));
+                                    Logger.debug(`[Home] Already automation campaign: ${campaign.name}`);
+                                    setActiveAutomationIds(prev => new Set(prev).add(campaign.id));
                                     break;
                                 }
                             }
                         }
                     }
                 } catch (e) {
-                    Logger.warn('Could not get mining status:', e);
+                    Logger.warn('Could not get automation status:', e);
                 }
             } else {
                 setDropsGameIds(new Map());
@@ -677,8 +696,8 @@ const Home = () => {
         }
     };
 
-    // State for mining animation and tracking actively mining campaigns
-    const [activeMiningIds, setActiveMiningIds] = useState<Set<string>>(new Set());
+    // State for automation animation and tracking actively automation campaigns
+    const [activeAutomationIds, setActiveAutomationIds] = useState<Set<string>>(new Set());
     const [flyingDroplet, setFlyingDroplet] = useState<{ visible: boolean; x: number; y: number } | null>(null);
 
     // Create a map from campaign name to campaign ID for reverse lookup
@@ -710,12 +729,12 @@ const Home = () => {
         };
     }, [followedStreams, recommendedStreams, categoryStreams, searchResults, refreshHypeTrainStatuses]);
 
-    // Sync mining status with backend. Real-time updates arrive via the
-    // 'mining-status-changed' event listener below; the periodic call is a
+    // Sync automation status with backend. Real-time updates arrive via the
+    // 'automation-status-changed' event listener below; the periodic call is a
     // stale-protection net that runs at 60-min cadence (aligned with the
     // TitleBar + ChatWidget backup polls) and only fires when the window is
     // visible.
-    const syncMiningStatus = useCallback(async () => {
+    const syncAutomationStatus = useCallback(async () => {
         try {
             const dropProgress = useAppStore.getState().liveDropProgress;
 
@@ -733,7 +752,7 @@ const Home = () => {
                     });
 
                     if (foundCampaignId) {
-                        setActiveMiningIds(prev => {
+                        setActiveAutomationIds(prev => {
                             if (prev.size === 1 && prev.has(foundCampaignId!)) {
                                 return prev;
                             }
@@ -742,7 +761,7 @@ const Home = () => {
                     }
                 }
             } else {
-                setActiveMiningIds(prev => {
+                setActiveAutomationIds(prev => {
                     if (prev.size > 0) {
                         return new Set<string>();
                     }
@@ -755,14 +774,14 @@ const Home = () => {
     }, [dropsGameNames]);
 
     useEffect(() => {
-        syncMiningStatus();
+        syncAutomationStatus();
 
         let unlisten: (() => void) | null = null;
         let isMounted = true;
         const setupListener = async () => {
             try {
                 const { listen } = await import('@tauri-apps/api/event');
-                const unlistenFn = await listen('drop-progress', syncMiningStatus);
+                const unlistenFn = await listen('drop-progress', syncAutomationStatus);
                 if (isMounted) {
                     unlisten = unlistenFn;
                 } else {
@@ -778,9 +797,9 @@ const Home = () => {
             isMounted = false;
             if (unlisten) unlisten();
         };
-    }, [syncMiningStatus]);
+    }, [syncAutomationStatus]);
 
-    useVisibleInterval(syncMiningStatus, 60 * 60 * 1000);
+    useVisibleInterval(syncAutomationStatus, 60 * 60 * 1000);
 
     // Update campaign name-to-ID map when drops data loads
     useEffect(() => {
@@ -791,29 +810,29 @@ const Home = () => {
         campaignNameToIdRef.current = nameToId;
     }, [dropsGameIds]);
 
-    // Handler to toggle mining drops for a category (start or stop)
-    const handleToggleMining = async (e: React.MouseEvent, campaign: DropCampaign) => {
+    // Handler to toggle automation drops for a category (start or stop)
+    const handleToggleAutomation = async (e: React.MouseEvent, campaign: DropCampaign) => {
         e.stopPropagation(); // Don't trigger category click
 
-        const isCurrentlyMining = activeMiningIds.has(campaign.id);
+        const isCurrentlyAutomating = activeAutomationIds.has(campaign.id);
 
-        // Farming is plugin-powered; this control only renders when a plugin
-        // provides mining, so route start/stop to it.
+        // Automation is plugin-powered; this control only renders when a plugin
+        // provides automation, so route start/stop to it.
         if (!useAppStore.getState().externalDropsProvider) return;
 
-        if (isCurrentlyMining) {
-            // Stop mining
+        if (isCurrentlyAutomating) {
+            // Stop automation
             try {
                 await invoke('plugins_invoke_action', { action: 'drops.stop', args: {} });
-                Logger.debug(`[Home] Stopped mining drops for ${campaign.name}`);
-                setActiveMiningIds(new Set()); // Clear all mining IDs
-                useAppStore.getState().addToast(`Stopped mining drops for ${campaign.game_name}`, 'info');
+                Logger.debug(`[Home] Stopped automation drops for ${campaign.name}`);
+                setActiveAutomationIds(new Set()); // Clear all automation IDs
+                useAppStore.getState().addToast(`Stopped automation drops for ${campaign.game_name}`, 'info');
             } catch (error) {
-                Logger.error('Failed to stop mining:', error);
-                useAppStore.getState().addToast('Failed to stop mining drops', 'error');
+                Logger.error('Failed to stop automation:', error);
+                useAppStore.getState().addToast('Failed to stop automation drops', 'error');
             }
         } else {
-            // Start mining
+            // Start automation
             // Get button position for flying animation
             const button = e.currentTarget as HTMLElement;
             const rect = button.getBoundingClientRect();
@@ -821,11 +840,11 @@ const Home = () => {
             const centerY = rect.top + rect.height / 2;
 
             try {
-                await invoke('plugins_invoke_action', { action: 'drops.mine', args: { campaign_id: campaign.id } });
-                Logger.debug(`[Home] Started mining drops for ${campaign.name}`);
+                await invoke('plugins_invoke_action', { action: 'drops.run', args: { campaign_id: campaign.id } });
+                Logger.debug(`[Home] Started automation drops for ${campaign.name}`);
 
-                // Add to active mining set
-                setActiveMiningIds(new Set([campaign.id]));
+                // Add to active automation set
+                setActiveAutomationIds(new Set([campaign.id]));
 
                 // Start flying droplet animation
                 setFlyingDroplet({ visible: true, x: centerX, y: centerY });
@@ -833,10 +852,10 @@ const Home = () => {
                 // Clear flying animation after it completes
                 setTimeout(() => setFlyingDroplet(null), 1000);
 
-                useAppStore.getState().addToast(`Started mining drops for ${campaign.game_name}`, 'success');
+                useAppStore.getState().addToast(`Started automation drops for ${campaign.game_name}`, 'success');
             } catch (error) {
-                Logger.error('Failed to start mining:', error);
-                useAppStore.getState().addToast('Failed to start mining drops', 'error');
+                Logger.error('Failed to start automation:', error);
+                useAppStore.getState().addToast('Failed to start automation drops', 'error');
             }
         }
     };
@@ -1163,6 +1182,78 @@ const Home = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [activeTab, categoryActiveTab, selectedCategory]);
 
+    // Clear the live tag/text filters when moving to a different category.
+    useEffect(() => {
+        setCategoryLiveDraft('');
+        setSelectedCategoryTags([]);
+        setTagStreams([]);
+        setTagStreamsCursor(null);
+        setHasMoreTagStreams(false);
+    }, [selectedCategory?.id]);
+
+    // Fetch tag-filtered streams server-side whenever the selected tags change.
+    const selectedTagsKey = selectedCategoryTags.map(t => t.toLowerCase()).sort().join('');
+    useEffect(() => {
+        const gameName = selectedCategory?.name;
+        if (!gameName || selectedCategoryTags.length === 0) {
+            setTagStreams([]);
+            setTagStreamsCursor(null);
+            setHasMoreTagStreams(false);
+            return;
+        }
+        let cancelled = false;
+        setIsLoadingTagStreams(true);
+        invoke('get_streams_by_game_with_tags', { gameName, tags: selectedCategoryTags, cursor: null, limit: 40 })
+            .then(res => {
+                if (cancelled || !isMountedRef.current) return;
+                const [streams, cursor] = res as [TwitchStream[], string | null];
+                setTagStreams(streams);
+                setTagStreamsCursor(cursor);
+                setHasMoreTagStreams(!!cursor && streams.length > 0);
+            })
+            .catch(e => {
+                if (cancelled || !isMountedRef.current) return;
+                Logger.error('Failed to load tag-filtered streams:', e);
+                setTagStreams([]);
+                setTagStreamsCursor(null);
+                setHasMoreTagStreams(false);
+            })
+            .finally(() => { if (!cancelled && isMountedRef.current) setIsLoadingTagStreams(false); });
+        return () => { cancelled = true; };
+    // selectedTagsKey captures the tag set; selectedCategory?.name keys the category.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [selectedTagsKey, selectedCategory?.name]);
+
+    const loadMoreTagStreams = useCallback(async () => {
+        const gameName = selectedCategory?.name;
+        if (!gameName || selectedCategoryTags.length === 0) return;
+        if (!hasMoreTagStreams || isLoadingMoreTagStreams || !tagStreamsCursor) return;
+        setIsLoadingMoreTagStreams(true);
+        try {
+            const res = await invoke('get_streams_by_game_with_tags', {
+                gameName,
+                tags: selectedCategoryTags,
+                cursor: tagStreamsCursor,
+                limit: 40,
+            }) as [TwitchStream[], string | null];
+            if (!isMountedRef.current) return;
+            const [streams, cursor] = res;
+            setTagStreams(prev => {
+                const seen = new Set(prev.map(s => s.user_id));
+                return [...prev, ...streams.filter(s => !seen.has(s.user_id))];
+            });
+            setTagStreamsCursor(cursor);
+            setHasMoreTagStreams(!!cursor && streams.length > 0);
+        } catch (e) {
+            if (isMountedRef.current) {
+                Logger.error('Failed to load more tag-filtered streams:', e);
+                setHasMoreTagStreams(false);
+            }
+        } finally {
+            if (isMountedRef.current) setIsLoadingMoreTagStreams(false);
+        }
+    }, [selectedCategory?.name, selectedCategoryTags, hasMoreTagStreams, isLoadingMoreTagStreams, tagStreamsCursor]);
+
     // Refresh clips when period changes
     useEffect(() => {
         if (activeTab === 'category' && categoryActiveTab === 'clips' && selectedCategory?.id) {
@@ -1332,10 +1423,15 @@ const Home = () => {
 
         // Handle category content infinite scroll
         if (activeTab === 'category') {
-            if (categoryActiveTab === 'live' && hasMoreCategoryStreams && !isLoadingMoreCategoryStreams && !loadingRef.current) {
+            // The live list is either the server-side tag-filtered set or the
+            // Helix category set, depending on whether tags are selected.
+            const liveTagMode = selectedCategoryTags.length > 0;
+            const liveHasMore = liveTagMode ? hasMoreTagStreams : hasMoreCategoryStreams;
+            const liveLoadingMore = liveTagMode ? isLoadingMoreTagStreams : isLoadingMoreCategoryStreams;
+            if (categoryActiveTab === 'live' && liveHasMore && !liveLoadingMore && !loadingRef.current) {
                 if (scrollPercentage > 0.8) {
                     loadingRef.current = true;
-                    loadMoreCategoryStreams().finally(() => {
+                    (liveTagMode ? loadMoreTagStreams() : loadMoreCategoryStreams()).finally(() => {
                         loadingRef.current = false;
                     });
                 }
@@ -1358,8 +1454,9 @@ const Home = () => {
     }, [
         activeTab, hasMoreRecommended, isLoadingMore, loadMoreRecommendedStreams, 
         hasMoreGames, isLoadingMoreGames, loadMoreTopGames, 
-        categoryActiveTab,
+        categoryActiveTab, selectedCategoryTags,
         hasMoreCategoryStreams, isLoadingMoreCategoryStreams, loadMoreCategoryStreams,
+        hasMoreTagStreams, isLoadingMoreTagStreams, loadMoreTagStreams,
         hasMoreCategoryClips, isLoadingMoreClips, loadMoreCategoryClips,
         hasMoreCategoryVideos, isLoadingMoreVideos, loadMoreCategoryVideos
     ]);
@@ -1402,6 +1499,53 @@ const Home = () => {
 
     const offlineSearchResults = activeTab === 'search' ? searchResults.filter(s => s.viewer_count === 0 && !s.is_live) : [];
 
+    // Dropdown tags are the category's own offered tags only (not the free-form
+    // tags individual streamers set). The text search can still match anything.
+    const availableCategoryTags = useMemo(() => {
+        const seen = new Set<string>();
+        const tags: string[] = [];
+        categoryDetails?.tags?.forEach(t => {
+            const label = t.localizedName.trim();
+            const key = label.toLowerCase();
+            if (label && !seen.has(key)) {
+                seen.add(key);
+                tags.push(label);
+            }
+        });
+        return tags;
+    }, [categoryDetails]);
+
+    // Broader autocomplete pool: the free-form tags carried by the loaded live
+    // streams. Folded into the tag search only while typing (not the default list).
+    const categoryStreamTags = useMemo(() => {
+        const seen = new Set<string>();
+        const tags: string[] = [];
+        categoryStreams.forEach(s => s.tags?.forEach(t => {
+            const label = t.trim();
+            const key = label.toLowerCase();
+            if (label && !seen.has(key)) {
+                seen.add(key);
+                tags.push(label);
+            }
+        }));
+        return tags;
+    }, [categoryStreams]);
+
+    // The live list is the server-side tag-filtered set when tags are selected,
+    // otherwise the Helix category list. Tag matching is done server-side; the
+    // search box only picks tags (it doesn't fuzzy-filter the visible streams).
+    const tagMode = selectedCategoryTags.length > 0;
+    const baseLiveStreams = tagMode ? tagStreams : categoryStreams;
+
+    const toggleCategoryTag = (label: string) => {
+        const key = label.toLowerCase();
+        setSelectedCategoryTags(prev =>
+            prev.some(t => t.toLowerCase() === key)
+                ? prev.filter(t => t.toLowerCase() !== key)
+                : [...prev, label]
+        );
+    };
+
     const renderCategoryCard = (game: TwitchCategory) => {
         const dropsCampaign = dropsGameIds.get(game.id);
         const hasDrops = !!dropsCampaign;
@@ -1432,23 +1576,23 @@ const Home = () => {
                         </div>
                     )}
                     {hasDrops && externalDropsProvider && (
-                        <Tooltip content={activeMiningIds.has(dropsCampaign.id) ? `Click to stop mining ${dropsCampaign.name}` : `Start mining ${dropsCampaign.name}`} side="top">
+                        <Tooltip content={activeAutomationIds.has(dropsCampaign.id) ? `Click to stop automation ${dropsCampaign.name}` : `Start automation ${dropsCampaign.name}`} side="top">
                         <button
-                            onClick={(e) => handleToggleMining(e, dropsCampaign)}
-                            className={`absolute bottom-2 right-2 left-2 flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-md text-xs font-semibold transition-all duration-300 glass-button ${activeMiningIds.has(dropsCampaign.id)
+                            onClick={(e) => handleToggleAutomation(e, dropsCampaign)}
+                            className={`absolute bottom-2 right-2 left-2 flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-md text-xs font-semibold transition-all duration-300 glass-button ${activeAutomationIds.has(dropsCampaign.id)
                                 ? '!bg-green-500/20 text-green-400 border-green-500/30 !shadow-[0_2px_10px_rgba(34,197,94,0.3),inset_0_1px_rgba(255,255,255,0.2)] ring-1 ring-green-500/20 hover:!bg-red-500/30 hover:text-red-400 hover:border-red-500/30 hover:ring-red-500/30 hover:!shadow-[0_2px_10px_rgba(239,68,68,0.3),inset_0_1px_rgba(255,255,255,0.2)]'
                                 : '!bg-accent/30 text-white border-accent/40 !shadow-[0_2px_10px_rgba(var(--color-accent-rgb),0.4),inset_0_1px_rgba(255,255,255,0.2)] ring-1 ring-accent/20 hover:!bg-accent/50 hover:scale-[1.02]'
                                 }`}
                         >
-                            {activeMiningIds.has(dropsCampaign.id) ? (
+                            {activeAutomationIds.has(dropsCampaign.id) ? (
                                 <>
                                     <Pickaxe size={14} className="animate-pulse" />
-                                    <span>Mining</span>
+                                    <span>Automation</span>
                                 </>
                             ) : (
                                 <>
                                     <Pickaxe size={14} />
-                                    <span>Mine Drops</span>
+                                    <span>Collect Drops</span>
                                 </>
                             )}
                         </button>
@@ -1971,7 +2115,7 @@ const Home = () => {
                 {activeTab === 'category' && (
                     <div className="pt-2">
                         {/* Category Sub-Navigation Tabs and Toolbar */}
-                        <div className="flex items-center justify-between gap-4 mb-4 border-b border-white/5 pb-3 w-full mt-2">
+                        <div className="flex items-center gap-4 mb-4 border-b border-white/5 pb-3 w-full mt-2">
                             <div className="flex gap-2">
                                 <button
                                     onClick={() => setCategoryActiveTab('live')}
@@ -1993,9 +2137,25 @@ const Home = () => {
                                 </button>
                             </div>
 
+                            {/* Filter/Search Toolbar for Live streams: one all-in-one box that
+                                filters streams by tag/title/streamer and drops down matching
+                                tag suggestions as you type. */}
+                            {categoryActiveTab === 'live' && (
+                                <div className="flex-1 flex justify-center">
+                                    <CategorySearchBox
+                                        value={categoryLiveDraft}
+                                        onChange={setCategoryLiveDraft}
+                                        tagOptions={availableCategoryTags}
+                                        tagSuggestions={categoryStreamTags}
+                                        selectedTags={selectedCategoryTags}
+                                        onToggleTag={toggleCategoryTag}
+                                    />
+                                </div>
+                            )}
+
                             {/* Filter/Search Toolbar for Clips and Videos */}
                             {(categoryActiveTab === 'clips' || categoryActiveTab === 'videos') && (
-                                <div className="flex items-center gap-2">
+                                <div className="flex items-center gap-2 ml-auto">
                                     {/* Search Box */}
                                     <div className="relative group">
                                         <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-textSecondary group-focus-within:text-accent transition-colors">
@@ -2058,28 +2218,52 @@ const Home = () => {
                             )}
                         </div>
 
+                        {/* Active tag filter chips */}
+                        {categoryActiveTab === 'live' && selectedCategoryTags.length > 0 && (
+                            <div className="flex flex-wrap items-center gap-1.5 mb-4 -mt-1">
+                                {selectedCategoryTags.map(tag => (
+                                    <button
+                                        key={tag}
+                                        onClick={() => toggleCategoryTag(tag)}
+                                        className="group flex items-center gap-1 text-[11px] font-semibold pl-2.5 pr-1.5 py-1 rounded-md bg-accent/20 text-accent hover:bg-accent/30 transition-colors"
+                                    >
+                                        <span className="truncate max-w-[160px]">{tag}</span>
+                                        <X size={12} className="opacity-70 group-hover:opacity-100" />
+                                    </button>
+                                ))}
+                                <button
+                                    onClick={() => setSelectedCategoryTags([])}
+                                    className="text-[11px] font-semibold px-2 py-1 text-textSecondary hover:text-accent transition-colors"
+                                >
+                                    Clear all
+                                </button>
+                            </div>
+                        )}
+
                         {/* Rendering Logic based on categoryActiveTab */}
                         {categoryActiveTab === 'live' && (
                             <>
-                                {isLoadingCategoryStreams ? (
+                                {(tagMode ? isLoadingTagStreams : isLoadingCategoryStreams) ? (
                                     <div className="flex items-center justify-center h-full">
                                         <div className="text-center">
                                             <div className="animate-spin rounded-full h-12 w-12 border-4 border-glass border-t-accent mx-auto mb-3" />
                                             <p className="text-textSecondary text-xs">Loading streams...</p>
                                         </div>
                                     </div>
-                                ) : categoryStreams.length === 0 ? (
+                                ) : baseLiveStreams.length === 0 ? (
                                     <div className="flex items-center justify-center h-full">
                                         <div className="text-center glass-panel p-6 max-w-sm">
                                             <h3 className="text-base font-bold text-textPrimary mb-1">No Live Streams</h3>
                                             <p className="text-textSecondary text-sm">
-                                                No one is streaming {selectedCategory?.name}.
+                                                {tagMode
+                                                    ? `No live streams in ${selectedCategory?.name} match ${selectedCategoryTags.length === 1 ? 'that tag' : 'those tags'}.`
+                                                    : `No one is streaming ${selectedCategory?.name}.`}
                                             </p>
                                         </div>
                                     </div>
                                 ) : (
                                     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-3">
-                                        {categoryStreams.map(stream => {
+                                        {baseLiveStreams.map(stream => {
                                             // Drops indicator is elevated to the hero banner in Category view!
                                             // We explicitly disable drops badging on individual stream cards here to reduce noise.
                                             const hasDrops = false;
@@ -2192,6 +2376,13 @@ const Home = () => {
                                                                             )}
                                                                         </div>
                                                                     </div>
+                                                                    {stream.tags && stream.tags.length > 0 && (
+                                                                        <StreamTileTags
+                                                                            tags={stream.tags}
+                                                                            selectedTags={selectedCategoryTags}
+                                                                            onToggleTag={toggleCategoryTag}
+                                                                        />
+                                                                    )}
                                                                 </div>
                                                             </div>
                                                         )}
@@ -2202,15 +2393,17 @@ const Home = () => {
                                     </div>
                                 )}
                                 {/* Loading indicator for infinite scroll */}
-                                {isLoadingMoreCategoryStreams && (
+                                {(tagMode ? isLoadingMoreTagStreams : isLoadingMoreCategoryStreams) && (
                                     <div className="flex justify-center items-center py-6 w-full">
                                         <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-accent"></div>
                                     </div>
                                 )}
                                 {/* End of streams message */}
-                                {!hasMoreCategoryStreams && categoryStreams.length > 0 && (
+                                {!(tagMode ? hasMoreTagStreams : hasMoreCategoryStreams) && baseLiveStreams.length > 0 && (
                                     <div className="text-center py-6 w-full">
-                                        <p className="text-textSecondary text-xs">No more category streams</p>
+                                        <p className="text-textSecondary text-xs">
+                                            {tagMode ? 'No more streams with these tags' : 'No more category streams'}
+                                        </p>
                                     </div>
                                 )}
                             </>
