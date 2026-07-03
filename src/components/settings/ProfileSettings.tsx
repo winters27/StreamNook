@@ -406,9 +406,19 @@ const ProfileSettings = () => {
     isSubscriber(currentUser.user_id)
       .then((s) => { if (mountedRef.current) setSubscribed(s); })
       .catch(() => {});
-    getAccolades(currentUser.user_id)
-      .then((ids) => { if (mountedRef.current) setEarnedAccolades(new Set(ids)); })
-      .catch(() => {});
+    // Earned accolades gate which achievement atmospheres appear. This effect
+    // otherwise runs once per user, so a badge earned mid-session (an event
+    // accolade granted while watching) would not unlock its atmosphere until a
+    // relaunch. Refetch on window focus so returning to the app surfaces it.
+    const uid = currentUser.user_id;
+    const loadAccolades = () => {
+      getAccolades(uid)
+        .then((ids) => { if (mountedRef.current) setEarnedAccolades(new Set(ids)); })
+        .catch(() => {});
+    };
+    loadAccolades();
+    window.addEventListener('focus', loadAccolades);
+    return () => window.removeEventListener('focus', loadAccolades);
   }, [currentUser?.user_id]);
 
   const selectProfileTheme = (
