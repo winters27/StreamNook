@@ -1,4 +1,4 @@
-// AFK bulk emote prefetch ("emote mining"): walk every followed channel, fetch
+// AFK bulk emote prefetch: walk every followed channel, fetch
 // each provider emote set, and download every emote image to the on-disk cache
 // so the emote menu opens disk-first with nothing to fetch when you return.
 //

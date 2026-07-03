@@ -30,8 +30,11 @@ import { extractPreviewUrls } from '../services/linkPreviewService';
 import UserProfileCard from './UserProfileCard';
 import ErrorBoundary from './ErrorBoundary';
 import PredictionOverlay from './PredictionOverlay';
-import ConfettiBurst from './ConfettiBurst';
+import HypeTrainBanner from './HypeTrainBanner';
 import ViewersPanel from './ViewersPanel';
+import ModRoomPane from './modroom/ModRoomPane';
+import { EmotePickerPanel, useSwappingSmiley } from './chat/EmotePickerPanel';
+import { isCachedModerator, setCachedModerator, loadModeratedChannelIds, subscribeModeratedChannels } from '../services/modRoomService';
 import ChannelPointsMenu from './ChannelPointsMenu';
 import ModeratorMenu from './chat/ModeratorMenu';
 import ResubNotificationBanner, { ResubNotification } from './ResubNotificationBanner';
@@ -91,18 +94,6 @@ import type { TwitchStream, HypeTrainData } from '../types';
 
 import { Logger } from '../utils/logger';
 import { useVisibleInterval } from '../utils/useVisibleInterval';
-// Helper function to format time remaining for Hype Train
-const formatHypeTrainTimeRemaining = (expiresAt: string): string => {
-  const now = Date.now();
-  const expiry = new Date(expiresAt).getTime();
-  const diffMs = Math.max(0, expiry - now);
-  const minutes = Math.floor(diffMs / 60000);
-  const seconds = Math.floor((diffMs % 60000) / 1000);
-  if (minutes > 0) {
-    return `${minutes}:${seconds.toString().padStart(2, '0')}`;
-  }
-  return `${seconds}s`;
-};
 
 // Channel Points hover tooltip — portalled to document.body to escape overflow-hidden
 const ChannelPointsTooltip = ({ anchorRef, customPointsIconUrl, customPointsName, isLoadingChannelPoints, channelPoints }: {
@@ -193,277 +184,6 @@ const ChannelPointsTooltip = ({ anchorRef, customPointsIconUrl, customPointsName
     document.body
   );
 };
-
-// Emote Grid Item. Browser-native virtualization via CSS content-visibility
-// (the same approach the chat list uses): off-screen cells skip layout + paint
-// and the browser can release their decoded bitmap, so the picker's live memory
-// stays bounded to the visible window instead of growing with every cell
-// scrolled past. That, plus native loading="lazy", is also what stops opening a
-// large set from stalling the renderer (which was freezing the stream): there
-// is no longer a per-cell IntersectionObserver + state, and mounting hundreds
-// of those was the bulk of the open-the-picker cost.
-const EmoteGridItem = memo(({ emote, isFavorited, onInsert, onToggleFavorite }: {
-  emote: Emote;
-  isFavorited: boolean;
-  onInsert: () => void;
-  onToggleFavorite: () => void;
-}) => {
-  const is7tv = emote.provider === '7tv';
-  const emoteTier = inlineEmoteTier();
-  // Disk-first for 7TV: emote.localUrl is the cached file at the per-DPI tier
-  // (populated when the emote was shown in chat). Use it when present so the
-  // picker renders from disk instead of re-pulling the CDN; fall back to the
-  // CDN at the same tier on a miss. Non-7TV already prefer localUrl below.
-  // Prefer a LIVE disk lookup so emotes the background trickle cached during
-  // this session render from disk the next time the block mounts (scroll or
-  // reopen), not only ones whose localUrl was baked at fetch time. Falls back to
-  // the baked localUrl (cross-session disk hit) and finally the CDN at the
-  // per-DPI tier. The lookup is a Map read keyed by the same per-DPI tier the
-  // cache writes, so a hit always matches the on-screen size.
-  const liveLocal = getCachedEmoteUrl(emote.id, emote.provider, emoteTier);
-  const gridSrc = is7tv
-    ? (liveLocal || emote.localUrl || sevenTvTierUrl(emote.id, emoteTier))
-    : (liveLocal || emote.localUrl || emote.url);
-  // Same user-configurable hover-preview height used by inline chat emotes, so
-  // the picker's hover card matches what you see in chat. Defaults to 96px.
-  const hoverPreviewSize = useAppStore((s) => s.settings.chat_design?.emote_hover_size) ?? 96;
-
-  return (
-    <Tooltip
-      side="top"
-      delay={200}
-      content={
-        <div className="flex flex-col items-center gap-1.5 py-0.5">
-          <img
-            src={emote.provider === '7tv' ? `https://cdn.7tv.app/emote/${emote.id}/4x.avif` : (emote.localUrl || emote.url)}
-            alt={emote.name}
-            className="w-auto object-contain mx-auto drop-shadow-md"
-            style={{ height: hoverPreviewSize, maxWidth: hoverPreviewSize * 2 }}
-            onError={(e) => {
-              const t = e.currentTarget;
-              // Walk every size AND both formats, then fall back to the cached
-              // inline-tier copy, so a Large preview never blanks on emotes that
-              // lack a working 4x.
-              if (emote.provider === '7tv') {
-                const ladder = ['4x', '3x', '2x', '1x'].flatMap((s) => [
-                  `https://cdn.7tv.app/emote/${emote.id}/${s}.avif`,
-                  `https://cdn.7tv.app/emote/${emote.id}/${s}.webp`,
-                ]);
-                let step = Number(t.dataset.fb || '0');
-                while (step < ladder.length && ladder[step] === t.src) step++;
-                if (step < ladder.length) {
-                  t.dataset.fb = String(step + 1);
-                  t.src = ladder[step];
-                  return;
-                }
-                if (emote.localUrl && t.src !== emote.localUrl) t.src = emote.localUrl;
-              }
-            }}
-          />
-          <div className="text-center flex flex-col items-center gap-0.5">
-            <span className="font-bold text-[13px] leading-tight">{emote.name}</span>
-            <span className="text-[10px] text-white/60 leading-tight">
-              {emote.owner_name ? `by ${emote.owner_name}` : emote.provider}
-            </span>
-            {emote.isZeroWidth && (
-              <span className="text-[9px] font-bold tracking-wider uppercase text-yellow-400 mt-0.5 mix-blend-screen drop-shadow-sm">
-                Zero-Width
-              </span>
-            )}
-          </div>
-        </div>
-      }
-    >
-      <div
-        className="relative group flex items-center justify-center focus:outline-none w-full h-full min-h-8"
-        style={{ contentVisibility: 'auto', containIntrinsicBlockSize: '40px' }}
-      >
-        <button onClick={onInsert} className={`flex items-center justify-center p-1 w-full h-full min-w-8 min-h-8 hover:bg-glass rounded transition-colors ${emote.isZeroWidth ? 'ring-1 ring-yellow-400/50 bg-yellow-400/10' : ''}`}>
-          <img
-            src={gridSrc}
-            srcSet={is7tv && !emote.localUrl ? `https://cdn.7tv.app/emote/${emote.id}/1x.avif 1x, https://cdn.7tv.app/emote/${emote.id}/2x.avif 2x` : undefined}
-            alt={emote.name}
-            loading="lazy"
-            decoding="async"
-            referrerPolicy="no-referrer"
-            className={`max-h-8 w-auto max-w-full object-contain ${emote.isZeroWidth ? 'drop-shadow-[0_0_3px_rgba(234,179,8,0.6)]' : ''}`}
-            onError={(e) => {
-              const t = e.currentTarget;
-              if (is7tv) {
-                // A given size/format sometimes 404s or serves broken even when
-                // others exist. Walk every size+format until one loads, so the
-                // slot is always filled (scaled to fit) instead of left blank.
-                t.srcset = '';
-                const ladder = ['2x', '1x', '3x', '4x'].flatMap((s) => [
-                  `https://cdn.7tv.app/emote/${emote.id}/${s}.avif`,
-                  `https://cdn.7tv.app/emote/${emote.id}/${s}.webp`,
-                ]);
-                let step = Number(t.dataset.fb || '0');
-                while (step < ladder.length && ladder[step] === t.src) step++;
-                if (step < ladder.length) {
-                  t.dataset.fb = String(step + 1);
-                  t.src = ladder[step];
-                  return;
-                }
-                t.style.opacity = '0.3';
-                return;
-              }
-              if (emote.localUrl && t.src !== emote.url) t.src = emote.url;
-              else t.style.opacity = '0.3';
-            }}
-          />
-        </button>
-        <Tooltip content={isFavorited ? 'Remove from favorites' : 'Add to favorites'}>
-        <button
-          onClick={(e) => { e.stopPropagation(); onToggleFavorite(); }}
-          className={`absolute top-0 right-0 p-1 rounded-bl transition-all ${isFavorited ? 'text-yellow-400 opacity-100' : 'text-textSecondary opacity-0 group-hover:opacity-100'} hover:text-yellow-400 hover:bg-glass`}
-        >
-          <svg className="w-3 h-3" fill={isFavorited ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth={2} viewBox="0 0 20 20">
-            <path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z" />
-          </svg>
-        </button>
-        </Tooltip>
-      </div>
-    </Tooltip>
-  );
-});
-
-/** Split an array into fixed-size chunks (row-aligned blocks for the picker). */
-function chunkArray<T>(arr: T[], size: number): T[][] {
-  if (size <= 0) return [arr];
-  const out: T[][] = [];
-  for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
-  return out;
-}
-
-// Per-row pixel budget used only to reserve scroll height for not-yet-mounted
-// picker blocks so the scrollbar stays stable. Approximate is fine: a block snaps
-// to its real height the moment it mounts. Width-grid cells are image-only
-// (~44px + gap); the Twitch grid adds a name label, so its rows are taller.
-const WIDTH_BLOCK_ROWS = 8;
-const WIDTH_ROW_PX = 52;
-const TWITCH_BLOCK_ROWS = 6;
-const TWITCH_ROW_PX = 60;
-const TWITCH_COLS = 7;
-
-// One vertical block of emote cells inside the picker grid. The picker can hold
-// thousands of emotes; mounting every cell (DOM node + tooltip + favorite button
-// + image) on open was the bulk of the open cost and what kept decoded bitmaps
-// resident. Instead each provider section is split into fixed-row blocks, and a
-// block mounts its cells ONLY while it is near the scroll viewport — gated by a
-// single IntersectionObserver rooted on the scroll container (one observer per
-// block, a few dozen total, NOT the per-CELL observers previously removed for
-// being too many). An off-screen block is a cheap spacer that reserves its
-// height so scrolling stays stable. A short enter-debounce means flinging past a
-// block never decodes it, and blocks scrolled well away unmount their images so
-// a long session — or a kept-mounted, hidden picker — never accumulates decoded
-// emotes. This is the lazy-mount technique FFZ and 7TV both use, adapted to the
-// width-bucketed grid. `children` is a thunk so off-screen cells are never even
-// constructed; `onActivate` fires once when the block first becomes visible
-// (used to bump its emotes to the front of the disk-cache queue).
-const LazyEmoteBlock = memo(({ scrollRef, estimatedHeight, gridClass, onActivate, children }: {
-  scrollRef: React.RefObject<HTMLDivElement>;
-  estimatedHeight: number;
-  gridClass: string;
-  onActivate?: () => void;
-  children: () => React.ReactNode;
-}) => {
-  const ref = useRef<HTMLDivElement>(null);
-  const [visible, setVisible] = useState(false);
-  const activatedRef = useRef(false);
-  useEffect(() => {
-    const el = ref.current;
-    const root = scrollRef.current;
-    if (!el || !root) return;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const obs = new IntersectionObserver(
-      (entries) => {
-        const intersecting = entries[0]?.isIntersecting ?? false;
-        if (timer) clearTimeout(timer);
-        if (intersecting) {
-          // Small debounce so a fast scroll-through never decodes the block.
-          timer = setTimeout(() => {
-            setVisible(true);
-            if (!activatedRef.current) {
-              activatedRef.current = true;
-              onActivate?.();
-            }
-          }, 80);
-        } else {
-          // Evict shortly after leaving so RAM tracks the visible window, even
-          // while the picker is kept mounted-but-hidden (display:none reports
-          // every block as not-intersecting, so closing frees the images).
-          timer = setTimeout(() => setVisible(false), 500);
-        }
-      },
-      { root, rootMargin: '600px 0px' },
-    );
-    obs.observe(el);
-    return () => {
-      obs.disconnect();
-      if (timer) clearTimeout(timer);
-    };
-    // onActivate is read through a once-guard, not a dep — the observer is
-    // rebuilt only if the scroll container itself changes.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [scrollRef]);
-  return (
-    <div
-      ref={ref}
-      className={visible ? gridClass : undefined}
-      style={visible ? undefined : { minHeight: estimatedHeight }}
-    >
-      {visible ? children() : null}
-    </div>
-  );
-});
-
-const HYPE_MESSAGES = [
-  // Classic hype
-  'HYYYYPE! 🚂',
-  'CHOO CHOO! ALL ABOARD! 🚂💨',
-  'ALL ABOARD THE HYPE TRAIN LET\'S GOOO 🎉',
-  'WE EATING GOOD TONIGHT 🍽️🔥',
-  'POGGERS IN CHAT 🐸',
-  'TRAIN HAS LEFT THE STATION AND IT\'S ON FIRE 🚂🔥',
-  'LET\'S GOOOOOOOOOOOOO 🔥',
-  'CHAT POPPIN OFF RN 📈',
-  'THIS IS THE ENERGY WE CAME FOR 🙌',
-  'TURN IT UP TO ELEVEN 🔊✨',
-  'CHAT IS GLOWING RIGHT NOW 🌟',
-  // Pure good vibes
-  'THE VIBES ARE IMMACULATE 🤩✨',
-  'BIGGEST W OF THE NIGHT 🏆',
-  'EVERYBODY IS SO BACK 🙌🔥',
-  'THIS IS PEAK PERFORMANCE 📈💯',
-  'CHAT YOU ARE INCREDIBLE 💖',
-  'MAXIMUM HYPE ACHIEVED 🚀',
-  'WE ARE SO LOCKED IN 🔒🔥',
-  'GREATEST TIMELINE CONFIRMED ✨',
-  'CHAT IS UNSTOPPABLE TONIGHT 💪',
-  'THIS IS WHAT DREAMS LOOK LIKE 🌈',
-  // Train-themed
-  'FULL STEAM AHEAD! 🚂💨',
-  'NEXT STOP: THE STRATOSPHERE 🚂🌌',
-  'THIS TRAIN HAS NO BRAKES 🚂⚡',
-  'ENGINE\'S REDLINING AND WE LOVE IT 🚂🔥',
-  'BUCKLE UP, WE\'RE GOING UP 🚂📈',
-  'CONDUCTOR SAID ONE MORE LEVEL 🚂🎩',
-  'RIDE THIS TRAIN TO THE MOON 🚂🌙',
-  // StreamNook-branded hype
-  'ALL ABOARD THE STREAMNOOK HYPE TRAIN! 🎉',
-  'STREAMNOOK FAM LET\'S GOOO 🔥',
-  'POGGERS IN THE NOOK 🐸🏠',
-  'TRAIN HAS LEFT THE STATION AND STREAMNOOK IS DRIVING 🚂🌪️',
-  'CHAT POPPIN OFF IN STREAMNOOK RN 📈',
-  'STREAMNOOK ENERGY IS UNMATCHED 🙌',
-  'COZIEST HYPE IN THE NOOK TONIGHT 🛋️🚂',
-  'THE NOOK IS GLOWING ✨🏠',
-  'NOBODY DOES IT LIKE THE NOOK 💯',
-  'STREAMNOOK FAM ON TOP AS USUAL 🏆',
-  'THIS NOOK MOMENT IS LEGENDARY 🌟🚂',
-  'WELCOME TO THE BEST SEAT IN THE NOOK 🛋️🔥',
-];
 
 /** Lets ChatWidget render against a caller-supplied channel instead of the
  *  AppStore's currentStream — same pattern as the MultiNook synthesis branch
@@ -742,13 +462,49 @@ const ChatWidget = ({ channelOverride, hypeTrainOverride }: ChatWidgetProps = {}
   
   // UI state
   const [messageInput, setMessageInput] = useState('');
-  const [activeView, setActiveView] = useState<'chat' | 'viewers'>('chat');
+  const [activeView, setActiveView] = useState<'chat' | 'viewers' | 'modroom'>('chat');
+  // Mod-room status reported up by ModRoomPane so the header can show it.
+  const [modRoomStatus, setModRoomStatus] = useState<{ memberCount: number; encrypted: boolean; connected: boolean }>({
+    memberCount: 0,
+    encrypted: false,
+    connected: false,
+  });
+
+  // Optimistic mod-room eligibility: show the toggle instantly on revisit from a
+  // per-channel cache while USERSTATE (isModerator) confirms or clears it. Safe to
+  // be optimistic — the gate verifies mod status server-side.
+  const [cachedMod, setCachedMod] = useState(false);
+  useEffect(() => {
+    setCachedMod(isCachedModerator(currentStream?.user_id));
+  }, [currentStream?.user_id]);
+  useEffect(() => {
+    const id = currentStream?.user_id;
+    if (!id || !userBadges) return; // persist only once USERSTATE has resolved
+    setCachedModerator(id, isModerator);
+    setCachedMod(isModerator);
+  }, [isModerator, userBadges, currentStream?.user_id]);
+  const modRoomEligible = isModerator || cachedMod;
+
+  // Seed the moderated-channel cache once (if the scoped token exists) so the
+  // toggle shows on first visit too, not only on revisit.
+  useEffect(() => {
+    loadModeratedChannelIds().then(() => setCachedMod(isCachedModerator(currentStream?.user_id)));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  // Re-check when the moderated list re-resolves (e.g. right after consent), so
+  // the toggle appears for this channel without an app restart. Re-subscribes on
+  // channel change to read the current channel's status.
+  useEffect(() => {
+    return subscribeModeratedChannels(() => setCachedMod(isCachedModerator(currentStream?.user_id)));
+  }, [currentStream?.user_id]);
 
   // The viewers list is mod-only (Helix Get Chatters needs mod/broadcaster auth).
-  // If mod status drops while it's open, fall back to the chat view.
+  // If mod status drops while it's open, fall back to the chat view. The mod-room
+  // tab uses the optimistic eligibility so it isn't yanked before USERSTATE lands.
   useEffect(() => {
     if (activeView === 'viewers' && !isModerator) setActiveView('chat');
-  }, [activeView, isModerator]);
+    if (activeView === 'modroom' && !modRoomEligible) setActiveView('chat');
+  }, [activeView, isModerator, modRoomEligible]);
   const [showEmotePicker, setShowEmotePicker] = useState(false);
   // Keep-mounted picker: once opened, the picker stays in the tree and is hidden
   // with display:none instead of being unmounted, so reopening is a style flip
@@ -793,23 +549,8 @@ const ChatWidget = ({ channelOverride, hypeTrainOverride }: ChatWidgetProps = {}
   );
 
 
-  // Dynamic smiley icon — cycles on unhover with crossfade animation
-  const smileyPool = useMemo(() => ['😀', '😄', '😁', '😆', '🤣', '😂', '😊', '😇', '🙂', '😉', '😌', '😍', '🥰', '😜', '🤪', '😎', '🤩', '🥳', '😏', '😋', '🤗', '🫠', '🫡', '😺'], []);
-  const [currentSmiley, setCurrentSmiley] = useState(() => '😀');
-  const [isSmileyTransitioning, setIsSmileyTransitioning] = useState(false);
-  const cycleEmoteSmiley = useCallback(() => {
-    // Phase 1: fade out (100ms)
-    setIsSmileyTransitioning(true);
-    setTimeout(() => {
-      // Phase 2: swap src while invisible
-      setCurrentSmiley(prev => {
-        const filtered = smileyPool.filter(s => s !== prev);
-        return filtered[Math.floor(Math.random() * filtered.length)];
-      });
-      // Phase 3: fade back in
-      setIsSmileyTransitioning(false);
-    }, 110);
-  }, [smileyPool]);
+  // Shared swapping-smiley state for the emote-picker trigger.
+  const smiley = useSwappingSmiley();
   // Kick has no Twitch/BTTV/FFZ tabs — its native emotes (Global + Emojis +
   // channel sub set) live in the Kick tab, with 7TV alongside — so open the
   // picker on the Kick tab there instead of the always-blank Twitch tab.
@@ -901,14 +642,10 @@ const ChatWidget = ({ channelOverride, hypeTrainOverride }: ChatWidgetProps = {}
   const mountTimeRef = useRef<number>(Date.now());
   const [viewerCount, setViewerCount] = useState<number | null>(null);
   const streamUptimeRef = useRef<string>('');
-  const [hypeTrainTimeRemaining, setHypeTrainTimeRemaining] = useState<string>('');
-  const hypeTrainExpiresAtRef = useRef<string | null>(null);
-  const [isLevelUpCelebration, setIsLevelUpCelebration] = useState(false);
-  const previousHypeTrainLevelRef = useRef<number>(0);
-  const [displayedLevel, setDisplayedLevel] = useState<number>(0);
-  const [celebrationMessage, setCelebrationMessage] = useState<string>('');
-  // Bumped on each level-up so the confetti burst remounts and replays.
-  const [celebrationId, setCelebrationId] = useState(0);
+  // Hype train rendering (countdown, level-up, confetti) lives in HypeTrainBanner.
+  // We keep the chat container element so the banner can portal its level-up
+  // confetti to cover the full chat height.
+  const [chatContainerEl, setChatContainerEl] = useState<HTMLElement | null>(null);
 
 
   const settings = useAppStore((s) => s.settings);
@@ -1064,7 +801,7 @@ const ChatWidget = ({ channelOverride, hypeTrainOverride }: ChatWidgetProps = {}
   const [isWatchStreakMode, setIsWatchStreakMode] = useState(false);
   const [watchStreakDismissed, setWatchStreakDismissed] = useState(false);
 
-  // Drops mining state
+  // Drops automation state
   const [dropsCampaign, setDropsCampaign] = useState<{ id: string; name: string; game_name: string } | null>(null);
   const [isDropProgressing, setIsDropProgressing] = useState(false);
   const [isLoadingDrops, setIsLoadingDrops] = useState(false);
@@ -1077,7 +814,7 @@ const ChatWidget = ({ channelOverride, hypeTrainOverride }: ChatWidgetProps = {}
   const [channelPointsHovered, setChannelPointsHovered] = useState(false);
   // Bonus-chest claim for the actively watched channel. When auto-claim is on
   // it is collected silently; when off a clickable chest surfaces on the
-  // points button. Background farming of channels you are not watching is a
+  // points button. Background automation of channels you are not watching is a
   // separate opt-in plugin, not this.
   const [availableClaim, setAvailableClaim] = useState<{ id: string; channelId: string } | null>(null);
   const [claimingChest, setClaimingChest] = useState(false);
@@ -1396,96 +1133,7 @@ const ChatWidget = ({ channelOverride, hypeTrainOverride }: ChatWidgetProps = {}
     return () => clearInterval(intervalId);
   }, [currentStream?.started_at]);
 
-  // Smooth Hype Train countdown - updates every second locally
-  useEffect(() => {
-    if (!currentHypeTrain?.expires_at) {
-      setHypeTrainTimeRemaining('');
-      hypeTrainExpiresAtRef.current = null;
-      return;
-    }
 
-    // Update the ref when expires_at changes (new level or new hype train)
-    hypeTrainExpiresAtRef.current = currentHypeTrain.expires_at;
-
-    const updateCountdown = () => {
-      if (!hypeTrainExpiresAtRef.current) return;
-      const now = Date.now();
-      const expiry = new Date(hypeTrainExpiresAtRef.current).getTime();
-      const diffMs = Math.max(0, expiry - now);
-      
-      // Timer expired - clear hype train immediately (don't wait for poll). Only
-      // the main app owns the global value; a MultiChat pane lets its own poll
-      // clear the per-pane train so it never wipes the main app's banner.
-      if (diffMs === 0) {
-        Logger.debug('[HypeTrain] Timer expired - clearing immediately');
-        if (!channelOverride) useAppStore.getState().setCurrentHypeTrain(null);
-        return;
-      }
-      
-      const minutes = Math.floor(diffMs / 60000);
-      const seconds = Math.floor((diffMs % 60000) / 1000);
-      if (minutes > 0) {
-        setHypeTrainTimeRemaining(`${minutes}:${seconds.toString().padStart(2, '0')}`);
-      } else {
-        setHypeTrainTimeRemaining(`${seconds}s`);
-      }
-    };
-
-    updateCountdown();
-    const countdownInterval = setInterval(updateCountdown, 1000);
-    return () => clearInterval(countdownInterval);
-  }, [currentHypeTrain?.expires_at]);
-
-  // Level-up celebration detection - SYNCHRONOUS during render
-  // Detect level changes during render phase (before paint) for immediate response
-  const pendingLevelUpRef = useRef<{ from: number; to: number } | null>(null);
-  
-  // Synchronous check during render - happens BEFORE paint
-  if (currentHypeTrain && !isLevelUpCelebration) {
-    const currentLevel = currentHypeTrain.level;
-    const previousLevel = previousHypeTrainLevelRef.current;
-    
-    // Detect level-up (previous must be > 0 to avoid initial load trigger)
-    if (currentLevel > previousLevel && previousLevel > 0) {
-      pendingLevelUpRef.current = { from: previousLevel, to: currentLevel };
-    }
-  }
-
-  // Effect to handle the detected level-up (sets state, starts timer)
-  useEffect(() => {
-    if (!currentHypeTrain) {
-      previousHypeTrainLevelRef.current = 0;
-      setDisplayedLevel(0);
-      pendingLevelUpRef.current = null;
-      return;
-    }
-
-    if (pendingLevelUpRef.current) {
-      const { from, to } = pendingLevelUpRef.current;
-      Logger.debug(`[HypeTrain] LEVEL UP! ${from} → ${to}`);
-      
-      const randomMessage = HYPE_MESSAGES[Math.floor(Math.random() * HYPE_MESSAGES.length)];
-      setCelebrationMessage(randomMessage);
-      setIsLevelUpCelebration(true);
-      setCelebrationId((id) => id + 1);
-      pendingLevelUpRef.current = null;
-      
-      // Clear celebration after 8s (matches slower 7s scroll + buffer)
-      const celebrationTimeout = setTimeout(() => {
-        setIsLevelUpCelebration(false);
-        setDisplayedLevel(to);
-        previousHypeTrainLevelRef.current = to;
-      }, 8000);
-      
-      return () => clearTimeout(celebrationTimeout);
-    } else {
-      // Normal update (no level-up in progress) - only update if not celebrating
-      if (!isLevelUpCelebration) {
-        setDisplayedLevel(currentHypeTrain.level);
-        previousHypeTrainLevelRef.current = currentHypeTrain.level;
-      }
-    }
-  }, [currentHypeTrain?.level]); // Removed isLevelUpCelebration from deps to avoid re-trigger
 
 
 
@@ -1557,7 +1205,7 @@ const ChatWidget = ({ channelOverride, hypeTrainOverride }: ChatWidgetProps = {}
       //
       // Intentionally skipped in popout mode (`channelOverride` set):
       //   • drops monitoring: popouts are chat-only, not "actively
-      //     watching", so we don't mine drops for them.
+      //     watching", so we don't collect drops for them.
       //   • EventSub disconnect+reconnect — the EventSub service is single-
       //     broadcaster today. Letting the popout reconnect it would steal
       //     the connection from the main app's stream and break hype train /
@@ -1566,7 +1214,7 @@ const ChatWidget = ({ channelOverride, hypeTrainOverride }: ChatWidgetProps = {}
       //     the main app has connected, or get nothing if main isn't
       //     watching this channel.
       //   • register_active_channel — same reason: this marks the "active"
-      //     viewing context for backend bookkeeping (drops, mining,
+      //     viewing context for backend bookkeeping (drops, automation,
       //     analytics). Popouts aren't an active viewing context.
       if (isMultiNookActive && !channelOverride) {
         Logger.info(`[MultiNook] Hot-swapping backend tracking for ${currentStream.user_login}...`);
@@ -1757,7 +1405,7 @@ const ChatWidget = ({ channelOverride, hypeTrainOverride }: ChatWidgetProps = {}
         // Keep the profile stat the old backend auto-claim used to feed; the
         // "+N" pop above is the only on-screen feedback (no toast).
         if (currentUser?.user_id) {
-          incrementStat(currentUser.user_id, 'channel_points_farmed', earned).catch(err => {
+          incrementStat(currentUser.user_id, 'channel_points_collected', earned).catch(err => {
             Logger.warn('[ChatWidget] Failed to track channel points stat:', err);
           });
         }
@@ -1959,7 +1607,7 @@ const ChatWidget = ({ channelOverride, hypeTrainOverride }: ChatWidgetProps = {}
           );
           if (matchingCampaign) {
             setDropsCampaign(matchingCampaign);
-            // Reflect whether a mining plugin is already mining this game, from
+            // Reflect whether an automation plugin is already collecting this game, from
             // the bridge-cached status (check by game_name, not campaign name).
             const dropProgress = useAppStore.getState().liveDropProgress;
             const progressGameName = dropProgress?.current_drop?.game_name?.toLowerCase() ||
@@ -1983,8 +1631,8 @@ const ChatWidget = ({ channelOverride, hypeTrainOverride }: ChatWidgetProps = {}
     loadDropsForStream();
   }, [currentStream?.game_name]);
 
-  // Listen for mining status changes from anywhere in the app.
-  // Real-time updates arrive via the `mining-status-changed` event listener;
+  // Listen for automation status changes from anywhere in the app.
+  // Real-time updates arrive via the `automation-status-changed` event listener;
   // the polling fallback is just a stale-protection net so we use a 60-min
   // cadence (aligned with the TitleBar backup poll) and visibility-gate it.
   const handleDropProgressChange = useCallback(async () => {
@@ -2012,7 +1660,7 @@ const ChatWidget = ({ channelOverride, hypeTrainOverride }: ChatWidgetProps = {}
           void Promise.resolve(unlistenFn()).catch(() => {});
         }
       } catch (err) {
-        Logger.warn('[ChatWidget] Failed to set up mining event listener:', err);
+        Logger.warn('[ChatWidget] Failed to set up automation event listener:', err);
       }
     };
     setupListener();
@@ -2025,32 +1673,32 @@ const ChatWidget = ({ channelOverride, hypeTrainOverride }: ChatWidgetProps = {}
 
   useVisibleInterval(handleDropProgressChange, 60 * 60 * 1000);
 
-  // Handler to toggle mining drops for current channel. Farming is plugin-
-  // powered; this control only renders when a plugin provides mining, so route
+  // Handler to toggle collecting drops for current channel. Automation is plugin-
+  // powered; this control only renders when a plugin provides automation, so route
   // start/stop to it.
-  const handleToggleMining = async () => {
+  const handleToggleAutomation = async () => {
     if (!dropsCampaign) return;
     if (!useAppStore.getState().externalDropsProvider) return;
 
     if (isDropProgressing) {
-      // Stop mining
+      // Stop collecting
       try {
         await invoke('plugins_invoke_action', { action: 'drops.stop', args: {} });
         setIsDropProgressing(false);
-        useAppStore.getState().addToast(`Stopped mining drops for ${dropsCampaign.game_name}`, 'info');
+        useAppStore.getState().addToast(`Stopped collecting drops for ${dropsCampaign.game_name}`, 'info');
       } catch (err) {
-        Logger.error('[ChatWidget] Failed to stop mining:', err);
-        useAppStore.getState().addToast('Failed to stop mining drops', 'error');
+        Logger.error('[ChatWidget] Failed to stop collecting:', err);
+        useAppStore.getState().addToast('Failed to stop collecting drops', 'error');
       }
     } else {
-      // Start mining (the plugin resolves an eligible channel itself)
+      // Start collecting (the plugin resolves an eligible channel itself)
       try {
-        await invoke('plugins_invoke_action', { action: 'drops.mine', args: { campaign_id: dropsCampaign.id } });
+        await invoke('plugins_invoke_action', { action: 'drops.run', args: { campaign_id: dropsCampaign.id } });
         setIsDropProgressing(true);
-        useAppStore.getState().addToast(`Started mining drops for ${dropsCampaign.game_name}`, 'success');
+        useAppStore.getState().addToast(`Started collecting drops for ${dropsCampaign.game_name}`, 'success');
       } catch (err) {
-        Logger.error('[ChatWidget] Failed to start mining:', err);
-        useAppStore.getState().addToast('Failed to start mining drops', 'error');
+        Logger.error('[ChatWidget] Failed to start collecting:', err);
+        useAppStore.getState().addToast('Failed to start collecting drops', 'error');
       }
     }
   };
@@ -3392,176 +3040,7 @@ const ChatWidget = ({ channelOverride, hypeTrainOverride }: ChatWidgetProps = {}
 
   const emojiCategories = EMOJI_CATEGORIES;
 
-  // Memoize allEmojis to prevent recreation on every render
-  const allEmojis = useMemo(() => 
-    Object.entries(emojiCategories).flatMap(([category, emojis]) =>
-      emojis.map(emoji => ({ emoji, category }))
-    ),
-    [emojiCategories]
-  );
 
-  // Memoize filtered emotes to prevent recalculation on every render
-  const filteredEmotes = useMemo((): Emote[] => {
-    if (selectedProvider === 'emoji') return [];
-    if (selectedProvider === 'favorites') {
-      const favs = favoriteEmotes;
-      if (!searchQuery) return favs;
-      const query = searchQuery.toLowerCase();
-      return favs.filter((emote: Emote) => emote.name.toLowerCase().includes(query));
-    }
-    if (!emotes) return [];
-    const providerEmotes = emotes[selectedProvider] || [];
-    if (!searchQuery) return providerEmotes;
-    const query = searchQuery.toLowerCase();
-    return providerEmotes.filter((emote: Emote) => emote.name.toLowerCase().includes(query));
-  }, [selectedProvider, favoriteEmotes, searchQuery, emotes]);
-
-  // With IntersectionObserver-based lazy loading, we can show all emotes
-  // Only visible ones will actually load their images
-  useEffect(() => {
-    // Scroll to top when switching providers
-    if (emoteScrollRef.current) {
-      emoteScrollRef.current.scrollTop = 0;
-    }
-  }, [selectedProvider, searchQuery]);
-
-  // Group emotes by width categories for better grid layout
-  const groupedWidthEmotes = useMemo(() => {
-    const groups = new Map<string, { label: string, emotes: Emote[], gridCols: string, cols: number }>();
-    groups.set('standard', { label: 'Standard', emotes: [], gridCols: 'grid-cols-7', cols: 7 });
-    groups.set('wide', { label: 'Wide', emotes: [], gridCols: 'grid-cols-4', cols: 4 });
-    groups.set('ultrawide', { label: 'Ultra Wide', emotes: [], gridCols: 'grid-cols-3', cols: 3 });
-
-    for (const emote of filteredEmotes) {
-      const width = emote.width || 32;
-      if (width <= 48) {
-        groups.get('standard')!.emotes.push(emote);
-      } else if (width <= 80) {
-        groups.get('wide')!.emotes.push(emote);
-      } else {
-        groups.get('ultrawide')!.emotes.push(emote);
-      }
-    }
-    
-    // Sort emotes internally by exact width and then name
-    for (const group of groups.values()) {
-       group.emotes.sort((a, b) => {
-         // Zero-width emotes float to the start of their respective category
-         if (a.isZeroWidth && !b.isZeroWidth) return -1;
-         if (!a.isZeroWidth && b.isZeroWidth) return 1;
-
-         const wA = a.width || 32;
-         const wB = b.width || 32;
-         if (wA !== wB) return wA - wB; // Narrowest first
-         return a.name.localeCompare(b.name);
-       });
-    }
-
-    return groups;
-  }, [filteredEmotes]);
-
-  // Memoize grouped Twitch emotes to prevent recalculation on every render
-  const groupedTwitchEmotes = useMemo((): Map<string, { name: string; emotes: Emote[] }> => {
-    const groups = new Map<string, { name: string; emotes: Emote[] }>();
-    
-    for (const emote of filteredEmotes) {
-      const type = emote.emote_type || 'globals';
-      const ownerId = emote.owner_id || 'twitch';
-      
-      // Create a unique key for each group
-      let groupKey: string;
-      let groupName: string;
-      
-      if (type === 'globals' || !emote.owner_id) {
-        groupKey = 'globals';
-        groupName = 'Global Emotes';
-      } else if (type === 'subscriptions') {
-        groupKey = `sub-${ownerId}`;
-        // Use cached channel name if available, otherwise show ID
-        const cachedName = channelNameCache.get(ownerId);
-        groupName = cachedName || `Channel ${ownerId}`;
-      } else if (type === 'bitstier') {
-        groupKey = 'bits';
-        groupName = 'Bits Emotes';
-      } else if (type === 'follower') {
-        groupKey = `follower-${ownerId}`;
-        groupName = 'Follower Emotes';
-      } else if (type === 'channelpoints') {
-        groupKey = `points-${ownerId}`;
-        groupName = 'Channel Points Emotes';
-      } else {
-        groupKey = type;
-        groupName = type.charAt(0).toUpperCase() + type.slice(1);
-      }
-      
-      if (!groups.has(groupKey)) {
-        groups.set(groupKey, { name: groupName, emotes: [] });
-      }
-      groups.get(groupKey)!.emotes.push(emote);
-    }
-    
-    // Sort: current channel subs first, then globals, then channel points, then other subs, then others
-    const currentChannelId = currentStream?.user_id;
-    const sortedGroups = new Map<string, { name: string; emotes: Emote[] }>();
-    const keys = Array.from(groups.keys()).sort((a, b) => {
-      // Current channel's subscription emotes first (if watching a channel)
-      if (currentChannelId) {
-        const aIsCurrentChannel = a === `sub-${currentChannelId}`;
-        const bIsCurrentChannel = b === `sub-${currentChannelId}`;
-        if (aIsCurrentChannel && !bIsCurrentChannel) return -1;
-        if (!aIsCurrentChannel && bIsCurrentChannel) return 1;
-      }
-      // Globals second
-      if (a === 'globals') return -1;
-      if (b === 'globals') return 1;
-      // Channel points emotes third
-      if (a.startsWith('points-') && !b.startsWith('points-')) return -1;
-      if (!a.startsWith('points-') && b.startsWith('points-')) return 1;
-      // Other subscription emotes fourth
-      if (a.startsWith('sub-') && !b.startsWith('sub-')) return -1;
-      if (!a.startsWith('sub-') && b.startsWith('sub-')) return 1;
-      // Sort remaining by display name
-      const nameA = groups.get(a)?.name || a;
-      const nameB = groups.get(b)?.name || b;
-      return nameA.localeCompare(nameB);
-    });
-    
-    for (const key of keys) {
-      sortedGroups.set(key, groups.get(key)!);
-    }
-    
-    return sortedGroups;
-  }, [filteredEmotes, channelNameCache, currentStream?.user_id]);
-
-  // Kick native emotes grouped by their set (the channel sub set, then Global,
-  // then Emojis — the order Kick returns them). The set label rides in
-  // `emote_type`; insertion order is preserved so no Twitch-style re-sorting.
-  // Same Map shape as groupedTwitchEmotes, so the grouped picker view renders it.
-  const groupedKickEmotes = useMemo((): Map<string, { name: string; emotes: Emote[] }> => {
-    const groups = new Map<string, { name: string; emotes: Emote[] }>();
-    for (const emote of filteredEmotes) {
-      const label = emote.emote_type || 'Emotes';
-      if (!groups.has(label)) groups.set(label, { name: label, emotes: [] });
-      groups.get(label)!.emotes.push(emote);
-    }
-    return groups;
-  }, [filteredEmotes]);
-
-  // Memoize filtered emojis
-  const filteredEmojis = useMemo(() => {
-    if (!searchQuery) return allEmojis;
-    const query = searchQuery.toLowerCase();
-    return allEmojis.filter(({ emoji, category }) => {
-      // Check category match
-      if (category.toLowerCase().includes(query)) return true;
-      // Check keywords match
-      const keywords = EMOJI_KEYWORDS[emoji];
-      if (keywords) {
-        return keywords.some(k => k.includes(query));
-      }
-      return false;
-    });
-  }, [searchQuery, allEmojis]);
 
   if (!currentStream) {
     return (
@@ -3644,11 +3123,7 @@ const ChatWidget = ({ channelOverride, hypeTrainOverride }: ChatWidgetProps = {}
 
   return (
     <>
-      <div className="h-full bg-secondary overflow-hidden flex flex-col relative">
-        {/* Hype Train level-up confetti. Bursts up from the bar, falls the full height. */}
-        {isLevelUpCelebration && (
-          <ConfettiBurst key={celebrationId} golden={!!currentHypeTrain?.is_golden_kappa} />
-        )}
+      <div ref={setChatContainerEl} className="h-full bg-secondary overflow-hidden flex flex-col relative">
         {/* Prediction Overlay - floating at top of chat */}
         <PredictionOverlay
           channelId={currentStream?.user_id}
@@ -3663,98 +3138,13 @@ const ChatWidget = ({ channelOverride, hypeTrainOverride }: ChatWidgetProps = {}
           isSharedChat && !currentHypeTrain ? 'iridescent-border' : 'border-borderSubtle'
         }`} style={{ backgroundColor: 'rgba(12, 12, 13, 0.9)' }}>
           {currentHypeTrain && (
-            // Hype Train Mode - dedicated progress bar, rendered below the stream-info row
-            (() => {
-              // Guard against NaN when goal is 0 or undefined
-              const percentage = currentHypeTrain.goal > 0
-                ? Math.min(Math.round((currentHypeTrain.progress / currentHypeTrain.goal) * 100), 100)
-                : 0;
-              // Remaining = goal - progress (in Hype points)
-              const remaining = Math.max(0, currentHypeTrain.goal - currentHypeTrain.progress);
-              // 1 bit = 1 point, 1 Tier1 sub = 500 points
-              const bitsNeeded = remaining;
-              const subsNeeded = Math.ceil(remaining / 500);
-              const isGolden = currentHypeTrain.is_golden_kappa;
-              
-              return (
-                <div className="relative h-9 overflow-hidden rounded-md mt-2 pointer-events-none">
-                  {/* Progress fill background */}
-                  <div
-                    className={`absolute inset-0 ${
-                      isGolden ? 'hype-train-progress-golden' : 'hype-train-progress-rainbow'
-                    }`}
-                    style={{
-                      width: `${percentage}%`,
-                      transition: 'width 0.5s ease-out'
-                    }}
-                  />
-                  {/* Unfilled portion with animated wavy left edge */}
-                  <div
-                    className="absolute inset-0 hype-train-wave-edge"
-                    style={{
-                      backgroundColor: 'var(--color-background)',
-                      left: `calc(${percentage}% - 19px)`,
-                      width: `calc(${100 - percentage}% + 19px)`,
-                      transition: 'left 0.5s ease-out, width 0.5s ease-out'
-                    }}
-                  />
-                  {/* Percentage / celebration content, centered within the strip */}
-                  <div className="absolute inset-0 flex items-center justify-center z-20 pointer-events-none">
-                    {isLevelUpCelebration ? (
-                      <>
-                        {/* White flash effect (confetti rains over the whole widget, see ConfettiBurst) */}
-                        <div className="absolute inset-0 bg-white/40 animate-hype-flash" />
-
-                        {/* Scrolling HYPE text */}
-                        <div className="animate-hype-marquee whitespace-nowrap">
-                          <span className="text-xl font-black text-white drop-shadow-glow mx-4">
-                            🎉 LEVEL UP! {celebrationMessage} 🎉 LEVEL UP! {celebrationMessage} 🎉
-                          </span>
-                        </div>
-                      </>
-                    ) : (
-                      <span className="text-xl font-black text-white drop-shadow-lg tabular-nums">
-                        {percentage}%
-                      </span>
-                    )}
-                  </div>
-                  
-                  {/* Level (left) and remaining/time (right), centered within the strip */}
-                  <div className="absolute inset-0 flex items-center justify-between px-2.5 z-10">
-                    {/* Left side - train icon and level */}
-                    <div className="flex items-center gap-1.5">
-                      {isGolden ? (
-                        <span className="text-lg">✨</span>
-                      ) : (
-                        <svg className="w-5 h-5 text-white" viewBox="0 0 15 13" fill="none">
-                          <path fillRule="evenodd" clipRule="evenodd" d="M4.10001 0.549988H2.40001V4.79999H0.700012V10.75H1.55001C1.55001 11.6889 2.31113 12.45 3.25001 12.45C4.1889 12.45 4.95001 11.6889 4.95001 10.75H5.80001C5.80001 11.6889 6.56113 12.45 7.50001 12.45C8.4389 12.45 9.20001 11.6889 9.20001 10.75H10.05C10.05 11.6889 10.8111 12.45 11.75 12.45C12.6889 12.45 13.45 11.6889 13.45 10.75H14.3V0.549988H6.65001V2.24999H7.50001V4.79999H4.10001V0.549988ZM12.6 9.04999V6.49999H2.40001V9.04999H12.6ZM9.20001 4.79999H12.6V2.24999H9.20001V4.79999Z" fill="currentColor" />
-                        </svg>
-                      )}
-                      <span className="text-sm font-bold text-white drop-shadow-sm">
-                        LVL {displayedLevel || currentHypeTrain.level}
-                      </span>
-                    </div>
-                    
-                    {/* Right side - bits/subs remaining and time */}
-                    <div className="flex items-center gap-1">
-                      <span className="text-[10px] text-white/80 drop-shadow-sm">
-                        {remaining > 0 ? (
-                          <>
-                            {bitsNeeded >= 1000 
-                              ? `${(bitsNeeded / 1000).toFixed(1)}K` 
-                              : bitsNeeded} bits / {subsNeeded} subs left
-                          </>
-                        ) : '🎉'}
-                      </span>
-                      <span className="text-[10px] text-white/50">|</span>
-                      <span className="text-[10px] text-white/70 drop-shadow-sm tabular-nums">
-                        {hypeTrainTimeRemaining}
-                      </span>
-                    </div>
-                  </div>
-                </div>
-              );
-            })()
+            <HypeTrainBanner
+              train={currentHypeTrain}
+              confettiTarget={chatContainerEl}
+              onExpire={() => {
+                if (!channelOverride) useAppStore.getState().setCurrentHypeTrain(null);
+              }}
+            />
           )}
           {/* Stream-info header, always visible; sits as the top row, above the hype bar */}
           <div className="relative z-10">
@@ -3778,20 +3168,57 @@ const ChatWidget = ({ channelOverride, hypeTrainOverride }: ChatWidgetProps = {}
                 {/* Chat status label. The STREAM CHAT <-> ABOUT carousel toggle was
                     retired: the channel About is now reached by scrolling down on
                     the player (ChannelAboutReveal). */}
-                <p className={`text-xs font-semibold leading-4 whitespace-nowrap ${isSharedChat ? 'iridescent-title' : 'text-textPrimary'}`}>
-                  {!isConnected
-                    ? 'DISCONNECTED'
-                    : channelOverride
-                      ? channelOverride.user_name || channelOverride.user_login || 'STREAM CHAT'
-                      : isSharedChat
-                        ? 'SHARED STREAM CHAT'
-                        : currentMediaType === 'offline_chat'
-                          ? 'OFFLINE CHAT'
-                          : 'STREAM CHAT'}
-                </p>
+                <AnimatePresence mode="wait" initial={false}>
+                  {activeView === 'modroom' ? (
+                    <motion.div
+                      key="modroom-header"
+                      initial={{ opacity: 0, y: -4 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{ opacity: 0, y: 4 }}
+                      transition={{ duration: 0.16, ease: [0.16, 1, 0.3, 1] }}
+                      className="flex min-w-0 items-center gap-2 whitespace-nowrap"
+                    >
+                      {modRoomStatus.connected ? (
+                        <span className="flex items-center whitespace-nowrap text-xs text-textSecondary">
+                          <motion.span
+                            key={modRoomStatus.memberCount}
+                            initial={{ opacity: 0, y: -3, scale: 0.7 }}
+                            animate={{ opacity: 1, y: 0, scale: 1 }}
+                            transition={{ type: 'spring', stiffness: 520, damping: 26 }}
+                            className="mr-1 inline-block font-semibold text-textPrimary"
+                          >
+                            {modRoomStatus.memberCount || 1}
+                          </motion.span>
+                          in the room
+                        </span>
+                      ) : (
+                        <span className="text-xs text-textSecondary">Connecting...</span>
+                      )}
+                    </motion.div>
+                  ) : (
+                    <motion.p
+                      key="chat-header"
+                      initial={{ opacity: 0, y: -4 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{ opacity: 0, y: 4 }}
+                      transition={{ duration: 0.16, ease: [0.16, 1, 0.3, 1] }}
+                      className={`text-xs font-semibold leading-4 whitespace-nowrap ${isSharedChat ? 'iridescent-title' : 'text-textPrimary'}`}
+                    >
+                      {!isConnected
+                        ? 'DISCONNECTED'
+                        : channelOverride
+                          ? channelOverride.user_name || channelOverride.user_login || 'STREAM CHAT'
+                          : isSharedChat
+                            ? 'SHARED STREAM CHAT'
+                            : currentMediaType === 'offline_chat'
+                              ? 'OFFLINE CHAT'
+                              : 'STREAM CHAT'}
+                    </motion.p>
+                  )}
+                </AnimatePresence>
                 {/* MultiChat panes have no player, so surface the live title/game
                     here (the main app shows them around the player instead). */}
-                {channelOverride && currentStream?.title && (
+                {channelOverride && currentStream?.title && activeView !== 'modroom' && (
                   <p
                     className="min-w-0 flex-1 truncate text-[10px] font-normal leading-4 text-textMuted"
                     title={currentStream.title}
@@ -3801,6 +3228,64 @@ const ChatWidget = ({ channelOverride, hypeTrainOverride }: ChatWidgetProps = {}
                   </p>
                 )}
                 <div className="flex items-center gap-3 ml-auto">
+                  {/* Compact Chat / Mod Room toggle: the active pill slides between
+                      the two with a spring (magnetic). Shown for moderators, using
+                      the optimistic eligibility so it appears instantly on revisit. */}
+                  {modRoomEligible && currentStream && (
+                    <div
+                      className="pointer-events-auto relative order-last flex items-center rounded-full p-0.5"
+                      style={{ background: 'rgba(255,255,255,0.06)', boxShadow: 'inset 0 0 0 1px rgba(255,255,255,0.07)' }}
+                    >
+                      {(
+                        [
+                          { key: 'chat', label: 'Chat', active: activeView !== 'modroom' },
+                          { key: 'modroom', label: 'Mods', active: activeView === 'modroom' },
+                        ] as const
+                      ).map((seg) => (
+                        <button
+                          key={seg.key}
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setActiveView(seg.key);
+                          }}
+                          className={`relative rounded-full px-3.5 py-1 text-xs font-semibold transition-colors ${seg.active ? 'text-textPrimary' : 'text-textSecondary hover:text-textPrimary'}`}
+                        >
+                          {seg.active && (
+                            <motion.span
+                              layoutId="modroom-toggle-pill"
+                              className="absolute inset-0 rounded-full bg-white/[0.13]"
+                              style={{ boxShadow: 'inset 0 0 0 1px rgba(255,255,255,0.09)' }}
+                              transition={{ type: 'spring', stiffness: 480, damping: 28 }}
+                            />
+                          )}
+                          <span className="relative z-10">{seg.label}</span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                  {/* In the mod room: the premium encrypted badge takes the place of
+                      the viewers / uptime / pop-out cluster. */}
+                  {activeView === 'modroom' && (
+                    <motion.span
+                      initial={{ opacity: 0, scale: 0.9 }}
+                      animate={{ opacity: 1, scale: 1 }}
+                      transition={{ type: 'spring', stiffness: 520, damping: 30 }}
+                      className="inline-flex select-none items-center gap-1 rounded-full px-2 py-[3px] text-[11px] font-semibold tracking-tight text-emerald-300"
+                      style={{
+                        background: 'linear-gradient(180deg, rgba(16,185,129,0.16), rgba(16,185,129,0.08))',
+                        boxShadow: 'inset 0 0 0 1px rgba(16,185,129,0.28), inset 0 1px 0 rgba(255,255,255,0.06)',
+                      }}
+                    >
+                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                        <rect x="3" y="11" width="18" height="11" rx="2" />
+                        <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+                      </svg>
+                      Encrypted
+                    </motion.span>
+                  )}
+                  {activeView !== 'modroom' && (
+                    <>
                   {/* Viewers list — the official chatters roster grouped by role.
                       Mod/broadcaster only (Helix Get Chatters requires it), so the
                       toggle is hidden on channels the user doesn't moderate. */}
@@ -3914,7 +3399,8 @@ const ChatWidget = ({ channelOverride, hypeTrainOverride }: ChatWidgetProps = {}
                       </div>
                     );
                   })()}
-
+                    </>
+                  )}
                 </div>
               </div>
               {/* Pinned messages are now rendered in a floating modal outside the header */}
@@ -4164,6 +3650,30 @@ const ChatWidget = ({ channelOverride, hypeTrainOverride }: ChatWidgetProps = {}
           </div>
         )}
 
+        <AnimatePresence mode="popLayout">
+          {activeView === 'modroom' && currentStream && (
+            <motion.div
+              key="modroom-pane"
+              className={`flex-1 overflow-hidden ${currentHypeTrain ? 'pt-24' : 'pt-10'}`}
+              initial={{ opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: 8 }}
+              transition={{ duration: 0.18, ease: [0.16, 1, 0.3, 1] }}
+            >
+              <ModRoomPane
+                key={currentStream.user_id}
+                channelId={currentStream.user_id}
+                channelLogin={currentStream.user_login}
+                emotes={emotes}
+                onStatus={setModRoomStatus}
+                onUsernameClick={(login, userId, event) =>
+                  handleUsernameClick(userId, login, login, '', [], event)
+                }
+              />
+            </motion.div>
+          )}
+        </AnimatePresence>
+
         {/* Chat messages area - flex-1 to take remaining space */}
         {activeView === 'chat' && <div className="flex-1 overflow-hidden animate-panel-slide-down"
           onMouseEnter={() => { isHoveringChatRef.current = true; }}
@@ -4251,258 +3761,22 @@ const ChatWidget = ({ channelOverride, hypeTrainOverride }: ChatWidgetProps = {}
         <div className="flex-shrink-0 border-t border-borderSubtle" style={{ backgroundColor: 'rgba(12, 12, 13, 0.9)' }}>
           <div className="p-2">
             <div className="relative">
-              {pickerMounted && (
-                <motion.div
-                  initial="closed"
-                  variants={{ open: { opacity: 1, y: 0, scale: 1 }, closed: { opacity: 0, y: 10, scale: 0.98 } }}
-                  animate={showEmotePicker ? 'open' : 'closed'}
-                  transition={{ type: "spring", stiffness: 400, damping: 30 }}
-                  onAnimationComplete={(def) => { if (def === 'closed') setPickerFullyClosed(true); }}
-                  className="absolute bottom-full left-0 right-0 mb-2 h-[520px] max-h-[calc(100vh-120px)] border border-borderSubtle rounded-lg shadow-lg flex flex-col overflow-hidden origin-bottom"
-                  style={{ backgroundColor: 'rgba(12, 12, 13, 0.95)', display: (!showEmotePicker && pickerFullyClosed) ? 'none' : undefined, pointerEvents: showEmotePicker ? 'auto' : 'none' }}>
-                  <div className="p-2 border-b border-borderSubtle">
-                    <div className="flex items-center gap-1.5">
-                      <input type="text" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} placeholder="Search emotes..."
-                        className="flex-1 min-w-0 glass-input text-xs px-3 py-1.5 placeholder-textSecondary" />
-                      <Tooltip content="Manage 7TV emotes" side="top">
-                        <button
-                          onClick={() => { setShowEmotePicker(false); openEmoteSets({ twitchId: currentStream?.user_id, tab: 'emotes' }); }}
-                          className="shrink-0 glass-button p-1.5 text-textSecondary hover:text-white transition-colors"
-                          style={{ borderRadius: '8px' }}>
-                          <Settings size={15} />
-                        </button>
-                      </Tooltip>
-                    </div>
-                    <div className="flex gap-1 mt-2">
-                      <Tooltip content={`Favorites (${favoriteEmotes.length})`} side="top">
-                      <button onClick={() => setSelectedProvider('favorites')} className={`flex-1 py-1.5 text-xs transition-all flex items-center justify-center gap-1 ${selectedProvider === 'favorites' ? 'glass-input text-emerald-400 font-extrabold' : 'glass-button text-textSecondary hover:text-white'}`} style={{ borderRadius: '8px' }}>
-                        <span className="text-yellow-400">★</span><span className="text-[10px] opacity-70">{favoriteEmotes.length}</span>
-                      </button>
-                      </Tooltip>
-                      <Tooltip content="Emoji" side="top">
-                      <button onClick={() => setSelectedProvider('emoji')} className={`flex-1 py-1.5 text-xs transition-all flex items-center justify-center ${selectedProvider === 'emoji' ? 'glass-input text-emerald-400 font-extrabold' : 'glass-button text-textSecondary hover:text-white'}`} style={{ borderRadius: '8px' }}><img src={getAppleEmojiUrl('😀')} alt="😀" className="w-4 h-4" /></button>
-                      </Tooltip>
-                      {isTwitch && (
-                      <Tooltip content={`Twitch (${emotes?.twitch.length || 0})`} side="top">
-                      <button onClick={() => setSelectedProvider('twitch')} className={`flex-1 py-1.5 text-xs transition-all flex items-center justify-center gap-1 ${selectedProvider === 'twitch' ? 'glass-input text-emerald-400 font-extrabold' : 'glass-button text-textSecondary hover:text-white'}`} style={{ borderRadius: '8px' }}>
-                        <svg className="w-4 h-4" viewBox="0 0 24 24" fill="currentColor"><path d="M11.571 4.714h1.715v5.143H11.57zm4.715 0H18v5.143h-1.714zM6 0L1.714 4.286v15.428h5.143V24l4.286-4.286h3.428L22.286 12V0zm14.571 11.143l-3.428 3.428h-3.429l-3 3v-3H6.857V1.714h13.714Z" /></svg>
-                        <span className="text-[10px] opacity-70">{emotes?.twitch.length || 0}</span>
-                      </button>
-                      </Tooltip>
-                      )}
-                      {isTwitch && (
-                      <Tooltip content={`BetterTTV (${emotes?.bttv.length || 0})`} side="top">
-                      <button onClick={() => setSelectedProvider('bttv')} className={`flex-1 py-1.5 text-xs transition-all flex items-center justify-center gap-1 ${selectedProvider === 'bttv' ? 'glass-input text-emerald-400 font-extrabold' : 'glass-button text-textSecondary hover:text-white'}`} style={{ borderRadius: '8px' }}>
-                        <svg className="w-4 h-4" viewBox="0 0 300 300" fill="currentColor"><path fill="transparent" d="M249.771 150A99.771 99.922 0 0 1 150 249.922 99.771 99.922 0 0 1 50.229 150 99.771 99.922 0 0 1 150 50.078 99.771 99.922 0 0 1 249.771 150Z" /><path d="M150 1.74C68.409 1.74 1.74 68.41 1.74 150S68.41 298.26 150 298.26h148.26V150.17h-.004c0-.057.004-.113.004-.17C298.26 68.409 231.59 1.74 150 1.74zm0 49c55.11 0 99.26 44.15 99.26 99.26 0 55.11-44.15 99.26-99.26 99.26-55.11 0-99.26-44.15-99.26-99.26 0-55.11 44.15-99.26 99.26-99.26z" /><path d="M161.388 70.076c-10.662 0-19.42 7.866-19.42 17.67 0 9.803 8.758 17.67 19.42 17.67 10.662 0 19.42-7.867 19.42-17.67 0-9.804-8.758-17.67-19.42-17.67zm45.346 24.554-.02.022-.004.002c-5.402 2.771-11.53 6.895-18.224 11.978l-.002.002-.004.002c-25.943 19.766-60.027 54.218-80.344 80.33h-.072l-1.352 1.768c-5.114 6.69-9.267 12.762-12.098 18.006l-.082.082.022.021v.002l.004.002.174.176.052-.053.102.053-.07.072c30.826 30.537 81.213 30.431 111.918-.273 30.783-30.784 30.8-81.352.04-112.152l-.005-.004zM87.837 142.216c-9.803 0-17.67 8.758-17.67 19.42 0 10.662 7.867 19.42 17.67 19.42 9.804 0 17.67-8.758 17.67-19.42 0-10.662-7.866-19.42-17.67-19.42z" /></svg>
-                        <span className="text-[10px] opacity-70">{emotes?.bttv.length || 0}</span>
-                      </button>
-                      </Tooltip>
-                      )}
-                      {provider === 'kick' && (
-                      <Tooltip content={`Kick (${emotes?.kick.length || 0})`} side="top">
-                      <button onClick={() => setSelectedProvider('kick')} className={`flex-1 py-1.5 text-xs transition-all flex items-center justify-center gap-1 ${selectedProvider === 'kick' ? 'glass-input text-emerald-400 font-extrabold' : 'glass-button text-textSecondary hover:text-white'}`} style={{ borderRadius: '8px' }}>
-                        <svg className="w-4 h-4" viewBox="0 0 24 24" fill="currentColor"><path d="M1.333 0h8v5.333H12V2.667h2.667V0h8v8H20v2.667h-2.667v2.666H20V16h2.667v8h-8v-2.667H12v-2.666H9.333V24h-8Z" /></svg>
-                        <span className="text-[10px] opacity-70">{emotes?.kick.length || 0}</span>
-                      </button>
-                      </Tooltip>
-                      )}
-                      {/* 7TV is fetched for Twitch + Kick; YouTube 7TV emotes are a later pass. */}
-                      {(isTwitch || provider === 'kick') && (
-                      <Tooltip content={`7TV (${emotes?.['7tv'].length || 0})`} side="top">
-                      <button onClick={() => setSelectedProvider('7tv')} className={`flex-1 py-1.5 text-xs transition-all flex items-center justify-center gap-1 ${selectedProvider === '7tv' ? 'glass-input text-emerald-400 font-extrabold' : 'glass-button text-textSecondary hover:text-white'}`} style={{ borderRadius: '8px' }}>
-                        <svg className="w-4 h-4" viewBox="0 0 28 21" fill="currentColor"><path d="M20.7465 5.48825L21.9799 3.33745L22.646 2.20024L21.4125 0.0494437V0H14.8259L17.2928 4.3016L17.9836 5.48825H20.7465Z" /><path d="M7.15395 19.9258L14.5546 7.02104L15.4673 5.43884L13.0004 1.13724L12.3097 0.0247596H1.8995L0.666057 2.17556L0 3.31276L1.23344 5.46356V5.51301H9.12745L2.96025 16.267L2.09685 17.7998L3.33029 19.9506V20H7.15395" /><path d="M17.4655 19.9257H21.2398L26.1736 11.3225L27.037 9.83924L25.8036 7.68844V7.63899H22.0046L19.5377 11.9406L19.365 12.262L16.8981 7.96038L16.7255 7.63899L14.2586 11.9406L13.5679 13.1272L17.2682 19.5796L17.4655 19.9257Z" /></svg>
-                        <span className="text-[10px] opacity-70">{emotes?.['7tv'].length || 0}</span>
-                      </button>
-                      </Tooltip>
-                      )}
-                      {isTwitch && (
-                      <Tooltip content={`FrankerFaceZ (${emotes?.ffz.length || 0})`} side="top">
-                      <button onClick={() => setSelectedProvider('ffz')} className={`flex-1 py-1.5 text-xs transition-all flex items-center justify-center gap-1 ${selectedProvider === 'ffz' ? 'glass-input text-emerald-400 font-extrabold' : 'glass-button text-textSecondary hover:text-white'}`} style={{ borderRadius: '8px' }}>
-                        <svg className="w-4 h-4" viewBox="-0.5 -0.5 40 30" fill="currentColor"><path d="M 15.5,-0.5 C 17.8333,-0.5 20.1667,-0.5 22.5,-0.5C 24.6552,3.13905 26.8218,6.80572 29,10.5C 29.691,7.40943 31.5243,6.24276 34.5,7C 36.585,9.68221 38.2517,12.5155 39.5,15.5C 39.5,17.5 39.5,19.5 39.5,21.5C 34.66,25.2533 29.3267,27.92 23.5,29.5C 20.5,29.5 17.5,29.5 14.5,29.5C 9.11466,27.3005 4.11466,24.3005 -0.5,20.5C -0.5,17.5 -0.5,14.5 -0.5,11.5C 4.17691,4.45967 7.34358,5.12633 9,13.5C 10.6047,10.3522 11.6047,7.01889 12,3.5C 12.6897,1.64977 13.8564,0.316435 15.5,-0.5 Z" /></svg>
-                        <span className="text-[10px] opacity-70">{emotes?.ffz.length || 0}</span>
-                      </button>
-                      </Tooltip>
-                      )}
-                    </div>
-                  </div>
-                  <div ref={emoteScrollRef} className="flex-1 overflow-y-auto px-2 pb-2 scrollbar-thin">
-                    {selectedProvider === 'emoji' ? (
-                      filteredEmojis.length === 0 ? (
-                        <div className="flex items-center justify-center h-32"><p className="text-xs text-textSecondary">No emojis found</p></div>
-                      ) : (
-                        <div className="flex flex-col gap-4 pt-2">
-                          {Object.entries(emojiCategories).map(([category, emojis]) => {
-                            const filteredCategoryEmojis = searchQuery ? emojis.filter(emoji => emoji.includes(searchQuery) || category.toLowerCase().includes(searchQuery.toLowerCase())) : emojis;
-                            if (filteredCategoryEmojis.length === 0) return null;
-                            return (
-                              <div key={category} className="flex flex-col">
-                                <h3 className="text-[10px] text-textSecondary uppercase tracking-wider font-bold mb-2 -mx-2 px-4 sticky top-0 py-1.5 border-b border-white/[0.03] z-10 backdrop-blur-ultra" style={{ backgroundColor: 'rgba(12, 12, 13, 0.95)' }}>{category}</h3>
-                                <div className="grid grid-cols-8 gap-1 px-1">
-                                  {filteredCategoryEmojis.map((emoji, idx) => (
-                                    <Tooltip key={`${category}-${idx}`} content={emoji}>
-                                    <button onClick={() => insertEmote(emoji)} className="flex items-center justify-center p-1.5 hover:bg-glass rounded transition-colors">
-                                      <img src={getAppleEmojiUrl(emoji)} alt={emoji} className="w-6 h-6 object-contain" onError={(e) => {
-                                        const t = e.currentTarget;
-                                        // Retry with the -fe0f filename (some symbols are stored that way) before falling back to the native glyph.
-                                        if (!t.dataset.fe0f && t.src.endsWith('.png') && !t.src.includes('-fe0f')) {
-                                          t.dataset.fe0f = '1';
-                                          t.src = t.src.replace(/\.png$/, '-fe0f.png');
-                                          return;
-                                        }
-                                        t.style.display = 'none';
-                                        if (t.nextSibling?.textContent !== emoji) t.insertAdjacentText('afterend', emoji);
-                                      }} />
-                                    </button>
-                                    </Tooltip>
-                                  ))}
-                                </div>
-                              </div>
-                            );
-                          })}
-                        </div>
-                      )
-                    ) : isLoadingEmotes ? (
-                      <div className="flex items-center justify-center h-32"><p className="text-xs text-textSecondary">Loading emotes...</p></div>
-                    ) : filteredEmotes.length === 0 ? (
-                      <div className="flex items-center justify-center h-32"><p className="text-xs text-textSecondary">No emotes found</p></div>
-                    ) : (selectedProvider === 'twitch' || selectedProvider === 'kick') ? (
-                      // Grouped by section: Twitch channels, or Kick's native sets
-                      // (channel / Global / Emojis). Both share the same Map shape.
-                      <div className="flex flex-col gap-4 pt-2">
-                        {Array.from((selectedProvider === 'kick' ? groupedKickEmotes : groupedTwitchEmotes).entries()).map(([groupKey, group]) => (
-                          <div key={groupKey} className="flex flex-col">
-                            <h3 className="text-[10px] text-textSecondary uppercase tracking-wider font-bold mb-2 -mx-2 px-4 sticky top-0 py-1.5 border-b border-borderSubtle z-10 backdrop-blur-ultra" style={{ backgroundColor: 'rgba(12, 12, 13, 0.95)' }}>
-                              <span className="text-textPrimary">{group.name}</span> <span className="opacity-50">({group.emotes.length})</span>
-                            </h3>
-                            {chunkArray(group.emotes, TWITCH_COLS * TWITCH_BLOCK_ROWS).map((block, bi) => {
-                              const rows = Math.ceil(block.length / TWITCH_COLS);
-                              return (
-                                <LazyEmoteBlock
-                                  key={`${groupKey}-blk-${bi}`}
-                                  scrollRef={emoteScrollRef}
-                                  estimatedHeight={rows * TWITCH_ROW_PX}
-                                  gridClass="grid grid-cols-7 gap-2 px-1"
-                                  onActivate={() => { const tier = inlineEmoteTier(); for (const e of block) queueEmoteForDisplayCaching(e.id, e.provider, e.url, tier, true); }}
-                                >
-                              {() => block.map((emote, idx) => {
-                                const isFavorited = isFavoriteEmote(emote.id);
-                                const liveSrc = getCachedEmoteUrl(emote.id, emote.provider) || emote.localUrl || emote.url;
-                                return (
-                                  <div key={`${groupKey}-${emote.provider}-${emote.id}-${idx}`} className="relative group">
-                                    <Tooltip content={emote.name}>
-                                    <button onClick={() => insertEmote(emote.name)} className="flex flex-col items-center gap-1 p-1.5 hover:bg-glass rounded transition-colors w-full">
-                                      <img
-                                        src={liveSrc}
-                                        alt={emote.name}
-                                        loading="lazy"
-                                        decoding="async"
-                                        referrerPolicy="no-referrer"
-                                        crossOrigin="anonymous"
-                                        className="w-8 h-8 object-contain"
-                                        onError={(e) => {
-                                          // Disk/cache miss: fall back to the CDN once, then hide.
-                                          const target = e.currentTarget;
-                                          if (target.src !== emote.url) {
-                                            target.src = emote.url;
-                                          } else {
-                                            target.style.display = 'none';
-                                          }
-                                        }}
-                                      />
-                                      <span className="text-xs text-textSecondary truncate w-full text-center">{emote.name}</span>
-                                    </button>
-                                    </Tooltip>
-                                    <Tooltip content={isFavorited ? 'Remove from favorites' : 'Add to favorites'}>
-                                    <button onClick={async (e) => {
-                                      e.stopPropagation();
-                                      try {
-                                        if (isFavorited) {
-                                          await removeFavoriteEmote(emote.id);
-                                          useAppStore.getState().addToast(`Removed ${emote.name} from favorites`, 'success');
-                                        } else {
-                                          await addFavoriteEmote(emote);
-                                          if (emotes) {
-                                            const allEmotes = [...emotes.twitch, ...emotes.bttv, ...emotes['7tv'], ...emotes.ffz, ...emotes.kick];
-                                            const availableFavorites = getAvailableFavorites(allEmotes);
-                                            setFavoriteEmotes(availableFavorites);
-                                          }
-                                          useAppStore.getState().addToast(`Added ${emote.name} to favorites`, 'success');
-                                        }
-                                      } catch (err) {
-                                        Logger.error('Failed to toggle favorite:', err);
-                                        useAppStore.getState().addToast('Failed to update favorites', 'error');
-                                      }
-                                    }} className={`absolute top-0 right-0 p-1 rounded-bl transition-all ${isFavorited ? 'text-yellow-400 opacity-100' : 'text-textSecondary opacity-0 group-hover:opacity-100'} hover:text-yellow-400 hover:bg-glass`}>
-                                      <svg className="w-3 h-3" fill={isFavorited ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth={2} viewBox="0 0 20 20"><path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z" /></svg>
-                                    </button>
-                                    </Tooltip>
-                                  </div>
-                                );
-                              })}
-                                </LazyEmoteBlock>
-                              );
-                            })}
-                          </div>
-                        ))}
-                      </div>
-                    ) : (
-                      <div className="flex flex-col gap-4 pt-2">
-                        {Array.from(groupedWidthEmotes.values()).filter(g => g.emotes.length > 0).map((group) => (
-                          <div key={group.label} className="flex flex-col">
-                            <h3 className="text-[10px] text-textSecondary uppercase tracking-wider font-bold mb-2 -mx-2 px-4 sticky top-0 py-1.5 border-b border-borderSubtle z-10 backdrop-blur-ultra" style={{ backgroundColor: 'rgba(12, 12, 13, 0.95)' }}>
-                              <span className="text-textPrimary">{group.label}</span> <span className="opacity-50">({group.emotes.length})</span>
-                            </h3>
-                            {chunkArray(group.emotes, group.cols * WIDTH_BLOCK_ROWS).map((block, bi) => {
-                              const rows = Math.ceil(block.length / group.cols);
-                              return (
-                                <LazyEmoteBlock
-                                  key={`${group.label}-blk-${bi}`}
-                                  scrollRef={emoteScrollRef}
-                                  estimatedHeight={rows * WIDTH_ROW_PX}
-                                  gridClass={`grid ${group.gridCols} gap-2 px-1`}
-                                  onActivate={() => { const tier = inlineEmoteTier(); for (const e of block) queueEmoteForDisplayCaching(e.id, e.provider, e.url, tier, true); }}
-                                >
-                              {() => block.map((emote: Emote, idx: number) => {
-                                const isFavorited = isFavoriteEmote(emote.id);
-                                return (
-                                  <EmoteGridItem
-                                    key={`${emote.provider}-${emote.id}-${idx}`}
-                                    emote={emote}
-                                    isFavorited={isFavorited}
-                                    onInsert={() => insertEmote(emote.name)}
-                                    onToggleFavorite={async () => {
-                                      try {
-                                        if (isFavorited) {
-                                          await removeFavoriteEmote(emote.id);
-                                          if (selectedProvider === 'favorites') setFavoriteEmotes(prev => prev.filter(e => e.id !== emote.id));
-                                          useAppStore.getState().addToast(`Removed ${emote.name} from favorites`, 'info');
-                                        } else {
-                                          await addFavoriteEmote(emote);
-                                          if (emotes) {
-                                            const allEmotes = [...emotes.twitch, ...emotes.bttv, ...emotes['7tv'], ...emotes.ffz, ...emotes.kick];
-                                            const availableFavorites = getAvailableFavorites(allEmotes);
-                                            setFavoriteEmotes(availableFavorites);
-                                          }
-                                          useAppStore.getState().addToast(`Added ${emote.name} to favorites`, 'success');
-                                        }
-                                      } catch (err) {
-                                        Logger.error('Failed to toggle favorite:', err);
-                                        useAppStore.getState().addToast('Failed to update favorites', 'error');
-                                      }
-                                    }}
-                                  />
-                                );
-                              })}
-                                </LazyEmoteBlock>
-                              );
-                            })}
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                </motion.div>
-              )}
+              <EmotePickerPanel
+                open={showEmotePicker}
+                onClose={() => setShowEmotePicker(false)}
+                emotes={emotes}
+                isTwitch={isTwitch}
+                isKick={provider === 'kick'}
+                channelId={currentStream?.user_id}
+                channelLogin={currentStream?.user_login}
+                isLoadingEmotes={isLoadingEmotes}
+                channelNameCache={channelNameCache}
+                onInsert={insertEmote}
+                onManageEmotes={() => {
+                  setShowEmotePicker(false);
+                  openEmoteSets({ twitchId: currentStream?.user_id, tab: 'emotes' });
+                }}
+              />
 
               {/* / Command Autocomplete (Dominated Width) */}
               <AnimatePresence>
@@ -4648,13 +3922,13 @@ const ChatWidget = ({ channelOverride, hypeTrainOverride }: ChatWidgetProps = {}
                     />
                   )}
                 </div>
-                {/* Drops mining button: only when a drops-mining plugin is installed
+                {/* Drops automation button: only when a drops automation plugin is installed
                     and the current game has active drops. Without the plugin, core
-                    earns natively on the watched channel with no farming control. */}
+                    earns natively on the watched channel with no automation control. */}
                 {dropsCampaign && externalDropsProvider && (
-                  <Tooltip content={isDropProgressing ? `Stop mining drops for ${dropsCampaign.game_name}` : `Start mining drops for ${dropsCampaign.game_name}`} side="top">
+                  <Tooltip content={isDropProgressing ? `Stop collecting drops for ${dropsCampaign.game_name}` : `Start collecting drops for ${dropsCampaign.game_name}`} side="top">
                   <button
-                    onClick={handleToggleMining}
+                    onClick={handleToggleAutomation}
                     disabled={isLoadingDrops}
                     className={`group flex-shrink-0 flex items-center justify-center self-center w-9 h-9 transition-all duration-200 ${isDropProgressing
                       ? 'text-green-400 hover:text-red-400'
@@ -4685,18 +3959,18 @@ const ChatWidget = ({ channelOverride, hypeTrainOverride }: ChatWidgetProps = {}
                       }
                       setShowEmotePicker(!showEmotePicker);
                     }}
-                    onMouseLeave={cycleEmoteSmiley}
+                    onMouseLeave={smiley.cycleEmoteSmiley}
                     className="group absolute left-1 top-1/2 -translate-y-1/2 z-10 flex items-center justify-center w-7 h-7 text-textSecondary hover:text-textPrimary transition-colors duration-200"
                   >
                     {showEmotePicker ? (
                       <svg className="w-4 h-4 transition-all duration-200 text-accent group-hover:drop-shadow-[0_0_5px_rgba(200,224,232,0.8)]" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12" /></svg>
                     ) : (
                       <img
-                        src={getAppleEmojiUrl(currentSmiley)}
-                        alt={currentSmiley}
+                        src={getAppleEmojiUrl(smiley.currentSmiley)}
+                        alt={smiley.currentSmiley}
                         draggable={false}
                         className={`w-4 h-4 object-contain transition-all ease-in-out group-hover:drop-shadow-[0_0_5px_rgba(200,224,232,0.8)] ${
-                          isSmileyTransitioning
+                          smiley.isSmileyTransitioning
                             ? 'opacity-0 scale-50 duration-100'
                             : 'opacity-100 scale-100 duration-150'
                         }`}

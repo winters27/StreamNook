@@ -266,6 +266,10 @@ const requestGql = async ({ query }: { query: string }): Promise<any> => {
       const response = await invoke('seventv_graphql', { query: cleanQuery(query) }) as GraphQLResponse;
 
       if (response.errors || response.message) {
+        // [7TV-diag] Surface the real error on EVERY attempt (it was only logged
+        // after 5 retries) to confirm whether MultiChat load makes 7TV reject or
+        // rate-limit the core app's cosmetic queries. Temporary diagnostic.
+        Logger.warn(`[7TV-diag] gql error (attempt ${retryCount}):`, response.message || response.errors);
         if (retryCount === 5) {
           Logger.error('[7TV] Error fetching user cosmetics:', response.errors || response.message);
           return undefined;
@@ -507,6 +511,11 @@ const drainBatch = async () => {
   batchScheduled = false;
   if (batchQueue.size === 0) return;
 
+  // Wait for the cosmetic file cache to finish loading before reading it below,
+  // so a batch that drains mid-init doesn't render image paints/badges without
+  // their local files.
+  if (filesInitializationPromise) await filesInitializationPromise;
+
   // Snapshot the queue and clear it so new requests during this drain start a
   // fresh batch (will get their own microtask).
   const snapshot = new Map(batchQueue);
@@ -546,19 +555,26 @@ const drainBatch = async () => {
       // and self-heals on the next read, instead of caching a bogus empty for
       // the full 5-minute TTL and stranding everyone in the chunk.
       if (!response?.data) {
+        // [7TV-diag] 200 OK but no data payload = a degraded/empty response.
+        Logger.warn(`[7TV-diag] chunk HARD FAIL (200, no data) for ${chunk.length} user(s)`);
         for (const id of chunk) {
           snapshot.get(id)?.forEach((r) => r(null));
         }
         return;
       }
 
+      let resolved = 0;
       for (const id of chunk) {
         const userByConnection = response.data[cosmeticAlias(id)]?.userByConnection;
+        if (userByConnection) resolved++;
         const result = userByConnection
           ? parseUserCosmetics(userByConnection, cachedFiles)
           : { paints: [], badges: [], seventvUserId: undefined };
         snapshot.get(id)?.forEach((r) => r(result));
       }
+      // [7TV-diag] If this drops to 0/N while MultiChat is open, 7TV is silently
+      // returning empty user entries (soft throttling) rather than erroring.
+      Logger.warn(`[7TV-diag] chunk resolved ${resolved}/${chunk.length} user(s) with a 7TV connection`);
     } catch (error) {
       Logger.error('[7TV] Batch cosmetics fetch failed:', error);
       for (const id of chunk) {
@@ -599,7 +615,11 @@ export async function getUserCosmetics(twitchId: string): Promise<UserCosmeticsR
         cachedCosmeticFiles = await invoke('get_cached_files', { cacheType: 'cosmetic' });
       } catch (e) {
         Logger.warn('Failed to get cached cosmetic files:', e);
-        cachedCosmeticFiles = {};
+        // Leave it null (NOT {}) so the next cosmetic resolve retries. A
+        // transient failure here (e.g. the shared Rust file cache contended
+        // while another window is also hitting it) used to poison the cache as
+        // {} forever, which left 7TV paints/badges broken until an app restart.
+        cachedCosmeticFiles = null;
       } finally {
         filesInitializationPromise = null;
       }
