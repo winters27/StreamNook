@@ -644,7 +644,7 @@ const TitleBar = () => {
           </Tooltip>
 
           {/* Badges Button — dynamic badge icon that cycles on unhover */}
-          <Tooltip content="Global Badges" delay={200}>
+          <Tooltip content="Global Cosmetics" delay={200}>
             <button
               onClick={() => setShowBadgesOverlay(true)}
               onMouseLeave={cycleBadgeIcon}

@@ -32,7 +32,9 @@ import betterttvLogo from '../assets/betterttv-logo.png';
 
 import { Logger } from '../utils/logger';
 // Tab navigation types
-type AttainableTab = 'twitch-badges' | '7tv-badges' | '7tv-paints' | 'streamnook' | 'atmospheres' | 'bttv' | 'chat-clients';
+type AttainableTab = 'twitch-badges' | '7tv-badges' | '7tv-paints' | 'streamnook' | 'bttv' | 'chat-clients';
+// Sub-tabs within the StreamNook section (its own badges vs its atmospheres).
+type StreamNookTab = 'badges' | 'atmospheres';
 
 // One distinct third-party chat-client badge (mirrors Rust ThirdPartyGalleryBadge).
 interface ChatClientBadge {
@@ -152,6 +154,7 @@ const BadgesOverlay = ({ onClose, onBadgeClick, initialPaintId, initialBadgeId, 
   
   // Tab state
   const [activeTab, setActiveTab] = useState<AttainableTab>('twitch-badges');
+  const [snTab, setSnTab] = useState<StreamNookTab>('badges');
   
   // Twitch badges state
   const [badges, setBadges] = useState<BadgeSet[]>([]);
@@ -257,10 +260,10 @@ const BadgesOverlay = ({ onClose, onBadgeClick, initialPaintId, initialBadgeId, 
   useSyncExternalStore(subscribeStreamNookRegistryVersion, getStreamNookRegistryVersion, getStreamNookRegistryVersion);
   const currentUserStreamNookNumber = currentUser?.user_id ? getStreamNookUserNumber(currentUser.user_id) : null;
 
-  // Atmospheres library: the full catalog (minus the Cologne chrome, which is
-  // its own event look), re-rendered when the registry loads or changes.
+  // Atmospheres library: the full catalog (including CS2 Major Cologne, which is
+  // an atmosphere too), re-rendered when the registry loads or changes.
   useSyncExternalStore(subscribeAtmospheresVersion, getAtmospheresVersion, getAtmospheresVersion);
-  const atmosphereLibrary = listAtmospheres().filter((a) => a.kind !== 'cologne-chrome');
+  const atmosphereLibrary = listAtmospheres();
 
   // Cosmetics catalog + ownership for the StreamNook tab grid.
   useSyncExternalStore(subscribeCosmeticsVersion, getCosmeticsVersion, getCosmeticsVersion);
@@ -1989,20 +1992,7 @@ const BadgesOverlay = ({ onClose, onBadgeClick, initialPaintId, initialBadgeId, 
                 }`}
               >
                 <img src={streamNookLogo} alt="" className="w-4 h-4 object-contain" draggable={false} />
-                Badges
-              </button>
-
-              <button
-                onClick={() => setActiveTab('atmospheres')}
-                className={`px-4 py-2 rounded-lg transition-all flex items-center gap-2 ${
-                  activeTab === 'atmospheres'
-                    ? 'glass-button text-cyan-200 shadow-[0_0_15px_rgba(34,211,238,0.25)]'
-                    : 'text-textSecondary hover:text-textPrimary'
-                }`}
-              >
-                <Sparkles size={15} />
-                Atmospheres
-                <span className="text-xs opacity-70">({atmosphereLibrary.length})</span>
+                StreamNook
               </button>
 
               <button
@@ -2032,7 +2022,7 @@ const BadgesOverlay = ({ onClose, onBadgeClick, initialPaintId, initialBadgeId, 
               </button>
 
               {/* Search Input. Hidden on StreamNook tab (static content, nothing to search) */}
-              {activeTab !== 'streamnook' && activeTab !== 'atmospheres' && (
+              {activeTab !== 'streamnook' && (
                 <div className="relative ml-auto">
                   <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-textSecondary" />
                   <input
@@ -2635,11 +2625,28 @@ const BadgesOverlay = ({ onClose, onBadgeClick, initialPaintId, initialBadgeId, 
                 </p>
               </div>
 
+              {/* Sub-tabs: StreamNook's own cosmetics, split into Badges and
+                  Atmospheres, so the top bar keeps one "StreamNook" entry. */}
+              <div className="flex justify-center gap-2">
+                <button
+                  onClick={() => setSnTab('badges')}
+                  className={`px-4 py-1.5 rounded-lg text-sm transition-all ${snTab === 'badges' ? 'glass-button text-violet-200' : 'text-textSecondary hover:text-textPrimary'}`}
+                >
+                  Badges
+                </button>
+                <button
+                  onClick={() => setSnTab('atmospheres')}
+                  className={`flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-sm transition-all ${snTab === 'atmospheres' ? 'glass-button text-cyan-200' : 'text-textSecondary hover:text-textPrimary'}`}
+                >
+                  <Sparkles size={13} /> Atmospheres
+                </button>
+              </div>
+
               {/* Cosmetics catalog. Tile style ported verbatim from the Twitch
                   badges grid above so the two tabs read as the same surface
                   (gold "collected" treatment + corner Check). The equipped
                   cosmetic gets an additional accent ring on top of the gold. */}
-              {cosmeticsCatalog.length > 0 && (
+              {snTab === 'badges' && cosmeticsCatalog.length > 0 && (
                 <div>
                   <p className="text-[11px] text-textSecondary uppercase tracking-[0.28em] font-semibold mb-3 text-center">
                     Badges
@@ -2693,6 +2700,47 @@ const BadgesOverlay = ({ onClose, onBadgeClick, initialPaintId, initialBadgeId, 
                 </div>
               )}
 
+              {snTab === 'atmospheres' && (
+                atmosphereLibrary.length === 0 ? (
+                  <p className="py-10 text-center text-sm text-textMuted">Loading atmospheres...</p>
+                ) : (
+                  <div className="grid grid-cols-2 gap-4">
+                    {atmosphereLibrary.map((a) => {
+                      const unlock = getAtmosphereUnlock(a);
+                      return (
+                        <div key={a.id} className="overflow-hidden rounded-xl border border-white/[0.06] bg-white/[0.02]">
+                          <div className="relative h-24 overflow-hidden">
+                            <AtmosphereBackground atm={a} variant="profile" blur={!!a.image} />
+                          </div>
+                          <div className="flex items-center justify-between gap-2 p-3">
+                            <span className="truncate text-sm font-medium text-textPrimary">{a.name}</span>
+                            {unlock.hidden ? (
+                              <Tooltip content="A secret. Keep using StreamNook to discover how to unlock it." side="top">
+                                <span className="flex flex-shrink-0 items-center gap-1 rounded-full bg-white/[0.05] px-2 py-0.5 text-[10px] font-medium text-textMuted ring-1 ring-inset ring-white/10">
+                                  <Lock size={10} /> Hidden challenge
+                                </span>
+                              </Tooltip>
+                            ) : unlock.kind === 'subscriber' ? (
+                              <Tooltip content="Included with a StreamNook subscription." side="top">
+                                <span className="flex-shrink-0 rounded-full bg-violet-400/10 px-2 py-0.5 text-[10px] font-medium text-violet-200 ring-1 ring-inset ring-violet-400/20">
+                                  Subscriber
+                                </span>
+                              </Tooltip>
+                            ) : (
+                              <Tooltip content={unlock.label} side="top">
+                                <span className="flex-shrink-0 rounded-full bg-cyan-400/10 px-2 py-0.5 text-[10px] font-medium text-cyan-200 ring-1 ring-inset ring-cyan-400/20">
+                                  {unlock.badgeName} badge
+                                </span>
+                              </Tooltip>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )
+              )}
+
               {/* Canonical "do something next" CTA. streamnook.app handles
                   Twitch sign-in + Stripe checkout with pre-attached identity. */}
               <div className="flex justify-center pt-2">
@@ -2713,60 +2761,6 @@ const BadgesOverlay = ({ onClose, onBadgeClick, initialPaintId, initialBadgeId, 
                   <ExternalLink size={14} className="opacity-60" />
                 </button>
               </div>
-            </div>
-          )}
-
-          {/* ========== ATMOSPHERES TAB ========== */}
-          {/* The full library of profile/chat atmospheres, each labeled with how
-              it is obtained: a subscriber reward, an earned badge, or a hidden
-              challenge (whose how is deliberately not revealed). */}
-          {activeTab === 'atmospheres' && (
-            <div className="max-w-3xl mx-auto py-6">
-              <div className="flex flex-col items-center text-center mb-6">
-                <h2 className="text-3xl font-bold text-textPrimary mb-2">Atmospheres</h2>
-                <p className="max-w-md text-sm leading-relaxed text-textSecondary/80">
-                  Animated themes for your profile and chat. Some come with a subscription,
-                  others are earned with a badge, and a few are hidden challenges waiting to be found.
-                </p>
-              </div>
-              {atmosphereLibrary.length === 0 ? (
-                <p className="py-10 text-center text-sm text-textMuted">Loading atmospheres...</p>
-              ) : (
-                <div className="grid grid-cols-2 gap-4">
-                  {atmosphereLibrary.map((a) => {
-                    const unlock = getAtmosphereUnlock(a);
-                    return (
-                      <div key={a.id} className="overflow-hidden rounded-xl border border-white/[0.06] bg-white/[0.02]">
-                        <div className="relative h-24 overflow-hidden">
-                          <AtmosphereBackground atm={a} variant="profile" blur={!!a.image} />
-                        </div>
-                        <div className="flex items-center justify-between gap-2 p-3">
-                          <span className="truncate text-sm font-medium text-textPrimary">{a.name}</span>
-                          {unlock.hidden ? (
-                            <Tooltip content="A secret. Keep using StreamNook to discover how to unlock it." side="top">
-                              <span className="flex flex-shrink-0 items-center gap-1 rounded-full bg-white/[0.05] px-2 py-0.5 text-[10px] font-medium text-textMuted ring-1 ring-inset ring-white/10">
-                                <Lock size={10} /> Hidden challenge
-                              </span>
-                            </Tooltip>
-                          ) : unlock.kind === 'subscriber' ? (
-                            <Tooltip content="Included with a StreamNook subscription." side="top">
-                              <span className="flex-shrink-0 rounded-full bg-violet-400/10 px-2 py-0.5 text-[10px] font-medium text-violet-200 ring-1 ring-inset ring-violet-400/20">
-                                Subscriber
-                              </span>
-                            </Tooltip>
-                          ) : (
-                            <Tooltip content={unlock.label} side="top">
-                              <span className="flex-shrink-0 rounded-full bg-cyan-400/10 px-2 py-0.5 text-[10px] font-medium text-cyan-200 ring-1 ring-inset ring-cyan-400/20">
-                                {unlock.badgeName} badge
-                              </span>
-                            </Tooltip>
-                          )}
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
             </div>
           )}
 

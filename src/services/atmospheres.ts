@@ -95,6 +95,7 @@ export const listAtmospheres = (): Atmosphere[] => listAtmosphereEntries();
 // so a new secret atmosphere stays a secret until it is deliberately made public.
 const PUBLIC_ATMOSPHERE_UNLOCKS: Record<string, string> = {
   semiquincentennial_2026: 'Semiquincentennial',
+  cs2_major_cologne_2026: 'CS2 Major Cologne',
 };
 
 export interface AtmosphereUnlock {

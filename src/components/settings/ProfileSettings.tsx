@@ -1710,7 +1710,7 @@ const ProfileSettings = () => {
               </button>
             </Tooltip>
             <h4 className="text-sm font-semibold text-textPrimary uppercase tracking-wide">
-              Global Badges
+              Global Cosmetics
             </h4>
           </div>
           <button
