@@ -1,6 +1,6 @@
 import { useEffect, useState, useMemo, useRef, useSyncExternalStore } from 'react';
 import { createPortal } from 'react-dom';
-import { X, ArrowUpDown, RefreshCw, Check, Trophy, Award, ChevronUp, ChevronDown, Search, ExternalLink, Sparkles, Lock } from 'lucide-react';
+import { X, ArrowUpDown, RefreshCw, Check, Trophy, Award, ChevronUp, ChevronDown, Search, ExternalLink, Lock } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import { useAppStore } from '../stores/AppStore';
 import { getAllUserBadgesWithEarned } from '../services/badgeService';
@@ -2636,9 +2636,9 @@ const BadgesOverlay = ({ onClose, onBadgeClick, initialPaintId, initialBadgeId, 
                 </button>
                 <button
                   onClick={() => setSnTab('atmospheres')}
-                  className={`flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-sm transition-all ${snTab === 'atmospheres' ? 'glass-button text-cyan-200' : 'text-textSecondary hover:text-textPrimary'}`}
+                  className={`px-4 py-1.5 rounded-lg text-sm transition-all ${snTab === 'atmospheres' ? 'glass-button text-cyan-200' : 'text-textSecondary hover:text-textPrimary'}`}
                 >
-                  <Sparkles size={13} /> Atmospheres
+                  Atmospheres
                 </button>
               </div>
 
