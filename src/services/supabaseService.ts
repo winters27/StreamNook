@@ -1632,11 +1632,14 @@ export const subscribeToAtmospheresRegistry = (
     const cb = () => callback?.();
     atmospheresVersionSubscribers.add(cb);
 
-    if (!atmospheresLoaded && !atmospheresLoading) {
-        loadAtmospheres();
-    } else if (atmospheresLoaded) {
-        callback?.();
-    }
+    // Render the cached catalog instantly if we have one, then ALWAYS kick a
+    // refresh. This is what makes a newly added atmosphere (e.g. opening
+    // Customize right after earning its accolade) appear without relaunching:
+    // the initial load happens once at startup, so without this a row added
+    // mid-session is missed, and the realtime channel only catches rows added
+    // after it opens. loadAtmospheres bumps the version to repaint when done.
+    if (atmospheresLoaded) callback?.();
+    if (!atmospheresLoading) loadAtmospheres();
 
     if (!atmospheresChannel) {
         // See subscribeToCosmeticsRegistry for the reconnect rationale.
