@@ -594,6 +594,21 @@ const PublicProfileOverlay = () => {
                         </div>
                       );
                     })()}
+                    {/* Applied atmosphere: a labeled chip (swatch + name) so a
+                        viewer can see WHICH atmosphere the member is wearing, the
+                        way the worn 7TV paint is surfaced. The animated wash
+                        itself is already the hero backdrop above. */}
+                    {effectiveTheme?.atmosphere && (
+                      <Tooltip content="Applied atmosphere" side="bottom">
+                        <span className="flex items-center gap-1.5 rounded-full bg-white/[0.05] px-2 py-0.5 text-[11px] leading-none text-textSecondary ring-1 ring-inset ring-white/10">
+                          <span
+                            className="h-3 w-3 flex-shrink-0 rounded-full ring-1 ring-inset ring-white/20"
+                            style={{ background: effectiveTheme.atmosphere.swatch }}
+                          />
+                          {effectiveTheme.atmosphere.name}
+                        </span>
+                      </Tooltip>
+                    )}
                     {/* Profile views — a subtle public counter. Hideable via the
                         'views' visibility toggle (honored here so the live preview
                         reflects what others see). */}
