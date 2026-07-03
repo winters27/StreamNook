@@ -42,7 +42,24 @@ export async function maybeClaimWatchRewards(
   // The server can't verify what was watched, so we report it as context and let
   // the reward's eligibility decide.
   const context = { category: game ?? '', channel: channelLogin };
+  await claimEventRewards(userId, rewards, context);
+}
 
+// Login-window rewards (e.g. a holiday event with no category/channel rules):
+// claimed once at sign-in with empty context. Rewards that DO carry watch
+// eligibility just answer not_eligible here, so this stays generic.
+export async function maybeClaimLoginRewards(userId: string | undefined | null): Promise<void> {
+  if (!userId) return;
+  const rewards = await listActiveEventRewards();
+  if (!rewards.length) return;
+  await claimEventRewards(userId, rewards, {});
+}
+
+async function claimEventRewards(
+  userId: string,
+  rewards: Awaited<ReturnType<typeof listActiveEventRewards>>,
+  context: Record<string, string>,
+): Promise<void> {
   for (const reward of rewards) {
     if (windowClosed.has(reward.id)) continue;
     const sessionKey = `${userId}:${reward.id}`;
@@ -55,10 +72,10 @@ export async function maybeClaimWatchRewards(
       continue;
     }
     if (!res.ok) {
-      // not_eligible is the normal answer for a stream that doesn't match this
+      // not_eligible is the normal answer for a claim that doesn't match this
       // reward; only the unexpected failures (RLS / network / missing fn) warn.
       if (res.reason !== 'not_eligible') {
-        Logger.warn(`[WatchRewards] claim failed reward=${reward.id} channel=${channelLogin} category=${game ?? 'unknown'}: ${res.reason ?? 'unknown'}`);
+        Logger.warn(`[WatchRewards] claim failed reward=${reward.id} context=${JSON.stringify(context)}: ${res.reason ?? 'unknown'}`);
       }
       continue;
     }
