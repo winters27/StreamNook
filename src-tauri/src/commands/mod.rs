@@ -26,6 +26,7 @@ pub mod layout;
 pub mod link_preview;
 pub mod logs;
 pub mod mod_log_storage;
+pub mod modroom;
 pub mod multi_nook;
 pub mod plugins;
 pub mod profile_cache;

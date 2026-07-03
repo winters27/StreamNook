@@ -31,7 +31,8 @@ use commands::{
     badges::*, cache::*, channel_panels::*, chat::*, chat_identity::*, components::*,
     cosmetics_cache::*, diagnostic_logging::*, discord::*, drops::*, emoji::*, emote_prefetch::*,
     emotes::*, eventsub::*, hype_train::*, identity::*, justlog::*, layout::*,
-    link_preview::*, logs::*, mod_log_storage::*, multi_nook::*, plugins::*, profile_cache::*,
+    link_preview::*, logs::*, mod_log_storage::*, modroom::*, multi_nook::*, plugins::*,
+    profile_cache::*,
     resub::*, screen_capture::*, session::*, settings::*, seventv::*, seventv_cosmetics::*,
     seventv_cosmetics_fetch::*, song_id::*, streaming::*, subscriptions::*, twitch::*,
     universal_cache::*,
@@ -425,11 +426,11 @@ fn main() {
             );
             watch_heartbeat.start();
 
-            // Whether background points farming was left enabled. Used right
+            // Whether background points automation was left enabled. Used right
             // after the background service starts to bring the user-global points
-            // socket up at launch, so the farmer's background earns notify even
+            // socket up at launch, so the plugin's background earns notify even
             // before any stream is opened (restores pre-extraction behavior).
-            let initial_farming = settings_arc
+            let initial_automation = settings_arc
                 .lock()
                 .map(|s| s.drops.auto_claim_channel_points)
                 .unwrap_or(false);
@@ -458,13 +459,13 @@ fn main() {
             });
 
             // Start background service, then bring the user-global points socket
-            // up if farming was left enabled.
+            // up if automation was left enabled.
             tauri::async_runtime::spawn(async move {
                 background_service.lock().await.start().await;
                 background_service
                     .lock()
                     .await
-                    .set_farming_active(initial_farming)
+                    .set_automation_active(initial_automation)
                     .await;
             });
 
@@ -663,6 +664,11 @@ fn main() {
             remove_twitch_account,
             set_active_twitch_account,
             sign_out_active_twitch_account,
+            modroom_status,
+            modroom_connect,
+            modroom_disconnect,
+            modroom_list_moderated,
+            modroom_get_room_token,
             get_followed_streams,
             get_channel_info,
             get_user_info,
@@ -691,6 +697,7 @@ fn main() {
             check_stream_online,
             get_streams_by_game_name,
             get_streams_by_game_id,
+            get_streams_by_game_with_tags,
             get_clips_by_game,
             get_clips_by_broadcaster,
             get_clip_reactions,
@@ -902,7 +909,7 @@ fn main() {
             stop_drops_monitoring,
             update_monitoring_channel,
             report_player_playing,
-            // Mining commands
+            // Automation commands
             // Drops Authentication commands
             start_drops_device_flow,
             poll_drops_token,

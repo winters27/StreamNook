@@ -49,6 +49,7 @@ import {
   Sword,
   Drumstick,
   TreePine,
+  Flag,
   type LucideIcon,
 } from 'lucide-react';
 import { Tooltip } from '../ui/Tooltip';
@@ -70,6 +71,7 @@ import { pickHoursRoast, type PickedRoast } from '../../utils/hoursWatchedRoasts
 import { SEASONAL_ACCOLADES, getActiveSeasonalAccoladeIds, isCakeDay, CAKE_DAY_ID } from '../../utils/seasonalAccolades';
 import { RESTLESS_ACCOLADE_ID } from '../../utils/notifAchievement';
 import { MAJOR_COLOGNE_ACCOLADE_ID } from '../../services/cologneEvent';
+import { GRAND_FINALE_ACCOLADE_ID, SEMIQUINCENTENNIAL_ACCOLADE_ID } from '../../services/semiquincentennialEvent';
 import SubscriptionsSection from './SubscriptionsSection';
 import MembershipSection from './MembershipSection';
 import TopEmotesSection from './TopEmotesSection';
@@ -350,7 +352,7 @@ const ProfileOverview = ({
   const [totalMembers, setTotalMembers] = useState<number | null>(null);
   const [earnedAccolades, setEarnedAccolades] = useState<Set<string>>(new Set());
   // Real channel-points holdings: the summed current balance across every
-  // channel StreamNook has tracked for you (not the auto-farmed counter).
+  // channel StreamNook has tracked for you (not the auto-collected counter).
   const [pointsHeld, setPointsHeld] = useState<number | null>(null);
   const [pointsChannels, setPointsChannels] = useState<number>(0);
   const [topPointsChannel, setTopPointsChannel] = useState<string | null>(null);
@@ -371,7 +373,7 @@ const ProfileOverview = ({
 
     getUserStats(userId)
       .then((s) => {
-        if (alive) setStats(s ?? ({ user_id: userId, channel_points_farmed: 0, hours_watched: 0, messages_sent: 0, streams_watched: 0, updated_at: '' } as UserStats));
+        if (alive) setStats(s ?? ({ user_id: userId, channel_points_collected: 0, hours_watched: 0, messages_sent: 0, streams_watched: 0, updated_at: '' } as UserStats));
       })
       .catch((e) => Logger.error('[ProfileOverview] stats:', e));
 
@@ -515,14 +517,30 @@ const ProfileOverview = ({
   ].map((a) => ({ ...a, earned: a.earned || earnedAccolades.has(a.id) }));
   const allBaseEarned = baseAccolades.every((a) => a.earned);
 
-  // Stat-threshold accolades are achievements: once you cross the line they
-  // stay collected, even if the underlying number later dips or its live
-  // source is momentarily empty (channel-points balances, for one, only cover
-  // channels watched this session). Persist each the first time its threshold
-  // is met so reopening the profile keeps it earned.
+  const secretAccolades: Accolade[] = [
+    { id: 'completionist', label: 'Completionist', icon: Star, grad: 'linear-gradient(140deg, #f472b6, #db2777)', secret: true, earned: allBaseEarned, hint: "When there's nothing else left to earn, this one shows up." },
+    { id: 'triple', label: 'Triple Threat', icon: Layers, grad: 'linear-gradient(140deg, #34d399, #0f766e)', secret: true, earned: messages >= 1000 && hours >= 100 && drops >= 25, hint: 'Talk, watch, and collect until all three run deep.' },
+    { id: 'palindrome', label: 'Palindrome', icon: Repeat, grad: 'linear-gradient(140deg, #c084fc, #7e22ce)', secret: true, earned: isPalindrome(memberNo), hint: 'A number that reads the same coming and going.' },
+    { id: 'nice', label: 'Nice', icon: Smile, grad: 'linear-gradient(140deg, #facc15, #ca8a04)', secret: true, earned: memberNo !== null && [69, 420, 666, 777, 1337].includes(memberNo), hint: 'Land on a number the internet never lets you forget.' },
+    { id: RESTLESS_ACCOLADE_ID, label: 'Restless', icon: BellRing, grad: 'linear-gradient(140deg, #818cf8, #4338ca)', secret: true, earned: earnedAccolades.has(RESTLESS_ACCOLADE_ID), hint: "The test notification really wishes you'd stop." },
+    { id: GRAND_FINALE_ACCOLADE_ID, label: 'Grand Finale', icon: Sparkles, grad: 'linear-gradient(140deg, #fcd34d, #dc3d55)', secret: true, earned: earnedAccolades.has(GRAND_FINALE_ACCOLADE_ID), hint: 'Stay a while under the anniversary sky.' },
+    // Same persisted-set fallback as the base accolades: an earned secret stays
+    // lit even when its live source is absent — notably on the public/preview
+    // view, which never fetches your drops or channel points (so Triple Threat's
+    // drops read as 0 there). Without this, earned secrets vanish for viewers.
+  ].map((a) => ({ ...a, earned: a.earned || earnedAccolades.has(a.id) }));
+
+  // Base + secret accolades are achievements: once you cross the line they stay
+  // collected, even if the underlying number later dips or its live source is
+  // momentarily empty (channel-points balances, drops, and the like are only
+  // fetched on your OWN profile). Persist each the first time it's earned so it
+  // survives into the public/preview view (which never fetches that self-only
+  // data) and stays earned on reopen.
   useEffect(() => {
     if (!isOwnProfile || !userId) return;
-    const toGrant = baseAccolades.filter((a) => a.earned && !earnedAccolades.has(a.id)).map((a) => a.id);
+    const toGrant = [...baseAccolades, ...secretAccolades]
+      .filter((a) => a.earned && !earnedAccolades.has(a.id))
+      .map((a) => a.id);
     if (toGrant.length === 0) return;
     setEarnedAccolades((prev) => {
       const next = new Set(prev);
@@ -530,16 +548,9 @@ const ProfileOverview = ({
       return next;
     });
     toGrant.forEach((id) => grantAccolade(userId, id).catch(() => {}));
-    // baseAccolades is derived from these primitives + earnedAccolades.
+    // base/secret accolades are derived from these primitives + earnedAccolades.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isOwnProfile, userId, earnedAccolades, messages, hours, streams, drops, pts, cosmeticsTotal, years, streamNookUserNumber]);
-  const secretAccolades: Accolade[] = [
-    { id: 'completionist', label: 'Completionist', icon: Star, grad: 'linear-gradient(140deg, #f472b6, #db2777)', secret: true, earned: allBaseEarned, hint: "When there's nothing else left to earn, this one shows up." },
-    { id: 'triple', label: 'Triple Threat', icon: Layers, grad: 'linear-gradient(140deg, #34d399, #0f766e)', secret: true, earned: messages >= 1000 && hours >= 100 && drops >= 25, hint: 'Talk, watch, and collect until all three run deep.' },
-    { id: 'palindrome', label: 'Palindrome', icon: Repeat, grad: 'linear-gradient(140deg, #c084fc, #7e22ce)', secret: true, earned: isPalindrome(memberNo), hint: 'A number that reads the same coming and going.' },
-    { id: 'nice', label: 'Nice', icon: Smile, grad: 'linear-gradient(140deg, #facc15, #ca8a04)', secret: true, earned: memberNo !== null && [69, 420, 666, 777, 1337].includes(memberNo), hint: 'Land on a number the internet never lets you forget.' },
-    { id: RESTLESS_ACCOLADE_ID, label: 'Restless', icon: BellRing, grad: 'linear-gradient(140deg, #818cf8, #4338ca)', secret: true, earned: earnedAccolades.has(RESTLESS_ACCOLADE_ID), hint: "The test notification really wishes you'd stop." },
-  ];
   const seasonalAccolades: Accolade[] = [
     ...SEASONAL_ACCOLADES.map((b): Accolade => ({
       id: b.id,
@@ -569,6 +580,16 @@ const ProfileOverview = ({
       hint: earnedAccolades.has(MAJOR_COLOGNE_ACCOLADE_ID)
         ? 'Tuned in during the CS2 Major'
         : 'Watch Counter-Strike in StreamNook during the CS2 Major',
+    },
+    {
+      id: SEMIQUINCENTENNIAL_ACCOLADE_ID,
+      label: 'Semiquincentennial',
+      icon: Flag,
+      grad: 'linear-gradient(140deg, #93b4ff, #dc3d55)',
+      earned: earnedAccolades.has(SEMIQUINCENTENNIAL_ACCOLADE_ID),
+      hint: earnedAccolades.has(SEMIQUINCENTENNIAL_ACCOLADE_ID)
+        ? 'Two hundred fifty years of the experiment, and you stood in the glow of the two hundred fiftieth.'
+        : 'Open StreamNook around the Fourth of July, 2026 (July 3 to 5)',
     },
   ];
   const allAccolades: Accolade[] = [...baseAccolades, ...secretAccolades, ...seasonalAccolades, ...eventAccolades];

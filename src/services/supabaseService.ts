@@ -355,7 +355,7 @@ export interface SupabaseUser {
 // Type for user stats
 export interface UserStats {
     user_id: string;
-    channel_points_farmed: number;
+    channel_points_collected: number;
     hours_watched: number;
     messages_sent: number;
     streams_watched: number;
@@ -442,7 +442,7 @@ export const subscribeToWriteIssues = (cb: (issue: StatWriteIssue | null) => voi
  */
 export const incrementStat = async (
     userId: string,
-    stat: 'channel_points_farmed' | 'hours_watched' | 'messages_sent' | 'streams_watched',
+    stat: 'channel_points_collected' | 'hours_watched' | 'messages_sent' | 'streams_watched',
     amount: number = 1
 ): Promise<void> => {
     if (!supabase) {
@@ -521,7 +521,7 @@ export const incrementStat = async (
  */
 const manualIncrementStat = async (
     userId: string,
-    stat: 'channel_points_farmed' | 'hours_watched' | 'messages_sent' | 'streams_watched',
+    stat: 'channel_points_collected' | 'hours_watched' | 'messages_sent' | 'streams_watched',
     amount: number
 ): Promise<void> => {
     if (!supabase) return;

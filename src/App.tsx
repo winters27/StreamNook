@@ -27,6 +27,7 @@ import { MultiNookView } from './components/multi-nook/MultiNookView';
 import MultiNookChatSwitcher from './components/multi-nook/MultiNookChatSwitcher';
 import LoadingWidget from './components/LoadingWidget';
 import ToastManager from './components/ToastManager';
+import SemiquincentennialShow from './components/SemiquincentennialShow';
 import EntitlementUnlockNote from './components/EntitlementUnlockNote';
 import AnnouncementsBanner from './components/AnnouncementsBanner';
 import { TooltipManager } from './components/ui/TooltipManager';
@@ -494,7 +495,7 @@ function App() {
         useAppStore.setState({ isBooting: false });
       }
 
-      // Resume the stream (and mining) the user was on before an update restart.
+      // Resume the stream (and automation) the user was on before an update restart.
       // Consume-once and best-effort; runs after auth so startStream has a token.
       void import('./services/sessionResume').then(({ resumePreviousSession }) =>
         resumePreviousSession(),
@@ -604,12 +605,12 @@ function App() {
         if (isSupabaseConfigured()) {
           const { currentUser, isAuthenticated } = useAppStore.getState();
           if (isAuthenticated && currentUser?.user_id) {
-            incrementStat(currentUser.user_id, 'channel_points_farmed', claim.points_earned);
+            incrementStat(currentUser.user_id, 'channel_points_collected', claim.points_earned);
           }
         }
       });
 
-      // Listen for drops farming errors and report them to Discord via logService
+      // Listen for drops automation errors and report them to Discord via logService
       await addListener<{ category: string; message: string }>('drops-error', (event) => {
         const { category, message } = event.payload;
         // Log as error - this will be picked up by logService and sent to Discord
@@ -628,9 +629,9 @@ function App() {
         useAppStore.getState().loadFollowedStreams();
       });
 
-      // Listen for mining status updates (for title bar gift box animation)
+      // Listen for automation status updates (for title bar gift box animation)
       await addListener<{ active: boolean }>('drop-progress', (event) => {
-        Logger.debug('[App] Mining status update:', event.payload.active);
+        Logger.debug('[App] Automation status update:', event.payload.active);
         useAppStore.getState().setDropProgressActive(event.payload.active);
       });
 
@@ -1860,6 +1861,7 @@ function App() {
         onClose={() => setShowSetupWizard(false)}
       />
       <AnnouncementsBanner />
+      <SemiquincentennialShow />
       <ToastManager />
       <EntitlementUnlockNote />
       <TooltipManager />

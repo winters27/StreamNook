@@ -1,5 +1,5 @@
 import { Window } from '@tauri-apps/api/window';
-import { Gift, User, Settings, Store, Proportions, MessageCircle, Pickaxe, Clock, Tv, Download, LogIn } from 'lucide-react';
+import { Gift, User, Settings, Store, Proportions, MessageCircle, Pickaxe, Clock, Tv, Download, LogIn, Sparkles } from 'lucide-react';
 import { Minus, X, CornersOut, CornersIn, Medal } from 'phosphor-react';
 import { useState, useEffect, useLayoutEffect, useRef, useMemo, useCallback } from 'react';
 import { createPortal } from 'react-dom';
@@ -19,6 +19,7 @@ import { deriveDropProgressDisplay } from '../utils/dropProgressDisplay';
 import { Logger } from '../utils/logger';
 import { useVisibleInterval } from '../utils/useVisibleInterval';
 import { Tooltip } from './ui/Tooltip';
+import { isSemiquincentennialShowDay, openSemiquincentennialShow } from '../services/semiquincentennialEvent';
 import PluginTitleBarButtons from '../plugins-ui/PluginTitleBarButtons';
 import { usePluginUpdates } from '../stores/pluginUpdatesStore';
 
@@ -61,7 +62,7 @@ const TitleBar = () => {
   const [isMaximized, setIsMaximized] = useState(false);
   const prevDropProgressActive = useRef(dropProgressActive);
   
-  // Mining status state for progress badge and hover preview
+  // Automation status state for progress badge and hover preview
   const [dropProgress, setDropProgress] = useState<DropProgressStatus | null>(null);
   // Live per-drop progress, accumulated from 'drops-progress-update' events. The
   // backend's current_drop carries minutes that only move on its slower poll, so
@@ -169,11 +170,11 @@ const TitleBar = () => {
     }
   }, [isDropsLoggingIn, addToast, checkDropsAuth]);
 
-  // Seed the progress badge from the bridge-cached mining status (a plugin
-  // powering mining reports through it). Live updates arrive on the
+  // Seed the progress badge from the bridge-cached automation status (a plugin
+  // powering automation reports through it). Live updates arrive on the
   // 'drop-progress' event; this is just a stale-protection backup, so
   // don't let it wipe an active session back to the no-progress (gift) state.
-  const loadMiningStatus = useCallback(() => {
+  const loadAutomationStatus = useCallback(() => {
     const status = useAppStore.getState().liveDropProgress;
     if (!status) return;
     if (!status.active && useAppStore.getState().dropProgressActive) return;
@@ -186,10 +187,10 @@ const TitleBar = () => {
     let isMounted = true;
 
     const setupListeners = async () => {
-      // Listen for mining status updates
+      // Listen for automation status updates
       const uStatus = await listen<DropProgressStatus>('drop-progress', (event) => {
         setDropProgress(event.payload);
-        // Drop the accumulated per-drop progress once mining stops so a finished
+        // Drop the accumulated per-drop progress once automation stops so a finished
         // session's numbers can't leak into the next one's fallback derivation.
         if (!event.payload.active) setLiveProgress([]);
       });
@@ -248,7 +249,7 @@ const TitleBar = () => {
       else uProgress();
     };
 
-    loadMiningStatus();
+    loadAutomationStatus();
     setupListeners();
 
     return () => {
@@ -256,13 +257,13 @@ const TitleBar = () => {
       if (unlistenStatus) unlistenStatus();
       if (unlistenProgress) unlistenProgress();
     };
-  }, [loadMiningStatus]);
+  }, [loadAutomationStatus]);
 
   // Backup poll: real-time updates come from the event listeners above. This
   // is just a stale-protection net in case an event was missed. 60-min cadence
   // aligned with the drops-settings poll above. Visibility-gated so it doesn't
   // fire when StreamNook is tucked in the tray.
-  useVisibleInterval(loadMiningStatus, 60 * 60 * 1000);
+  useVisibleInterval(loadAutomationStatus, 60 * 60 * 1000);
 
   // Clean up preview timeout on unmount
   useEffect(() => {
@@ -373,7 +374,7 @@ const TitleBar = () => {
   }, [showDropsPreview]);
 
   useEffect(() => {
-    // Detect when mining stops
+    // Detect when automation stops
     if (prevDropProgressActive.current && !dropProgressActive) {
       queueMicrotask(() => setShowSplash(true));
       setTimeout(() => setShowSplash(false), 600);
@@ -427,7 +428,7 @@ const TitleBar = () => {
   // automatically by the overlay's restart notice.
   const handleApplyUpdateRestart = useCallback(async () => {
     // Snapshot the session first so the relaunched app can restore the stream
-    // (and resume mining) the user was on before the update.
+    // (and resume automation) the user was on before the update.
     await captureResumeSnapshot();
     try {
       await invoke('restart_to_apply_update');
@@ -478,7 +479,7 @@ const TitleBar = () => {
             {(() => {
               const channelPointsActive = dropsSettings?.auto_claim_channel_points ?? false;
               const isBothActive = dropProgressActive && channelPointsActive;
-              // While drops mining is active the indicator is the drop's
+              // While drops automation is active the indicator is the drop's
               // percentage (even at 0%), like it has always been, never a
               // placeholder gift. The gift shimmer is only for points-only.
               const showProgressBadge = dropProgressActive;
@@ -508,7 +509,7 @@ const TitleBar = () => {
                 title = 'Drops & Points (Channel Points Active)';
               }
 
-              const isAnyMiningActive = dropProgressActive || channelPointsActive;
+              const isAnyAutomationActive = dropProgressActive || channelPointsActive;
 
               // Credential missing: the drops slot becomes a direct "Login"
               // button rather than the gift, so the action is unmistakable.
@@ -534,13 +535,13 @@ const TitleBar = () => {
                     className={`titlebar-icon-btn ${showProgressBadge ? 'gap-1' : ''}`}
                   >
                     {showProgressBadge ? (
-                      // Replace icon with inline progress percentage badge when mining
+                      // Replace icon with inline progress percentage badge when automation
                       <span className="drops-progress-inline">
                         {progressPercent}%
                       </span>
                     ) : (
-                      // Normal Gift icon when not mining drops
-                      <Gift size={14} className={isAnyMiningActive ? giftClass : ''} />
+                      // Normal Gift icon when not automation drops
+                      <Gift size={14} className={isAnyAutomationActive ? giftClass : ''} />
                     )}
                   </button>
                 </Tooltip>
@@ -600,7 +601,7 @@ const TitleBar = () => {
                   </div>
                   <div className="h-1.5 bg-surface rounded-full overflow-hidden">
                     <div 
-                      className="h-full rounded-full mining-progress-bar transition-all duration-500"
+                      className="h-full rounded-full automation-progress-bar transition-all duration-500"
                       style={{ width: `${progressPercent}%` }}
                     />
                   </div>
@@ -677,6 +678,18 @@ const TitleBar = () => {
           </Tooltip>
 
 
+
+          {/* Fireworks show reopen, only on the Fourth itself */}
+          {isSemiquincentennialShowDay() && (
+            <Tooltip content="Fireworks show" delay={200}>
+              <button
+                onClick={() => openSemiquincentennialShow()}
+                className="titlebar-icon-btn"
+              >
+                <Sparkles size={14} />
+              </button>
+            </Tooltip>
+          )}
 
           {/* Settings */}
           <Tooltip content="Settings" delay={200}>

@@ -27,6 +27,7 @@ pub mod http;
 pub mod irc_service;
 pub mod kick_auth_service;
 pub mod layout_service;
+pub mod modroom_auth_service;
 pub mod youtube_auth_service;
 pub mod live_notification_service;
 pub mod ll_origin;

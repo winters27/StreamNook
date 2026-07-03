@@ -1913,6 +1913,7 @@ export const useAppStore = create<AppState>((set, get) => ({
             if (!hypeTrainPollingActive) return;
             
             let isActive = false;
+            let imminentLevelUp = false;
             try {
               const status = await invoke('get_hype_train_status', { channelId, channelLogin: channel }) as {
                 is_active: boolean;
@@ -1928,7 +1929,10 @@ export const useAppStore = create<AppState>((set, get) => ({
               };
               
               isActive = status.is_active;
-              
+              // Poll fast (1s) when a level-up is imminent (progress near goal) so
+              // the celebration fires as soon as the level switches, not up to 3s later.
+              imminentLevelUp = status.is_active && status.goal > 0 && status.progress / status.goal > 0.85;
+
               if (status.is_active) {
                 // Check for level up
                 if (status.level > hypeTrainPreviousLevel && hypeTrainPreviousLevel > 0) {
@@ -1966,7 +1970,9 @@ export const useAppStore = create<AppState>((set, get) => ({
             
             // Schedule next poll with adaptive interval
             if (hypeTrainPollingActive) {
-              const nextInterval = isActive ? ACTIVE_POLL_INTERVAL : IDLE_POLL_INTERVAL;
+              const nextInterval = isActive
+                ? (imminentLevelUp ? 1000 : ACTIVE_POLL_INTERVAL)
+                : IDLE_POLL_INTERVAL;
               hypeTrainTimeoutId = setTimeout(pollHypeTrain, nextInterval);
             }
           };
@@ -2498,6 +2504,14 @@ export const useAppStore = create<AppState>((set, get) => ({
         grantCakeDayAccolade(user.user_id, user.login || '').catch((e) => {
           Logger.warn('[Auth] Failed to grant cake day badge:', e);
         });
+
+        // Claim login-window event rewards (server enforces the window). Lazy
+        // import: watchRewards reads this store, a static import would cycle.
+        import('../services/watchRewards')
+          .then((m) => m.maybeClaimLoginRewards(user.user_id))
+          .catch((e) => {
+            Logger.warn('[Auth] Failed to claim login rewards:', e);
+          });
 
         // Keep an active subscriber's owned atmospheres current (server gates on
         // active status, so a lapsed member accrues nothing new). Idempotent.
