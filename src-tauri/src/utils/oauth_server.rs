@@ -32,9 +32,16 @@ pub struct OAuthListener {
 /// browser is opened, and a fast redirect is held in the OS accept backlog until
 /// `wait` runs.
 pub async fn start_oauth_listener() -> Result<OAuthListener> {
-    let listener = TcpListener::bind(("127.0.0.1", 3000))
+    start_oauth_listener_on(3000).await
+}
+
+/// Bind a specific loopback callback port. Flows that register their own redirect
+/// URI on a distinct port use this to stay independent of the add-account flow on
+/// 3000 (the mod-room consent uses 8765).
+pub async fn start_oauth_listener_on(port: u16) -> Result<OAuthListener> {
+    let listener = TcpListener::bind(("127.0.0.1", port))
         .await
-        .map_err(|e| anyhow::anyhow!("OAuth callback port 3000 unavailable: {}", e))?;
+        .map_err(|e| anyhow::anyhow!("OAuth callback port {} unavailable: {}", port, e))?;
     Ok(OAuthListener { listener })
 }
 
