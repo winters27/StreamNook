@@ -984,6 +984,22 @@ const ProfileSettings = () => {
       ? earnedAccolades.has(a.unlock.accoladeId)
       : ownedCosmeticSlugs.has(a.id) || subscribed;
 
+  // How an atmosphere is earned, shown as the picker tooltip. Accolade-gated
+  // ones only appear once earned, so this reads as "here's how you got it";
+  // named per badge so it points at the right accolade on the wall.
+  const atmosphereUnlockNote = (a: Atmosphere): string | null => {
+    if (a.unlock?.kind === 'accolade') {
+      const badges: Record<string, string> = {
+        semiquincentennial_2026: 'Semiquincentennial',
+        insomniac: 'Insomniac',
+      };
+      const badge = badges[a.unlock.accoladeId];
+      return badge ? `Unlocked by the ${badge} badge` : 'Unlocked by an achievement badge';
+    }
+    if (a.unlock?.kind === 'subscriber') return 'Subscriber atmosphere';
+    return null;
+  };
+
   // Live preview: the hovered cosmetic (or the active one when nothing hovered).
   const activePreviewId = previewThemeId ?? profileTheme;
   const previewAtm = getAtmosphere(activePreviewId);
@@ -1538,8 +1554,8 @@ const ProfileSettings = () => {
             const selected = profileTheme === a.id;
             const locked = !atmUnlocked(a);
             return (
+              <Tooltip key={a.id} content={atmosphereUnlockNote(a) ?? a.name} side="top">
               <button
-                key={a.id}
                 type="button"
                 onClick={() => (locked ? openSupportFor('subscriber') : selected ? selectProfileTheme('tier', 'free') : selectProfileTheme(a.id, 'subscriber', a.unlock?.kind === 'accolade'))}
                 onMouseEnter={() => setPreviewThemeId(a.id)}
@@ -1558,6 +1574,7 @@ const ProfileSettings = () => {
                 {selected && <span className="text-[10px] font-medium text-textMuted">Active</span>}
                 {selected && <Check size={16} className="text-accent" />}
               </button>
+              </Tooltip>
             );
           })}
           {/* CS2 Major Cologne: one earned look whose coin + border are opt-in
