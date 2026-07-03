@@ -1,3 +1,23 @@
+## [8.2.0] - 2026-07-03
+
+## 🎉 New: 250 Years of the Fourth of July
+> Open StreamNook on the Fourth of July and the sky lights up with a full fireworks show for America's 250th birthday. Log in any time from July 3 to 5 to earn the limited Semiquincentennial badge, which unlocks the new Old Glory atmosphere for your profile and chat. On the Fourth you can replay the show all day from the title bar, and those who stay to watch may find a little something extra.
+
+---
+
+### ✨ Features
+- **Mod Rooms.** Private, end-to-end encrypted chat rooms for the moderator teams of channels you moderate, with message editing, image attachments, typing indicators, and live member presence. A one-time consent confirms your moderator status without ever touching your main login.
+- **Filter the directory by tags.** Browse a category and narrow the live streams by tags. Filtering happens at the source, so results reach past just the streams already loaded, and the tags on each stream tile are clickable.
+- **Nova Ember atmosphere.** A flowing red, white, and blue aurora for your profile and chat, free for everyone who earns the Semiquincentennial badge.
+- **Atmospheres library.** The cosmetics gallery (now called Global Cosmetics) has a StreamNook section split into Badges and Atmospheres. The Atmospheres view shows every theme and how to get it, whether it comes with a subscription, is earned with a badge, or is a hidden challenge waiting to be discovered. Opening someone's profile now also shows which atmosphere they are wearing.
+- **Hype Trains, everywhere and instant.** The same Hype Train banner now appears across single chat, MultiChat panes, and the blended feed, and level-ups celebrate the moment they happen instead of seconds late.
+
+### 🐛 Bug Fixes
+- Smoother video during a busy blended MultiChat feed. The merged feed now updates incrementally instead of rebuilding itself on every incoming message, so playback no longer stutters when chat is fast.
+
+### 🔧 Maintenance
+- Drops tooling now speaks in terms of "automation" and "collected" rather than "mining" and "farmed", a clearer name for what it actually does. Your existing settings and progress carry over automatically.
+
 ## [8.1.1] - 2026-06-25
 
 ### 🐛 Bug Fixes
