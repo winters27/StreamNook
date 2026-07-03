@@ -64,6 +64,7 @@ export function useBlendedHypeTrains(channels: HypeSource[]): Map<string, HypeTr
       if (cancelled) return;
       const twitch = channels.filter((c) => (c.provider ?? 'twitch') === 'twitch');
       let anyActive = false;
+      let imminent = false;
       const next = new Map<string, HypeTrainData>();
       await Promise.all(
         twitch.map(async (c) => {
@@ -77,6 +78,8 @@ export function useBlendedHypeTrains(channels: HypeSource[]): Map<string, HypeTr
             });
             if (s.is_active && s.level >= 1) {
               anyActive = true;
+              // Poll fast (1s) when any train's level-up is imminent (progress near goal).
+              imminent = imminent || (s.goal > 0 && s.progress / s.goal > 0.85);
               next.set(login, {
                 id: s.id || '',
                 broadcaster_user_id: id,
@@ -117,7 +120,7 @@ export function useBlendedHypeTrains(channels: HypeSource[]): Map<string, HypeTr
       );
       if (cancelled) return;
       setTrains(next);
-      timer = setTimeout(poll, anyActive ? 3000 : 15000);
+      timer = setTimeout(poll, anyActive ? (imminent ? 1000 : 3000) : 15000);
     };
 
     timer = setTimeout(poll, 0);

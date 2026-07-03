@@ -30,6 +30,10 @@ import { makeKey, parseKey } from '../../utils/providerKey';
 import { PROVIDERS, type ProviderId } from '../../types/providers';
 import { ProviderLogo } from '../ProviderLogo';
 import { BlendedChatPane } from './BlendedChatPane';
+import ModRoomPane from '../modroom/ModRoomPane';
+import { useChannelEmotes } from '../../stores/chatConnectionStore';
+import { isCachedModerator, loadModeratedChannelIds, subscribeModeratedChannels } from '../../services/modRoomService';
+import { getCachedAvatar, resolveAvatar } from '../../utils/avatarCache';
 import ErrorBoundary from '../ErrorBoundary';
 import ChatOnlySettingsModal from './ChatOnlySettingsModal';
 import MultiChatToasts from './MultiChatToasts';
@@ -543,6 +547,74 @@ export default function MultiChatWindow() {
   const [addError, setAddError] = useState<string | null>(null);
   const [addBusy, setAddBusy] = useState(false);
   const [showAdd, setShowAdd] = useState(false);
+  // Mod room in MultiChat: a window-level Chat/Mods switch + channel picker (mod
+  // rooms are Twitch-only and per-channel, so they don't fit the blended feed).
+  const [modsMode, setModsMode] = useState(false);
+  const [modChannel, setModChannel] = useState<string | null>(null);
+  const [modStatus, setModStatus] = useState<{ memberCount: number; encrypted: boolean; connected: boolean }>({
+    memberCount: 0,
+    encrypted: false,
+    connected: false,
+  });
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [moderatedSet, setModeratedSet] = useState<Set<string>>(new Set());
+  useEffect(() => {
+    let active = true;
+    loadModeratedChannelIds().then((ids) => {
+      if (active) setModeratedSet(new Set(ids));
+    });
+    // Refresh when the list re-resolves (e.g. right after the one-time consent),
+    // so the Chat/Mods toggle and picker appear without an app restart.
+    const unsub = subscribeModeratedChannels((ids) => setModeratedSet(new Set(ids)));
+    return () => {
+      active = false;
+      unsub();
+    };
+  }, []);
+  const twitchChannels = useMemo(() => channels.filter((c) => (c.provider ?? 'twitch') === 'twitch'), [channels]);
+  // Only channels you actually moderate (Helix list, or the per-channel cache).
+  const moderatedTwitch = useMemo(
+    () => twitchChannels.filter((c) => !!c.channelId && (moderatedSet.has(c.channelId) || isCachedModerator(c.channelId))),
+    [twitchChannels, moderatedSet],
+  );
+  // The channel you're currently focused on, if you moderate it. Used as the
+  // picker's default so opening Mods lands on the relevant room, not the first in
+  // the list. An explicit pick (modChannel) always takes priority over this.
+  const activeModEntry = useMemo(() => {
+    const active = channels.find((c) => entryKey(c) === activeKey);
+    if (!active) return null;
+    return moderatedTwitch.find((c) => c.channel === active.channel) ?? null;
+  }, [channels, activeKey, moderatedTwitch]);
+  const modChannelEntry = useMemo(
+    () =>
+      (modChannel ? moderatedTwitch.find((c) => c.channel === modChannel) : null) ??
+      activeModEntry ??
+      moderatedTwitch[0] ??
+      null,
+    [moderatedTwitch, modChannel, activeModEntry],
+  );
+  const modEmotes = useChannelEmotes(modChannelEntry?.channel ?? null, modChannelEntry?.channelId ?? null, 'twitch');
+  useEffect(() => {
+    if (modsMode && moderatedTwitch.length === 0) setModsMode(false);
+  }, [modsMode, moderatedTwitch.length]);
+  // Channel avatars for the picker (resolved once, cached).
+  const [avatarMap, setAvatarMap] = useState<Record<string, string>>({});
+  useEffect(() => {
+    let active = true;
+    void Promise.all(
+      moderatedTwitch.map(async (c) => [c.channel, getCachedAvatar(c.channel) ?? (await resolveAvatar(c.channel))] as const),
+    ).then((pairs) => {
+      if (!active) return;
+      setAvatarMap((prev) => {
+        const next = { ...prev };
+        for (const [login, url] of pairs) if (url) next[login] = url;
+        return next;
+      });
+    });
+    return () => {
+      active = false;
+    };
+  }, [moderatedTwitch]);
 
   // Each Tauri window has its own JS context, so the popout's AppStore boots
   // empty even when the main app is authenticated. Hydrate it on mount:
@@ -1861,8 +1933,133 @@ export default function MultiChatWindow() {
         )}
       </AnimatePresence>
       <div className="flex min-h-0 flex-1 flex-col">
+        {moderatedTwitch.length > 0 && (
+          <div className="flex items-center gap-2 border-b border-borderSubtle px-2 py-1.5">
+            <div
+              className="relative flex items-center rounded-full p-0.5"
+              style={{ background: 'rgba(255,255,255,0.06)', boxShadow: 'inset 0 0 0 1px rgba(255,255,255,0.07)' }}
+            >
+              {(
+                [
+                  { key: false, label: 'Chat' },
+                  { key: true, label: 'Mods' },
+                ] as const
+              ).map((seg) => (
+                <button
+                  key={String(seg.key)}
+                  type="button"
+                  onClick={() => setModsMode(seg.key)}
+                  className={`relative rounded-full px-3 py-[3px] text-[11px] font-semibold transition-colors ${modsMode === seg.key ? 'text-textPrimary' : 'text-textSecondary hover:text-textPrimary'}`}
+                >
+                  {modsMode === seg.key && (
+                    <motion.span
+                      layoutId="mc-modroom-toggle"
+                      className="absolute inset-0 rounded-full bg-white/[0.13]"
+                      style={{ boxShadow: 'inset 0 0 0 1px rgba(255,255,255,0.09)' }}
+                      transition={{ type: 'spring', stiffness: 480, damping: 28 }}
+                    />
+                  )}
+                  <span className="relative z-10">{seg.label}</span>
+                </button>
+              ))}
+            </div>
+            {modsMode && moderatedTwitch.length > 1 && (
+              <div className="relative">
+                <button
+                  type="button"
+                  onClick={() => setPickerOpen((v) => !v)}
+                  className="flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs text-textPrimary transition-colors hover:bg-surface-hover"
+                  style={{ background: 'rgba(255,255,255,0.05)', boxShadow: 'inset 0 0 0 1px rgba(255,255,255,0.07)' }}
+                >
+                  {modChannelEntry && avatarMap[modChannelEntry.channel] && (
+                    <img src={avatarMap[modChannelEntry.channel]} alt="" className="h-4 w-4 shrink-0 rounded-full object-cover" />
+                  )}
+                  <span className="max-w-[140px] truncate">{modChannelEntry?.channelName ?? 'Select channel'}</span>
+                  <svg
+                    width="10"
+                    height="10"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2.5"
+                    className={`shrink-0 transition-transform ${pickerOpen ? 'rotate-180' : ''}`}
+                  >
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M6 9l6 6 6-6" />
+                  </svg>
+                </button>
+                {pickerOpen && (
+                  <>
+                    <div className="fixed inset-0 z-40" onClick={() => setPickerOpen(false)} />
+                    <div
+                      className="absolute left-0 top-full z-50 mt-1 min-w-[180px] overflow-hidden rounded-lg border border-borderSubtle py-1 shadow-lg"
+                      style={{ background: 'rgba(18,18,20,0.98)' }}
+                    >
+                      {moderatedTwitch.map((c) => {
+                        const active = c.channel === modChannelEntry?.channel;
+                        return (
+                          <button
+                            key={c.channel}
+                            type="button"
+                            onClick={() => {
+                              setModChannel(c.channel);
+                              setPickerOpen(false);
+                            }}
+                            className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs transition-colors hover:bg-surface-hover ${active ? 'text-accent' : 'text-textPrimary'}`}
+                          >
+                            {avatarMap[c.channel] ? (
+                              <img src={avatarMap[c.channel]} alt="" className="h-5 w-5 shrink-0 rounded-full object-cover" />
+                            ) : (
+                              <span className="h-5 w-5 shrink-0 rounded-full bg-white/10" />
+                            )}
+                            <span className="flex-1 truncate">{c.channelName}</span>
+                            {active && (
+                              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="shrink-0">
+                                <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                              </svg>
+                            )}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
+            {modsMode && (
+              <span className="ml-auto flex items-center gap-2">
+                {modStatus.connected && (
+                  <span className="text-[11px] text-textSecondary">
+                    <span className="font-semibold text-textPrimary">{modStatus.memberCount || 1}</span> in the room
+                  </span>
+                )}
+                {modStatus.encrypted && (
+                  <span
+                    className="inline-flex select-none items-center gap-1 rounded-full px-2 py-[3px] text-[11px] font-semibold text-emerald-300"
+                    style={{
+                      background: 'linear-gradient(180deg, rgba(16,185,129,0.16), rgba(16,185,129,0.08))',
+                      boxShadow: 'inset 0 0 0 1px rgba(16,185,129,0.28), inset 0 1px 0 rgba(255,255,255,0.06)',
+                    }}
+                  >
+                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                      <rect x="3" y="11" width="18" height="11" rx="2" />
+                      <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+                    </svg>
+                    Encrypted
+                  </span>
+                )}
+              </span>
+            )}
+          </div>
+        )}
         <div className="relative flex min-h-0 flex-1">
-          {channels.length === 0 ? (
+          {modsMode && modChannelEntry?.channelId ? (
+            <ModRoomPane
+              channelId={modChannelEntry.channelId}
+              channelLogin={modChannelEntry.channel}
+              emotes={modEmotes}
+              onStatus={setModStatus}
+            />
+          ) : channels.length === 0 ? (
             <EmptyState
               onAddClick={() => setShowAdd(true)}
               hasGoLive={goLiveExists}

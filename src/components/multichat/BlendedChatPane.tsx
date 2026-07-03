@@ -13,15 +13,16 @@ import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as R
 import { invoke } from '@tauri-apps/api/core';
 import ChatMessageList from '../ChatMessageList';
 import { ProviderLogo } from '../ProviderLogo';
-import { useChatConnectionStore } from '../../stores/chatConnectionStore';
+import { useChatConnectionStore, sendChannelMessage } from '../../stores/chatConnectionStore';
 import { useChatUserStore } from '../../stores/chatUserStore';
+import { useAppStore } from '../../stores/AppStore';
 import { parseKey } from '../../utils/providerKey';
 import { openProfilePopup } from '../../utils/openProfilePopup';
 import { PROVIDERS, PROVIDER_IDS, type ProviderId } from '../../types/providers';
 import { parseMessage, type BackendChatMessage } from '../../services/twitchChat';
 import { initializeBadgeCache } from '../../services/twitchBadges';
 import type { ModerationContext } from '../../hooks/useTwitchChat';
-import type { HypeTrainData } from '../../types';
+import HypeTrainBanner from '../HypeTrainBanner';
 import { useBlendedHypeTrains } from './useBlendedHypeTrains';
 import { Logger } from '../../utils/logger';
 import { Tooltip } from '../ui/Tooltip';
@@ -64,14 +65,23 @@ async function sendTo(
 ): Promise<void> {
   const prov = provOf(c);
   if (prov === 'twitch') {
-    await invoke('send_chat_message', {
-      message: text,
-      replyParentMsgId: reply?.parentId ?? null,
-      targetChannel: c.channel.toLowerCase(),
-      broadcasterId: null,
-      senderId: null,
-      senderAccountId: null,
-    });
+    // Route Twitch sends through the shared store path the rest of the app uses. It
+    // sends via Helix with the real broadcaster + sender ids AND adds the optimistic
+    // copy to the slice (so the message also shows in the feed). The previous raw
+    // invoke passed null ids, which made the backend skip Helix and fall back to an
+    // IRC write that doesn't deliver here, so blended sends silently went nowhere.
+    const cu = useAppStore.getState().currentUser;
+    if (!cu?.user_id) return;
+    await sendChannelMessage(
+      c.channel,
+      text,
+      {
+        username: cu.login || cu.username,
+        displayName: cu.display_name || cu.username,
+        userId: cu.user_id,
+      },
+      reply?.parentId,
+    );
   } else if (prov === 'youtube' && reply) {
     await invoke('provider_send_message', {
       provider: prov,
@@ -115,119 +125,175 @@ function Check({ checked, indeterminate }: { checked: boolean; indeterminate?: b
   );
 }
 
-// Compact Hype Train banner for the blended feed (one per active Twitch train).
-// Clean, no glow: a subtle accent/golden tint, the level, the channel, a progress
-// bar. The full celebration UI stays in the single-pane player; this is the
-// at-a-glance "a train is running" cue Brandon wanted in blended.
-function HypeBanner({ train }: { train: HypeTrainData }) {
-  const pct = train.goal > 0 ? Math.min(100, Math.round((train.progress / train.goal) * 100)) : 0;
-  const golden = train.is_golden_kappa;
-  return (
-    <div
-      className={`flex flex-shrink-0 items-center gap-2 border-b border-borderSubtle px-3 py-1.5 ${
-        golden ? 'bg-yellow-500/10' : 'bg-accent/10'
-      }`}
-    >
-      <svg
-        width={13}
-        height={13}
-        viewBox="0 0 24 24"
-        fill="currentColor"
-        className={`flex-shrink-0 ${golden ? 'text-yellow-400' : 'text-accent'}`}
-        aria-hidden
-      >
-        <path d="M13 2 3 14h7l-1 8 10-12h-7l1-8z" />
-      </svg>
-      <span className={`text-xs font-semibold ${golden ? 'text-yellow-300' : 'text-textPrimary'}`}>
-        {golden ? 'Golden Kappa Train' : 'Hype Train'} · Lvl {train.level}
-      </span>
-      <span className="min-w-0 truncate text-[11px] text-textMuted">{train.broadcaster_user_name}</span>
-      <div className="ml-auto h-1.5 w-20 flex-shrink-0 overflow-hidden rounded-full bg-white/10">
-        <div
-          className={`h-full rounded-full ${golden ? 'bg-yellow-400' : 'bg-accent'}`}
-          style={{ width: `${pct}%` }}
-        />
-      </div>
-      <span className="flex-shrink-0 text-[10px] tabular-nums text-textMuted">{pct}%</span>
-    </div>
-  );
-}
-
 export function BlendedChatPane({ channels }: { channels: BlendedChannel[] }) {
   // Re-render on any chat update across all channels.
   const revision = useChatConnectionStore((s) => s.revision);
   // Twitch Hype Trains across the blended Twitch sources (blended mounts no per-pane
   // poller, so this drives both the banner here and the activity-feed rows).
   const hypeTrains = useBlendedHypeTrains(channels);
+  // A level-up's confetti rains over the whole feed, so the shared banner portals
+  // it into this element.
+  const [feedEl, setFeedEl] = useState<HTMLElement | null>(null);
 
-  // First-seen arrival order. We order the merged feed by when each message FIRST
-  // appeared here, not by its send time — YouTube is polled, so its messages land a
-  // few seconds after they were sent, and a send-time sort would slot them mid-feed
-  // and thrash the scroll. A message's slot is frozen the first time we see it, so
-  // nothing already on screen ever moves; new messages only ever append at the bottom.
-  const seqRef = useRef<{ map: Map<string, number>; next: number }>({ map: new Map(), next: 0 });
+  // Incremental, append-only merge. The feed is ordered by FIRST-seen arrival and
+  // only ever grows at the bottom (YouTube is polled, so a send-time sort would slot
+  // its late messages mid-feed and thrash the scroll; freezing each slot on first
+  // sight keeps everything on screen still). Blended mode used to re-derive AND
+  // re-sort the entire combined feed on every frame any source got a message, which
+  // pins the single webview main thread. Most visibly, a clip played over the feed
+  // stutters. Instead we keep a persistent ordered list of ids and reconcile it
+  // against the live slices each tick: append genuinely-new ids (send-time-sorted as
+  // one batch), refresh in-place upgrades (own-message repaint / IRC echo / Helix-id
+  // stamp keep the SAME id but swap the slot reference), and drop ids that have left
+  // every slice (per-channel cap eviction, or a source removed from the blend). No
+  // per-frame re-sort, and the rendered array keeps a STABLE identity on any tick
+  // that changed nothing, so the memoized rows + list bail instead of re-rendering.
+  const orderRef = useRef<string[]>([]);
+  const idToMsgRef = useRef<Map<string, string | BackendChatMessage>>(new Map());
+  // messageId -> the source it came from, so a right-click reply routes to the right
+  // channel/account (a raw Twitch IRC line doesn't carry its own slug). Persistent +
+  // read through a ref by the row callbacks so their identity stays stable.
+  const idToChannelRef = useRef<Map<string, BlendedChannel>>(new Map());
+  // Monotonic counter for the "N new since paused" badge. Order now lives in
+  // orderRef, so this no longer drives placement, only the unread count.
+  const seqRef = useRef<{ next: number }>({ next: 0 });
+  // Cached render outputs. Their references only change when their contents do, so a
+  // quiet tick hands the memoized list the exact same props and it skips the work.
+  const renderCacheRef = useRef<{
+    messages: (string | BackendChatMessage)[];
+    deleted: Set<string>;
+    cleared: Map<string, { context: ModerationContext; affectedMessageIds: Set<string> }>;
+  }>({ messages: [], deleted: new Set(), cleared: new Map() });
 
-  const { messages, deletedMessageIds, clearedUserContexts, idToChannel } = useMemo(() => {
+  const { messages, deletedMessageIds, clearedUserContexts } = useMemo(() => {
     const store = useChatConnectionStore.getState();
     // Match by the STORE MAP KEY via parseKey (the source of truth): a Kick slice
     // is keyed `kick:slug` and its own `.channel` field holds that composite key,
-    // not the bare slug — so matching on slice fields misses it. parseKey
-    // normalizes both bare Twitch keys (`xqc`) and composite (`kick:slug`).
+    // not the bare slug. parseKey normalizes both bare Twitch (`xqc`) and composite.
     const open = new Set(channels.map(sourceKey));
     const byKey = new Map(channels.map((c) => [sourceKey(c), c] as const));
     const keyOf = (m: string | BackendChatMessage) =>
       typeof m === 'string' ? m.match(/id=([^;]+)/)?.[1] ?? m : m.id;
-    const all: (string | BackendChatMessage)[] = [];
-    const deleted = new Set<string>();
-    const cleared = new Map<string, { context: ModerationContext; affectedMessageIds: Set<string> }>();
-    // messageId -> the source it came from, so a right-click reply routes to the
-    // right channel/account (a raw Twitch IRC line doesn't carry its own slug).
-    const idToChannel = new Map<string, BlendedChannel>();
+    const order = orderRef.current;
+    const idToMsg = idToMsgRef.current;
+    const idToChannel = idToChannelRef.current;
+
+    let structuralChange = false; // appended/removed -> messages identity must change
+    let refChange = false; // an on-screen row's reference upgraded in place
+
+    // One pass over the open slices: record presence, queue newcomers, refresh
+    // in-place upgrades. Newcomers are gathered in store-iteration order so that
+    // equal-timestamp ties resolve the same way the old full-rebuild did. This
+    // reconcile is idempotent (driven off the slices, keyed by id), so React 18
+    // StrictMode's double-invoke in dev is a harmless no-op the second time.
+    const present = new Set<string>();
+    const newcomers: Array<{ id: string; m: string | BackendChatMessage; ch?: BlendedChannel }> = [];
     for (const [key, slice] of store.channels.entries()) {
       const pk = parseKey(key);
       const skey = `${pk.provider}::${pk.channel.toLowerCase()}`;
       if (!open.has(skey)) continue;
       const ch = byKey.get(skey);
       for (const m of slice.messages) {
-        all.push(m);
-        if (ch) {
-          const id = keyOf(m);
-          if (id) idToChannel.set(id, ch);
-          // The username right-click reports the message's `id` TAG; for structured
-          // (non-Twitch) messages that can differ from the top-level id, so alias both.
-          const tagId = typeof m !== 'string' ? m.tags?.['id'] : undefined;
-          if (tagId && tagId !== id) idToChannel.set(tagId, ch);
+        const id = keyOf(m);
+        if (!id) continue; // unkeyable; can't track/dedupe/remove it reliably
+        if (present.has(id)) continue; // a dup id across slices renders once (the list guards too)
+        present.add(id);
+        const prev = idToMsg.get(id);
+        if (prev === undefined) {
+          newcomers.push({ id, m, ch });
+        } else if (prev !== m) {
+          // Same id, new slot reference: an in-place upgrade (own repaint / echo /
+          // Helix-id stamp). Refresh the held reference so the row repaints.
+          idToMsg.set(id, m);
+          refChange = true;
+          if (ch) {
+            idToChannel.set(id, ch);
+            const tagId = typeof m !== 'string' ? m.tags?.['id'] : undefined;
+            if (tagId && tagId !== id) idToChannel.set(tagId, ch);
+          }
         }
       }
+    }
+
+    // Removals: ids we hold that no longer appear in any open slice (cap eviction,
+    // or the source was removed from the blend). `present` already includes this
+    // tick's newcomers (still absent from idToMsg), so a size comparison can't tell
+    // us anything, so scan the held ids directly. Compact the order array in one pass
+    // only when something was actually dropped.
+    let removedAny = false;
+    for (const id of Array.from(idToMsg.keys())) {
+      if (!present.has(id)) {
+        idToMsg.delete(id);
+        idToChannel.delete(id);
+        removedAny = true;
+      }
+    }
+    if (removedAny) {
+      let w = 0;
+      for (let r = 0; r < order.length; r++) {
+        if (idToMsg.has(order[r])) order[w++] = order[r];
+      }
+      order.length = w;
+      structuralChange = true;
+    }
+
+    // Append newcomers as one send-time-ordered batch (Array.sort is stable, so
+    // equal timestamps keep their store-iteration order).
+    if (newcomers.length) {
+      newcomers.sort((a, b) => tsOf(a.m) - tsOf(b.m));
+      for (const x of newcomers) {
+        idToMsg.set(x.id, x.m);
+        order.push(x.id);
+        seqRef.current.next++;
+        if (x.ch) {
+          idToChannel.set(x.id, x.ch);
+          const tagId = typeof x.m !== 'string' ? x.m.tags?.['id'] : undefined;
+          if (tagId && tagId !== x.id) idToChannel.set(tagId, x.ch);
+        }
+      }
+      structuralChange = true;
+    }
+
+    // Moderation sets are FLAGGED on the slice (never spliced from messages), so
+    // they stay cheap to re-collect; reuse the prior reference when unchanged so a
+    // quiet tick doesn't re-render the list.
+    const cache = renderCacheRef.current;
+    const deleted = new Set<string>();
+    const cleared = new Map<string, { context: ModerationContext; affectedMessageIds: Set<string> }>();
+    for (const [key, slice] of store.channels.entries()) {
+      const pk = parseKey(key);
+      const skey = `${pk.provider}::${pk.channel.toLowerCase()}`;
+      if (!open.has(skey)) continue;
       slice.deletedMessageIds?.forEach((id: string) => deleted.add(id));
       slice.clearedUserContexts?.forEach(
         (v: { context: ModerationContext; affectedMessageIds: Set<string> }, k: string) => cleared.set(k, v),
       );
     }
-    const seq = seqRef.current;
-    const keyed = all.map((m) => ({ m, k: keyOf(m) }));
-    // Assign a frozen sequence to any message we haven't seen yet. Seed the unseen
-    // batch in send-time order first, so the initial backfill (and any multi-message
-    // tick) stays chronological; from then on each message keeps that slot.
-    const unseen = keyed.filter((x) => !seq.map.has(x.k));
-    if (unseen.length) {
-      unseen.sort((a, b) => tsOf(a.m) - tsOf(b.m));
-      for (const x of unseen) seq.map.set(x.k, seq.next++);
+    const deletedSame =
+      deleted.size === cache.deleted.size && [...deleted].every((id) => cache.deleted.has(id));
+    const clearedSame =
+      cleared.size === cache.cleared.size && [...cleared.keys()].every((k) => cache.cleared.has(k));
+    if (!deletedSame) cache.deleted = deleted;
+    if (!clearedSame) cache.cleared = cleared;
+
+    // Rebuild the rendered array only when the set or a reference actually changed;
+    // otherwise hand back the identical reference so the memoized rows + list bail.
+    if (structuralChange || refChange || cache.messages.length !== order.length) {
+      cache.messages = order.map((id) => idToMsg.get(id) as string | BackendChatMessage);
     }
-    // Bound the map to messages still present (slices are capped, so old ids drop).
-    if (seq.map.size > keyed.length * 2 + 64) {
-      const present = new Set(keyed.map((x) => x.k));
-      for (const k of seq.map.keys()) if (!present.has(k)) seq.map.delete(k);
-    }
-    keyed.sort((a, b) => (seq.map.get(a.k) ?? 0) - (seq.map.get(b.k) ?? 0));
     return {
-      messages: keyed.map((x) => x.m),
-      deletedMessageIds: deleted,
-      clearedUserContexts: cleared,
-      idToChannel,
+      messages: cache.messages,
+      deletedMessageIds: cache.deleted,
+      clearedUserContexts: cache.cleared,
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [channels, revision]);
+
+  // Stable view of the current feed + source map for the row callbacks, so those
+  // callbacks keep a fixed identity (they read the ref) and don't defeat the row
+  // memo by changing every tick.
+  const messagesRef = useRef(messages);
+  messagesRef.current = messages;
 
   const getMessageId = useCallback(
     (m: string | BackendChatMessage) => (typeof m === 'string' ? m.match(/id=([^;]+)/)?.[1] ?? null : m.id),
@@ -359,7 +425,7 @@ export function BlendedChatPane({ channels }: { channels: BlendedChannel[] }) {
   );
   const handleReplyClick = useCallback(
     (parentMsgId: string) => {
-      if (!messages.some((m) => getMessageId(m) === parentMsgId)) return;
+      if (!messagesRef.current.some((m) => getMessageId(m) === parentMsgId)) return;
       // Hold the feed (force past the settle window) + mark a navigation so the scroll
       // handlers don't fight the jump; the resume pill takes you back to live.
       lastNavTimeRef.current = Date.now();
@@ -381,7 +447,7 @@ export function BlendedChatPane({ channels }: { channels: BlendedChannel[] }) {
       if (highlightTimer.current) clearTimeout(highlightTimer.current);
       highlightTimer.current = setTimeout(() => setHighlightedMessageId(null), 2000);
     },
-    [messages, getMessageId, setChatPaused],
+    [getMessageId, setChatPaused],
   );
 
   // ----- composer -----------------------------------------------------------
@@ -507,12 +573,12 @@ export function BlendedChatPane({ channels }: { channels: BlendedChannel[] }) {
   // Right-click a name -> reply to that person, routed to the source they posted in.
   const handleUsernameRightClick = useCallback(
     (messageId: string, username: string) => {
-      const channel = idToChannel.get(messageId);
+      const channel = idToChannelRef.current.get(messageId);
       if (!channel) return;
       setReplyingTo({ messageId, username, channel });
       requestAnimationFrame(() => inputRef.current?.focus({ preventScroll: true }));
     },
-    [idToChannel],
+    [],
   );
 
   // Click a badge on a message -> open its detail in the badges overlay, which lives
@@ -543,7 +609,7 @@ export function BlendedChatPane({ channels }: { channels: BlendedChannel[] }) {
     ) => {
       const row = (event.target as HTMLElement | null)?.closest?.('[data-message-id]');
       const mid = row?.getAttribute('data-message-id') ?? undefined;
-      const channel = mid ? idToChannel.get(mid) : undefined;
+      const channel = mid ? idToChannelRef.current.get(mid) : undefined;
       if (channel && provOf(channel) !== 'twitch') return; // no profile/mod surface for other providers here
       const login = channel?.channel;
       // Am I a mod/broadcaster in that channel? My USERSTATE badges live on its slice.
@@ -562,7 +628,7 @@ export function BlendedChatPane({ channels }: { channels: BlendedChannel[] }) {
         clientY: event.clientY,
       });
     },
-    [idToChannel],
+    [],
   );
 
   // Drop a pending reply if its channel was removed from the blend.
@@ -650,9 +716,20 @@ export function BlendedChatPane({ channels }: { channels: BlendedChannel[] }) {
   return (
     <div ref={paneRef} className="flex h-full min-h-0 min-w-0 flex-1 flex-col bg-secondary">
       {[...hypeTrains.values()].map((t) => (
-        <HypeBanner key={t.broadcaster_user_login} train={t} />
+        <div
+          key={t.broadcaster_user_login}
+          className="flex-shrink-0 border-b border-borderSubtle px-3 pb-2"
+        >
+          <div className="flex items-center gap-1.5 pt-1.5">
+            <ProviderLogo provider="twitch" size={12} className="flex-shrink-0" />
+            <span className="truncate text-[11px] font-semibold text-textPrimary">
+              {t.broadcaster_user_name || t.broadcaster_user_login}
+            </span>
+          </div>
+          <HypeTrainBanner train={t} confettiTarget={feedEl} />
+        </div>
       ))}
-      <div className="relative min-h-0 flex-1 overflow-hidden">
+      <div ref={setFeedEl} className="relative min-h-0 flex-1 overflow-hidden">
         <ChatMessageList
           messages={messages}
           isPaused={paused}

@@ -2864,12 +2864,12 @@ html[data-motion="reduced"] .animate-shimmer {
 
 /* Mining card glow effect */
 /* Mining shimmer overlay - tilted sweeping animation across the card */
-.mining-shimmer-overlay {
+.automation-shimmer-overlay {
   position: relative;
   overflow: hidden;
 }
 
-.mining-shimmer-overlay::after {
+.automation-shimmer-overlay::after {
   content: "";
   position: absolute;
   top: 0;
@@ -2899,7 +2899,7 @@ html[data-motion="reduced"] .animate-shimmer {
 }
 
 /* Mining progress bar - neon accent with shimmer */
-.mining-progress-bar {
+.automation-progress-bar {
   background: linear-gradient(
     90deg,
     var(--color-accent-neon) 0%,
@@ -3055,11 +3055,11 @@ html[data-motion="reduced"] .animate-shimmer {
 }
 
 .animate-panel-slide-down {
-  animation: panel-slide-down-in 0.25s ease-out;
+  animation: panel-slide-down-in 0.2s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 .animate-panel-slide-up {
-  animation: panel-slide-up-in 0.25s ease-out;
+  animation: panel-slide-up-in 0.2s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 /* StreamNook Ethereal tier (user #1). Black text whose multi-layer text-shadow

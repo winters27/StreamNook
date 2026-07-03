@@ -177,6 +177,7 @@ function TwitchChatPane({ channel, channelId, channelName, isActive }: MultiChat
     const poll = async () => {
       if (cancelled) return;
       let active = false;
+      let imminent = false;
       try {
         const s = await invoke<{
           is_active: boolean;
@@ -190,6 +191,8 @@ function TwitchChatPane({ channel, channelId, channelName, isActive }: MultiChat
           is_golden_kappa: boolean;
         }>('get_hype_train_status', { channelId: hypeChannelId, channelLogin: channelKey });
         active = s.is_active;
+        // Poll fast (1s) when a level-up is imminent so the celebration fires ASAP.
+        imminent = s.is_active && s.goal > 0 && s.progress / s.goal > 0.85;
         if (s.is_active && s.level >= 1) {
           // Feed the in-pane banner with the full live status every poll.
           setPaneHypeTrain({
@@ -229,7 +232,7 @@ function TwitchChatPane({ channel, channelId, channelName, isActive }: MultiChat
       } catch (err) {
         Logger.warn('[MultiChatPane] get_hype_train_status failed:', err);
       }
-      if (!cancelled) timer = setTimeout(poll, active ? 3000 : 15000);
+      if (!cancelled) timer = setTimeout(poll, active ? (imminent ? 1000 : 3000) : 15000);
     };
     timer = setTimeout(poll, 0);
     return () => {
