@@ -145,7 +145,7 @@ function build(): BindableCommand[] {
       category: 'Navigation',
       context: 'global',
       defaultBindings: ['Ctrl+Shift+D'],
-      keywords: 'drops campaigns rewards mining',
+      keywords: 'drops campaigns rewards automation',
       run: () => app().setShowDropsOverlay(true),
     },
     {

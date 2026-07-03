@@ -550,7 +550,7 @@ impl ChannelPointsWebSocketService {
                             // Drop the read lock before doing API call
                             drop(mapping);
 
-                            // Channel not in mapping - try to look it up via API (for drops mining channels)
+                            // Channel not in mapping - try to look it up via API (for drops automation channels)
                             debug!("Channel {} not in mapping, attempting API lookup...", cid);
                             if let Ok(Some((login, display_name))) =
                                 Self::lookup_channel_by_id(cid).await

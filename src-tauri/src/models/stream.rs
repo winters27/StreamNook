@@ -21,6 +21,10 @@ pub struct TwitchStream {
     pub profile_image_url: Option<String>,
     #[serde(default)]
     pub is_live: Option<bool>,
+    // Free-form stream tags from the Helix streams response (e.g. "English",
+    // "Speedrun"). Powers the category tag filter.
+    #[serde(default)]
+    pub tags: Option<Vec<String>>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]

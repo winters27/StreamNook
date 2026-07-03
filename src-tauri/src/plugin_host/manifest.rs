@@ -80,7 +80,7 @@ pub struct PluginManifest {
     pub contributes: Contributes,
 }
 
-/// What a plugin plugs into. All entries are namespaced ids (e.g. `drops.mine`)
+/// What a plugin plugs into. All entries are namespaced ids (e.g. `drops.run`)
 /// defined by the host feature that exposes the hook, not by the plugin.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Contributes {
@@ -123,7 +123,7 @@ fn default_transport() -> String {
     "stdio".to_string()
 }
 
-/// A dotted, lowercase identifier with at least two segments, e.g. `drops.mine`.
+/// A dotted, lowercase identifier with at least two segments, e.g. `drops.run`.
 fn is_namespaced_id(s: &str) -> bool {
     let parts: Vec<&str> = s.split('.').collect();
     parts.len() >= 2
@@ -278,7 +278,7 @@ impl PluginManifest {
             }
         }
         // Contributions are free-form, plugin-author-supplied ids, but must be
-        // namespaced (e.g. `drops.mine`) so they cannot collide with internals.
+        // namespaced (e.g. `drops.run`) so they cannot collide with internals.
         for hook in self
             .contributes
             .actions

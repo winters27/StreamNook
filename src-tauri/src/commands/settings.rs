@@ -31,7 +31,7 @@ pub async fn save_settings(
         // path too), which keeps state.settings.drops authoritative. A frontend
         // settings save carries the AppStore's copy of drops, which is loaded once
         // at startup and never refreshed when the plugin panel changes it, so it
-        // goes stale. Letting it through here clobbers farming on/off and the
+        // goes stale. Letting it through here clobbers automation on/off and the
         // priority targets the moment any unrelated setting is saved (e.g. a
         // notifications toggle). Keep the backend's copy instead.
         settings.drops = state_settings.drops.clone();

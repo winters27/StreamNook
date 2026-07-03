@@ -41,7 +41,7 @@ fn get_app_data_dir() -> Result<PathBuf> {
     Err(anyhow::anyhow!("Could not determine app data directory"))
 }
 
-/// A service for managing persistent HTTP cookies similar to TwitchDropsMiner's cookies.jar
+/// A service for managing persistent HTTP cookies for persistent HTTP cookies
 pub struct CookieJarService {
     store: Arc<Mutex<CookieStore>>,
     file_path: PathBuf,

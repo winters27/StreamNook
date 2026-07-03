@@ -210,7 +210,7 @@ pub async fn plugins_fetch_readme(url: String) -> Result<String, String> {
 }
 
 /// Invokes a named hook action on whichever plugin handles it. Core UI uses
-/// this to delegate a control (e.g. start mining a campaign) without knowing
+/// this to delegate a control (e.g. start collecting a campaign) without knowing
 /// which plugin backs it.
 #[tauri::command]
 pub async fn plugins_invoke_action(

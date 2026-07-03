@@ -179,8 +179,8 @@ function buildQuickActions(): PaletteItem[] {
       id: 'qa.openDrops',
       section: 'Quick Actions',
       title: 'Open Drops center',
-      subtitle: 'Active campaigns, claimed rewards, mining status',
-      keywords: 'drops campaigns rewards mining inventory',
+      subtitle: 'Active campaigns, claimed rewards, automation status',
+      keywords: 'drops campaigns rewards automation inventory',
       run: () => useAppStore.getState().setShowDropsOverlay(true),
     },
     {
@@ -751,7 +751,7 @@ const SETTINGS_CATALOG: SettingsEntry[] = [
   // Chat
   { tab: 'Chat', keywords: 'chat placement design fonts dividers timestamps mentions emotes logging channel points highlights commands reminders' },
   { tab: 'Chat', section: 'Chat Placement', keywords: 'chat placement position right bottom hidden where show hide' },
-  { tab: 'Chat', section: 'Channel Points', keywords: 'channel points auto claim bonus chest reward farm points' },
+  { tab: 'Chat', section: 'Channel Points', keywords: 'channel points auto claim bonus chest reward collect points' },
   { tab: 'Chat', section: 'Chat Logging', keywords: 'chat logging save logs text files folder per channel timestamps events moderation record history' },
   { tab: 'Chat', section: 'Chat Design', keywords: 'chat design font size weight spacing dividers timestamps seconds mention colors reply name separator style prefix colon dot arrow pipe dash chip bracket accent bar pinned message collapse bar alternating backgrounds' },
   { tab: 'Chat', section: 'Link Previews', keywords: 'link preview previews load card url unfurl embed trusted sources shorten links domains clean' },

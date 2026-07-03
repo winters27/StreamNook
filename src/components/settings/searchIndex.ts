@@ -291,7 +291,7 @@ export const SETTINGS_INDEX: SettingsIndexEntry[] = [
     tab: 'Chat',
     section: 'Channel Points',
     title: 'Channel Points',
-    description: 'Auto-claim the bonus chest on the stream you are watching. Channel points, bonus claim, points farming is a separate opt-in plugin.'
+    description: 'Auto-claim the bonus chest on the stream you are watching. Channel points, bonus claim, points automation is a separate opt-in plugin.'
   },
   {
     tab: 'Chat',

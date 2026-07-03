@@ -76,7 +76,7 @@ export interface RecoverySettings {
   max_recovery_attempts?: number;
 }
 
-export interface FarmChannel {
+export interface PriorityChannel {
   channel_id: string;
   channel_login: string;
   display_name: string;
@@ -87,7 +87,7 @@ export interface FarmChannel {
 export interface ChatLoggingSettings {
   enabled?: boolean; // Off by default
   folder?: string; // Custom base folder; empty uses ChatLogs under the app data dir
-  channels?: FarmChannel[]; // Channels to log; empty logs every channel you open
+  channels?: PriorityChannel[]; // Channels to log; empty logs every channel you open
   include_events?: boolean; // Also log subs, raids, announcements, and moderation actions (default: true)
   timestamps?: boolean; // Start each line with the time it was sent (default: true)
 }
@@ -99,8 +99,8 @@ export interface DropsSettings {
   notify_on_drop_claimed: boolean;
   notify_on_points_claimed: boolean;
   check_interval_seconds: number;
-  // Mining settings
-  auto_mining_enabled?: boolean;
+  // Automation settings
+  automation_enabled?: boolean;
   priority_games?: string[];
   excluded_games?: string[];
   priority_mode?: 'PriorityOnly' | 'EndingSoonest' | 'LowAvailFirst';
@@ -108,7 +108,8 @@ export interface DropsSettings {
   // Watch token allocation settings
   reserve_token_for_current_stream?: boolean; // Reserve one watch token for current stream (default: true)
   auto_reserve_on_watch?: boolean; // Automatically reserve token when starting a stream (default: true)
-  priority_farm_channels?: FarmChannel[]; // Channels to prioritize for channel points farming
+  priority_channels?: PriorityChannel[]; // Channels to prioritize for channel points automation
+  prefer_favorites?: boolean; // Collect your live favorited channels instead of the priority list (default: false)
   // Recovery settings
   recovery_settings?: RecoverySettings;
 }
@@ -675,7 +676,7 @@ export interface Settings {
   font?: string; // Interface font id (see FONT_OPTIONS in themes). Default 'satoshi'.
   error_reporting_enabled?: boolean; // Local diagnostic log verbosity; nothing is sent off-device (default: true)
   setup_complete?: boolean; // Whether the first-time setup wizard has been completed
-  auto_claim_points_watching?: boolean; // Auto-claim the bonus chest on the channel you're actively watching. On by default; when off, a clickable chest appears on the points button. Scoped to the watched channel only (background farming is a separate opt-in plugin).
+  auto_claim_points_watching?: boolean; // Auto-claim the bonus chest on the channel you're actively watching. On by default; when off, a clickable chest appears on the points button. Scoped to the watched channel only (background automation is a separate opt-in plugin).
   compact_view?: CompactViewSettings; // Compact view preset settings
   custom_themes?: CustomTheme[]; // User-created custom themes
   glass_transparency?: number; // Global glassiness, 0-100 (100 = full frosted glass, 0 = solid panels). Default 100.
@@ -768,6 +769,8 @@ export interface TwitchStream {
   has_shared_chat?: boolean;
   profile_image_url?: string;
   is_live?: boolean;
+  // Free-form stream tags (e.g. "English", "Speedrun"); used by the category tag filter.
+  tags?: string[];
 }
 
 export interface TwitchClip {
@@ -905,7 +908,7 @@ export interface UnifiedGame {
   total_claimed: number;               // Total claimed drops for this game
 
   // Status
-  active: boolean;                  // Currently mining this game
+  active: boolean;                  // Currently automation this game
   has_claimable: boolean;              // Has drops ready to claim
   all_drops_claimed: boolean;          // All available drops have been claimed (game complete)
 }
@@ -937,9 +940,9 @@ export interface TimeBasedDrop {
   required_minutes_watched: number;
   benefit_edges: DropBenefit[];
   progress?: DropProgress;
-  /** Whether this drop can be auto-mined. Drops with required_minutes_watched = 0 
-   * are event-based, badge-based, or require special actions and cannot be auto-mined */
-  is_mineable?: boolean;
+  /** Whether this drop can be auto-collected. Drops with required_minutes_watched = 0 
+   * are event-based, badge-based, or require special actions and cannot be auto-collected */
+  is_collectible?: boolean;
 }
 
 export interface AllowedChannel {

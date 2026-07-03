@@ -1,5 +1,5 @@
 //! Multi-account registry. Phase 1 foundation for the "send as" picker and,
-//! later, multi-account actions (mining, whispers, mod tools).
+//! later, multi-account actions (automation, whispers, mod tools).
 //!
 //! Design constraints (deliberate, see Brain `projects/StreamNook.md` ->
 //! "Multi-account support"):

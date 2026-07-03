@@ -16,7 +16,7 @@
 //!   shared via their own LazyLock, need Chrome UA + keepalive tuning.
 //! - Browser-spoofing clients with custom UA strings (badge scrapers).
 //! - Per-service instance fields with specific config (badge_service,
-//!   emote_service, mining_service, profile_cache_service).
+//!   emote_service, automation_service, profile_cache_service).
 
 use reqwest::Client;
 use std::sync::LazyLock;

@@ -263,6 +263,14 @@ pub async fn fetch_followed_live(host: &Arc<HostInner>) -> Result<Vec<Value>, St
     let streams = TwitchService::get_followed_streams(&state)
         .await
         .map_err(|e| e.to_string())?;
+    // Which of these live channels the user has favorited (hearted). Favorites
+    // are Twitch user ids, the same id as a stream's user_id. The plugin uses
+    // this to offer a favorites mode without shipping the list itself.
+    let favorites: std::collections::HashSet<String> = state
+        .settings
+        .lock()
+        .map(|s| s.favorite_streamers.iter().cloned().collect())
+        .unwrap_or_default();
     Ok(streams
         .iter()
         .map(|s| {
@@ -274,6 +282,7 @@ pub async fn fetch_followed_live(host: &Arc<HostInner>) -> Result<Vec<Value>, St
                 "game_name": if s.game_name.is_empty() { Value::Null } else { json!(s.game_name) },
                 "started_at": if s.started_at.is_empty() { Value::Null } else { json!(s.started_at) },
                 "viewer_count": s.viewer_count,
+                "favorite": favorites.contains(&s.user_id),
             })
         })
         .collect())

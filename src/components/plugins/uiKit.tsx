@@ -281,7 +281,7 @@ export const SettingsBlock = ({
 // The bundle of controls shared with plugins via `api.components`. Beyond the
 // generic controls, it re-exports the whole native Drops settings tab so a
 // drops plugin's panel can render the exact prod UI (prop-driven: settings +
-// onUpdateSettings + the mining callbacks) instead of rebuilding it.
+// onUpdateSettings + the automation callbacks) instead of rebuilding it.
 export const UI_KIT = {
   Toggle,
   ChipList,

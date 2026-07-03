@@ -389,7 +389,7 @@ function applyResolvedTheme(userId: string, profileTheme: string | null | undefi
   lastResolvedAt.set(userId, Date.now());
 }
 
-function ensureAtmosphereResolved(userId: string) {
+export function ensureAtmosphereResolved(userId: string) {
   if (!userId || !isStreamNookUser(userId)) return;
   // Cached/known value (incl. one set by an explicit change before the user was
   // in the store): push it to the store for this (re)sighting. The Cologne add-ons
