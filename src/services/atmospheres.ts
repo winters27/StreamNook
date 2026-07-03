@@ -88,3 +88,34 @@ export const getAtmosphere = (id: string | null | undefined): Atmosphere | null 
 };
 
 export const listAtmospheres = (): Atmosphere[] => listAtmosphereEntries();
+
+// Public unlock descriptions, keyed by the accolade that grants the atmosphere.
+// Anything accolade-gated NOT listed here is treated as a HIDDEN challenge: the
+// library shows it exists but never reveals how it is earned. Safe by default,
+// so a new secret atmosphere stays a secret until it is deliberately made public.
+const PUBLIC_ATMOSPHERE_UNLOCKS: Record<string, string> = {
+  semiquincentennial_2026: 'Semiquincentennial',
+};
+
+export interface AtmosphereUnlock {
+  // 'subscriber' = paid tier reward; 'accolade' = earned via a badge.
+  kind: 'subscriber' | 'accolade';
+  // A secret challenge whose earn method must not be revealed.
+  hidden: boolean;
+  // The badge name for a public accolade unlock (absent when hidden).
+  badgeName?: string;
+  // One-line status for the library / tooltips.
+  label: string;
+}
+
+// How an atmosphere is obtained, for the library and any "how did I get this"
+// surface. Keeps the hidden-challenge rule in one place.
+export const getAtmosphereUnlock = (a: Atmosphere): AtmosphereUnlock => {
+  if (a.unlock?.kind === 'accolade') {
+    const badgeName = PUBLIC_ATMOSPHERE_UNLOCKS[a.unlock.accoladeId];
+    return badgeName
+      ? { kind: 'accolade', hidden: false, badgeName, label: `Earned with the ${badgeName} badge` }
+      : { kind: 'accolade', hidden: true, label: 'Hidden challenge' };
+  }
+  return { kind: 'subscriber', hidden: false, label: 'Subscriber reward' };
+};
