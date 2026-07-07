@@ -1,21 +1,4 @@
 {
   "version": 1,
-  "announcements": [
-    {
-      "id": "20260605-1200-emote-prefetch",
-      "severity": "info",
-      "title": "Helping 7TV out and keeping your emotes reliable",
-      "body": "Our friends over at 7TV have been getting hit with DDoS attacks and heavy API load lately, which is why emotes sometimes fail to load. We want to take a little weight off their servers and keep your emotes reliable, so we're adding an Emote Prefetch tool: trigger it, walk away, and it downloads every emote from all the channels you follow straight to your disk. Once they're cached locally, your emotes keep working even when 7TV is having a rough day, and the app stops re-pulling the same images over and over, which eases the load on 7TV instead of adding to it. Much respect to the 7TV team. Rolling out in an upcoming update.",
-      "dismissible": true
-    },
-    {
-      "id": "20260527-1200-support-moving-to-streamnook-app",
-      "severity": "info",
-      "title": "Support is moving to streamnook.app",
-      "body": "Donations and subscriptions are moving from Ko-fi to streamnook.app. Existing Ko-fi monthly subscribers: please cancel your Ko-fi subscription and re-subscribe at streamnook.app — your Subscriber badge stays yours either way. New supporters: streamnook.app handles Twitch sign-in and Stripe checkout in one step, so your support is credited to your account automatically.",
-      "action_label": "Go to streamnook.app",
-      "action_url": "https://streamnook.app/support",
-      "dismissible": true
-    }
-  ]
+  "announcements": []
 }

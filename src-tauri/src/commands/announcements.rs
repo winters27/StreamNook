@@ -27,6 +27,12 @@ pub struct Announcement {
     pub dismissible: Option<bool>,
     #[serde(default)]
     pub action: Option<AnnouncementAction>,
+    // Announcements are often authored with flat action_label / action_url keys.
+    // These are folded into `action` after fetch so the UI only reads one shape.
+    #[serde(default)]
+    pub action_label: Option<String>,
+    #[serde(default)]
+    pub action_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -68,10 +74,20 @@ pub async fn fetch_announcements() -> Result<AnnouncementsFile, String> {
         });
     }
 
-    let file: AnnouncementsFile = resp
+    let mut file: AnnouncementsFile = resp
         .json()
         .await
         .map_err(|e| format!("Failed to parse announcements: {}", e))?;
+
+    // Fold flat action_label / action_url authoring into the structured action
+    // the frontend reads. Only fills in when a nested action wasn't provided.
+    for a in &mut file.announcements {
+        if a.action.is_none() {
+            if let (Some(label), Some(url)) = (a.action_label.take(), a.action_url.take()) {
+                a.action = Some(AnnouncementAction { label, url });
+            }
+        }
+    }
 
     Ok(file)
 }

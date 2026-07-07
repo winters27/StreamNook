@@ -28,6 +28,12 @@ interface AnnouncementsFile {
 const POLL_INTERVAL_MS = 30 * 60 * 1000;
 const DISMISSED_STORAGE_KEY = 'streamnook_dismissed_announcements_v1';
 
+// Set by the setup wizard when a brand-new user finishes onboarding. On the next
+// announcements fetch we fold whatever is currently live into the dismissed set,
+// so a fresh install starts clean and only sees announcements published after
+// signup. The existing backlog was meant for users who were already here.
+export const ANNOUNCEMENTS_BASELINE_PENDING_KEY = 'streamnook_announcements_baseline_pending_v1';
+
 const compareVersions = (a: string, b: string): number => {
   const pa = a.split('.').map((n) => parseInt(n, 10) || 0);
   const pb = b.split('.').map((n) => parseInt(n, 10) || 0);
@@ -98,7 +104,19 @@ const AnnouncementsBanner = () => {
   const fetchOnce = useCallback(async () => {
     try {
       const file = await invoke<AnnouncementsFile>('fetch_announcements');
-      setAnnouncements(file.announcements ?? []);
+      const list = file.announcements ?? [];
+      // Fresh install just finished onboarding: treat everything live right now
+      // as already seen so the backlog doesn't dump on a first-time user.
+      if (localStorage.getItem(ANNOUNCEMENTS_BASELINE_PENDING_KEY)) {
+        setDismissed((prev) => {
+          const next = new Set(prev);
+          list.forEach((a) => next.add(a.id));
+          saveDismissed(next);
+          return next;
+        });
+        localStorage.removeItem(ANNOUNCEMENTS_BASELINE_PENDING_KEY);
+      }
+      setAnnouncements(list);
     } catch (e) {
       Logger.warn('fetch_announcements failed:', e);
     }

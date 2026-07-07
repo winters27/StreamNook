@@ -37,6 +37,7 @@ import {
 import { getSidebarSettings, saveSidebarSettings, type SidebarMode } from './settings/InterfaceSettings';
 
 import { Logger } from '../utils/logger';
+import { ANNOUNCEMENTS_BASELINE_PENDING_KEY } from './AnnouncementsBanner';
 
 const STEP_EASE: [number, number, number, number] = [0.16, 1, 0.3, 1];
 const STEP_DURATION = 0.4;
@@ -288,10 +289,23 @@ const SetupWizard = ({ isOpen, onClose }: SetupWizardProps) => {
 
     const handleCompleteSetup = useCallback(async () => {
         try {
+            // Fresh install (setup wasn't already complete): tell the announcements
+            // banner to baseline the current backlog as seen so a brand-new user
+            // isn't shown notices meant for existing users. Guarding on the prior
+            // value keeps forced-relogin walkthroughs (setup already complete) from
+            // wiping announcements those users still need.
+            const isFirstTimeSetup = !settings.setup_complete;
             await updateSettings({
                 ...settings,
                 setup_complete: true,
             });
+            if (isFirstTimeSetup) {
+                try {
+                    localStorage.setItem(ANNOUNCEMENTS_BASELINE_PENDING_KEY, 'true');
+                } catch {
+                    // localStorage unavailable; worst case they see current announcements once
+                }
+            }
             onClose();
         } catch (e) {
             Logger.error('Failed to save settings:', e);

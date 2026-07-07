@@ -1860,7 +1860,7 @@ function App() {
         isOpen={showSetupWizard}
         onClose={() => setShowSetupWizard(false)}
       />
-      <AnnouncementsBanner />
+      {settings.setup_complete && !showSetupWizard && <AnnouncementsBanner />}
       <SemiquincentennialShow />
       <ToastManager />
       <EntitlementUnlockNote />
