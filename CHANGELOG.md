@@ -1,3 +1,12 @@
+## [8.2.1] - 2026-07-06
+
+### ✨ Features
+- **Watch in the qualities your region blocks.** Some streams offer higher resolutions like 1440p that Twitch restricts in certain countries. StreamNook now brings those options back automatically whenever they exist, with nothing for you to set up.
+- **Full screen with F11.** A new borderless full-screen mode fills your entire display, over the taskbar, with the whole app: player, chat, and all. Toggle it from the title bar, the command palette, or the F11 key.
+
+### 🐛 Bug Fixes
+- **A cleaner first run.** New installs no longer open to a pile of past announcements, and the announcement banner now waits until setup is finished before it appears.
+
 ## [8.2.0] - 2026-07-03
 
 ## 🎉 New: 250 Years of the Fourth of July
