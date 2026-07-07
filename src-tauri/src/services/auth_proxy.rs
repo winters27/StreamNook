@@ -5,7 +5,8 @@
 // resolution can hand the relay an upstream instead (see docs/plugins/HOOKS.md).
 
 use anyhow::{anyhow, Context, Result};
-use log::warn;
+use base64::prelude::{Engine as _, BASE64_STANDARD};
+use log::{debug, warn};
 use once_cell::sync::OnceCell;
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -188,6 +189,9 @@ pub(crate) async fn fetch_auth_master(channel: &str, oauth_token: Option<&str>) 
     } else {
         oauth_token
     };
+    // Region unlock (below) only helps an authenticated viewer: an anonymous token
+    // stays not-logged-in blocked from the high tiers regardless of fetch region.
+    let authenticated = oauth_token.is_some();
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(8))
         .user_agent(USER_AGENT)
@@ -243,23 +247,114 @@ pub(crate) async fn fetch_auth_master(channel: &str, oauth_token: Option<&str>) 
         "https://usher.ttvnw.net/api/channel/hls/{ch}.m3u8\
          ?platform=web&player_type=embed&allow_source=true&allow_audio_only=true\
          &playlist_include_framerate=true&supported_codecs=av1,h264,h265&fast_bread=true\
-         &sig={sig}&token={tok}",
+         &include_unavailable=true&sig={sig}&token={tok}",
         ch = channel,
         sig = sig,
         tok = urlencoding::encode(value),
     );
 
-    let master = client
+    let resp = client
         .get(&usher)
         .header("Referer", "https://player.twitch.tv")
         .header("Origin", "https://player.twitch.tv")
         .send()
         .await
         .context("usher request failed")?;
-    if !master.status().is_success() {
-        return Err(anyhow!("usher returned {}", master.status()));
+    if !resp.status().is_success() {
+        return Err(anyhow!("usher returned {}", resp.status()));
     }
-    Ok(master.text().await?)
+    let master = resp.text().await?;
+
+    // Region unlock: when logged in but geo-blocked from a high tier (1440p/2160p,
+    // flagged AUTHZ_GEO in the include_unavailable blob), re-fetch the master
+    // through the streamnook.app relay from an allowed region so those tiers arrive
+    // with real signed URLs. Best-effort — any failure keeps the local master, and
+    // it only fires for an authenticated viewer who is actually geo-blocked, so
+    // unaffected viewers pay nothing.
+    // When logged in but geo-blocked from a high tier, recover it through the relay.
+    if authenticated && geo_blocked_tier_present(&master) {
+        // authenticated == oauth_token.is_some(), so this cannot panic.
+        let oauth = oauth_token.expect("authenticated implies an oauth token");
+        if let Some(recovered) = recover_geo_blocked_master(channel, oauth).await {
+            debug!("[Resolver] {channel}: geo-blocked high tier recovered via region relay");
+            return Ok(recovered);
+        }
+        debug!("[Resolver] {channel}: geo block detected but the region relay did not recover");
+    }
+
+    Ok(master)
+}
+
+/// The streamnook.app relay that re-fetches a usher master from an allowed region,
+/// so a viewer geo-blocked from the high tiers gets one carrying their real signed
+/// URLs. See the QualityRelay Durable Object in the streamnook.app worker.
+const QUALITY_RELAY_URL: &str = "https://modroom.streamnook.app/quality-master";
+
+/// True when `master` describes a rendition Twitch hid from THIS viewer for their
+/// country (`AUTHZ_GEO`), read from the `include_unavailable` session-data blob.
+/// That is the only block the region relay can lift; a not-logged-in block is
+/// cleared by the viewer's own login, not by the fetch region.
+fn geo_blocked_tier_present(master: &str) -> bool {
+    for line in master.lines() {
+        let l = line.trim_start();
+        if !l.contains("com.amazon.ivs.unavailable-media") {
+            continue;
+        }
+        let Some(b64) = extract_quoted_attr(l, "VALUE") else {
+            continue;
+        };
+        let Ok(bytes) = BASE64_STANDARD.decode(b64.as_bytes()) else {
+            continue;
+        };
+        let Ok(entries) = serde_json::from_slice::<Vec<serde_json::Value>>(&bytes) else {
+            continue;
+        };
+        for e in entries {
+            let geo = e
+                .get("AUTHORIZATION_REASONS")
+                .and_then(|r| r.as_array())
+                .map(|a| a.iter().any(|v| v.as_str() == Some("AUTHZ_GEO")))
+                .unwrap_or(false);
+            if geo {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Pull `KEY="..."` out of an HLS tag line.
+fn extract_quoted_attr(line: &str, key: &str) -> Option<String> {
+    let needle = format!("{}=\"", key);
+    let start = line.find(&needle)? + needle.len();
+    let rest = &line[start..];
+    let end = rest.find('"')?;
+    Some(rest[..end].to_string())
+}
+
+/// Ask the relay to re-fetch `channel`'s master from an allowed region. AUTHZ_GEO
+/// is baked into the playback token when it is MINTED (by the mint request's IP),
+/// so the relay has to mint it in-region — which needs the viewer's login. We hand
+/// the relay the OAuth token over HTTPS; it mints + fetches from Europe and never
+/// stores it. Returns the region master when it is a usable playlist, else None so
+/// the caller keeps the local one.
+async fn recover_geo_blocked_master(channel: &str, oauth: &str) -> Option<String> {
+    let mut req = crate::services::http::client()
+        .post(QUALITY_RELAY_URL)
+        .json(&serde_json::json!({
+            "channel": channel,
+            "oauth": oauth,
+            "region": "weur",
+        }));
+    if let Some(key) = option_env!("STREAMNOOK_RELAY_KEY") {
+        req = req.header("X-SN-Relay-Key", key);
+    }
+    let resp = req.send().await.ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    let master = resp.text().await.ok()?;
+    master.contains("#EXT-X-STREAM-INF").then_some(master)
 }
 
 /// Pull an attribute value out of an `EXT-X-STREAM-INF` line. Handles both
