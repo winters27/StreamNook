@@ -591,6 +591,117 @@ pub async fn place_prediction(
     Ok(result)
 }
 
+// Poll commands
+//
+// Twitch has no GQL read for polls (the web client learns them over PubSub), so
+// there's no `get_active_poll` counterpart to `get_active_prediction` — the
+// PubSub service feeds the overlay. This command is the interactive half: it
+// casts a free (base) vote. Auth mirrors `place_prediction`: Android client id +
+// OAuth drops token, using the persisted-query hash captured from the web vote.
+#[tauri::command]
+pub async fn vote_on_poll(
+    poll_id: String,
+    choice_id: String,
+    channel_id: String,
+) -> Result<serde_json::Value, String> {
+    use crate::services::drops_auth_service::DropsAuthService;
+    use serde_json::json;
+
+    const CLIENT_ID: &str = env!("TWITCH_ANDROID_CLIENT_ID");
+    // Persisted hash for `ChannelPollContext_VoteInPoll`, captured via
+    // scripts/twitch-gql-server.js. If Twitch rotates the query this hash goes
+    // stale (PersistedQueryNotFound) — re-capture and update it here.
+    const VOTE_IN_POLL_HASH: &str =
+        "1280e27b0f3c7ae60b5714bd569771ea50635778473182e6e959e2dcfcc16e3c";
+
+    let token = DropsAuthService::get_token()
+        .await
+        .map_err(|e| format!("Failed to get token: {}", e))?;
+
+    let client = HTTP_CLIENT.clone();
+
+    // The vote's userID must be the drops-authenticated account (the token owner),
+    // so resolve it from the token rather than trusting a frontend-supplied id.
+    let validate: serde_json::Value = client
+        .get("https://id.twitch.tv/oauth2/validate")
+        .header("Authorization", format!("OAuth {}", token))
+        .send()
+        .await
+        .map_err(|e| format!("Failed to validate token: {}", e))?
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse token validation: {}", e))?;
+    let user_id = validate["user_id"]
+        .as_str()
+        .ok_or("Could not resolve voter id from drops token")?
+        .to_string();
+
+    // Fresh 32-char hex idempotency key per vote (matches the web client's voteID).
+    let vote_id = uuid::Uuid::new_v4().simple().to_string();
+
+    let response = client
+        .post("https://gql.twitch.tv/gql")
+        .header("Client-Id", CLIENT_ID)
+        .header("Authorization", format!("OAuth {}", token))
+        .json(&json!({
+            "operationName": "ChannelPollContext_VoteInPoll",
+            "variables": {
+                "input": {
+                    "pollID": poll_id,
+                    "choiceID": choice_id,
+                    "userID": user_id,
+                    "voteID": vote_id,
+                    // Free/base vote. Channel-points/bits votes would put the
+                    // spend here; not supported yet.
+                    "tokens": null
+                }
+            },
+            "extensions": {
+                "persistedQuery": {
+                    "version": 1,
+                    "sha256Hash": VOTE_IN_POLL_HASH
+                }
+            }
+        }))
+        .send()
+        .await
+        .map_err(|e| format!("Failed to send vote request: {}", e))?;
+
+    let result: serde_json::Value = response
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse vote response: {}", e))?;
+
+    // Surface a GQL-level error (stale hash, bad token) if present.
+    if let Some(errors) = result.get("errors").and_then(|v| v.as_array()) {
+        if let Some(first) = errors.first() {
+            let msg = first
+                .get("message")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown GQL error");
+            return Err(format!("Vote failed: {}", msg));
+        }
+    }
+
+    // Surface a payload-level error (e.g. poll locked/closed).
+    if let Some(error) = result["data"]["voteInPoll"]["error"].as_object() {
+        if !error.is_empty() {
+            let code = error
+                .get("code")
+                .and_then(|v| v.as_str())
+                .unwrap_or("UNKNOWN");
+            return Err(format!("Vote rejected: {}", code));
+        }
+    }
+
+    debug!(
+        "Poll vote cast on channel {}: poll {} choice {}",
+        channel_id, poll_id, choice_id
+    );
+
+    Ok(result)
+}
+
 #[tauri::command]
 pub async fn get_active_prediction(
     channel_login: String,

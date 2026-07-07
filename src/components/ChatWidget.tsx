@@ -30,6 +30,7 @@ import { extractPreviewUrls } from '../services/linkPreviewService';
 import UserProfileCard from './UserProfileCard';
 import ErrorBoundary from './ErrorBoundary';
 import PredictionOverlay from './PredictionOverlay';
+import PollOverlay from './PollOverlay';
 import HypeTrainBanner from './HypeTrainBanner';
 import ViewersPanel from './ViewersPanel';
 import ModRoomPane from './modroom/ModRoomPane';
@@ -3126,6 +3127,13 @@ const ChatWidget = ({ channelOverride, hypeTrainOverride }: ChatWidgetProps = {}
       <div ref={setChatContainerEl} className="h-full bg-secondary overflow-hidden flex flex-col relative">
         {/* Prediction Overlay - floating at top of chat */}
         <PredictionOverlay
+          channelId={currentStream?.user_id}
+          channelLogin={currentStream?.user_login}
+          isHypeTrainActive={!!currentHypeTrain}
+        />
+
+        {/* Poll Overlay - floating at top of chat (same slot as predictions) */}
+        <PollOverlay
           channelId={currentStream?.user_id}
           channelLogin={currentStream?.user_login}
           isHypeTrainActive={!!currentHypeTrain}

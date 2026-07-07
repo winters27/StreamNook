@@ -921,6 +921,8 @@ fn main() {
             place_prediction,
             get_active_prediction,
             get_channel_points_for_channel,
+            // Poll commands
+            vote_on_poll,
             // Watch token allocation commands
             // Channel Points Rewards commands
             get_channel_rewards,

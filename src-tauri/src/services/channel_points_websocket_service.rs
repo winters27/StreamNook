@@ -167,10 +167,10 @@ impl ChannelPointsWebSocketService {
         *self.auth_token.write().await = auth_token.to_string();
         *self.user_id.write().await = user_id.to_string();
 
-        // Each channel now generates 2 topics (video-playback, predictions) - removed raid
+        // Each channel now generates 3 topics (video-playback, predictions, polls) - removed raid
         // Plus 2 global topics (community-points-user and predictions-user)
         // Use 10 channels per connection - testing shows 48 topics fails but 6 succeeds
-        // 10 channels * 2 topics + 2 global = 22 topics (very safe, matches working config)
+        // 10 channels * 3 topics + 2 global = 32 topics (safe, under the 50 cap)
         const MAX_CHANNELS_PER_CONNECTION: usize = 10;
 
         // Calculate how many WebSocket connections we need
@@ -260,6 +260,9 @@ impl ChannelPointsWebSocketService {
 
             // Predictions (if we want to participate)
             topics.push(format!("predictions-channel-v1.{}", channel_id));
+
+            // Polls (channel-scoped: POLL_CREATE / POLL_UPDATE / POLL_COMPLETE)
+            topics.push(format!("polls.{}", channel_id));
         }
 
         // User predictions results
@@ -457,6 +460,15 @@ impl ChannelPointsWebSocketService {
                                     app_handle,
                                     channel_id,
                                     channel_mappings,
+                                    active_viewing_channels,
+                                )
+                                .await;
+                            }
+                            "polls" => {
+                                Self::handle_poll_event(
+                                    message_data,
+                                    app_handle,
+                                    channel_id,
                                     active_viewing_channels,
                                 )
                                 .await;
@@ -896,6 +908,118 @@ impl ChannelPointsWebSocketService {
                 _ => {}
             }
         }
+    }
+
+    /// Handle poll events (channel-scoped `polls.{id}` topic).
+    ///
+    /// Twitch delivers the whole poll object on every event, so a single
+    /// normalizer covers create/update/complete. The web client has no GQL
+    /// read for polls — it learns the poll purely from `POLL_CREATE` — so a
+    /// viewer who joins mid-poll picks it up on the next `POLL_UPDATE` (which
+    /// fires on each vote). The payload is snake_case; we flatten it into the
+    /// camelCase-ish shape the frontend PollOverlay expects.
+    async fn handle_poll_event(
+        message_data: Value,
+        app_handle: &AppHandle,
+        channel_id: Option<String>,
+        active_viewing_channels: &Arc<RwLock<HashSet<String>>>,
+    ) {
+        // Fast path: ignore polls for channels we aren't currently watching.
+        if let Some(ref cid) = channel_id {
+            if !active_viewing_channels.read().await.contains(cid) {
+                return;
+            }
+        }
+
+        let event_type = match message_data["type"].as_str() {
+            Some(t) => t,
+            None => return,
+        };
+
+        let poll = match message_data["data"]["poll"].as_object() {
+            Some(p) => p,
+            None => return,
+        };
+
+        let poll_id = poll.get("poll_id").and_then(|v| v.as_str()).unwrap_or("");
+        let title = poll.get("title").and_then(|v| v.as_str()).unwrap_or("");
+        let status = poll.get("status").and_then(|v| v.as_str()).unwrap_or("ACTIVE");
+        let duration_seconds = poll
+            .get("duration_seconds")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0);
+        let remaining_ms = poll
+            .get("remaining_duration_milliseconds")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0);
+        let total_voters = poll.get("total_voters").and_then(|v| v.as_i64()).unwrap_or(0);
+        let total_votes = poll
+            .get("votes")
+            .and_then(|v| v.get("total"))
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0);
+        let started_at = poll.get("started_at").and_then(|v| v.as_str()).unwrap_or("");
+
+        // Poll-level vote settings (whether bits/channel-points voting is on).
+        let channel_points_voting = poll["settings"]["channel_points_votes"]["is_enabled"]
+            .as_bool()
+            .unwrap_or(false);
+        let channel_points_cost = poll["settings"]["channel_points_votes"]["cost"]
+            .as_i64()
+            .unwrap_or(0);
+
+        // Normalize choices to { id, title, total_votes, total_voters }, keeping
+        // Twitch's created order (stable across events).
+        let mut choices: Vec<Value> = Vec::new();
+        if let Some(arr) = poll.get("choices").and_then(|v| v.as_array()) {
+            for choice in arr {
+                let id = choice.get("choice_id").and_then(|v| v.as_str()).unwrap_or("");
+                let choice_title = choice.get("title").and_then(|v| v.as_str()).unwrap_or("");
+                let votes = choice
+                    .get("votes")
+                    .and_then(|v| v.get("total"))
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0);
+                let voters = choice.get("total_voters").and_then(|v| v.as_i64()).unwrap_or(0);
+                choices.push(json!({
+                    "id": id,
+                    "title": choice_title,
+                    "total_votes": votes,
+                    "total_voters": voters
+                }));
+            }
+        }
+
+        let payload = json!({
+            "channel_id": channel_id,
+            "poll_id": poll_id,
+            "title": title,
+            "status": status,
+            "duration_seconds": duration_seconds,
+            "remaining_ms": remaining_ms,
+            "total_voters": total_voters,
+            "total_votes": total_votes,
+            "started_at": started_at,
+            "channel_points_voting": channel_points_voting,
+            "channel_points_cost": channel_points_cost,
+            "choices": choices
+        });
+
+        // Map Twitch's event type to a frontend event. TERMINATE/ARCHIVE aren't
+        // in the captured set but are handled defensively as an end-of-poll.
+        let emit_event = match event_type {
+            "POLL_CREATE" => "poll-created",
+            "POLL_UPDATE" => "poll-updated",
+            "POLL_COMPLETE" | "POLL_ARCHIVE" | "POLL_TERMINATE" => "poll-completed",
+            _ => return,
+        };
+
+        debug!(
+            "Poll {} on channel {:?}: {} ({} voters, {} votes, status {})",
+            emit_event, channel_id, title, total_voters, total_votes, status
+        );
+
+        let _ = app_handle.emit(emit_event, payload);
     }
 
     /// Start ping keeper to maintain connections. Idempotent — if a keeper is
