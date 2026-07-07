@@ -1,6 +1,6 @@
 import { Window } from '@tauri-apps/api/window';
 import { Gift, User, Settings, Store, Proportions, MessageCircle, Pickaxe, Clock, Tv, Download, LogIn, Sparkles } from 'lucide-react';
-import { Minus, X, CornersOut, CornersIn, Medal } from 'phosphor-react';
+import { Minus, X, CornersOut, CornersIn, ArrowsOut, ArrowsIn, Medal } from 'phosphor-react';
 import { useState, useEffect, useLayoutEffect, useRef, useMemo, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -43,7 +43,7 @@ const getUpdateStageProgress = (stage: string | null): number => {
 const TitleBar = () => {
   const store = useAppStore();
 
-  const { openSettings, setShowDropsOverlay, setShowMarketplaceOverlay, setShowBadgesOverlay, setShowWhispersOverlay, isAuthenticated, currentUser, dropProgressActive, isTheaterMode, toggleTheaterMode, streamUrl, settings, whisperImportState, updateInfo, addToast } = store;
+  const { openSettings, setShowDropsOverlay, setShowMarketplaceOverlay, setShowBadgesOverlay, setShowWhispersOverlay, isAuthenticated, currentUser, dropProgressActive, isTheaterMode, toggleTheaterMode, isWindowFullscreen, toggleWindowFullscreen, streamUrl, settings, whisperImportState, updateInfo, addToast } = store;
   // Count of installed plugins with an update available, for the Marketplace badge.
   const pluginUpdateCount = usePluginUpdates((s) => s.ids.length);
   // Update flow: 'idle' → 'installing' (download/extract) → 'installed' (staged;
@@ -785,6 +785,19 @@ const TitleBar = () => {
 
           {/* Window controls — kept adjacent but not grouped into a pill */}
           <div className="flex items-center gap-1">
+          <Tooltip content={isWindowFullscreen ? "Exit full screen (F11)" : "Full screen (F11)"} delay={200}>
+            <button
+              onClick={() => toggleWindowFullscreen()}
+              className="titlebar-window-btn"
+              aria-label={isWindowFullscreen ? "Exit full screen" : "Full screen"}
+            >
+              {isWindowFullscreen ? (
+                <ArrowsIn size={14} />
+              ) : (
+                <ArrowsOut size={14} />
+              )}
+            </button>
+          </Tooltip>
           <Tooltip content="Minimize" delay={200}>
             <button
               onClick={handleMinimize}
@@ -793,6 +806,9 @@ const TitleBar = () => {
               <Minus size={14} />
             </button>
           </Tooltip>
+          {/* Maximize snaps to the work area (taskbar stays); it is redundant and
+              confusing while borderless full screen already covers everything. */}
+          {!isWindowFullscreen && (
           <Tooltip content={isMaximized ? "Restore" : "Maximize"} delay={200}>
             <button
               onClick={handleMaximize}
@@ -805,6 +821,7 @@ const TitleBar = () => {
               )}
             </button>
           </Tooltip>
+          )}
           <Tooltip content="Close" delay={200}>
             <button
               onClick={handleClose}

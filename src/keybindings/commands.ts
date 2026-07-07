@@ -125,6 +125,16 @@ function build(): BindableCommand[] {
       keywords: 'help shortcuts hotkeys keybindings question mark cheat sheet',
       run: () => app().openSettings('Keybindings'),
     },
+    {
+      id: 'window.toggleFullscreen',
+      label: 'Toggle full screen',
+      description: 'Fill the whole screen (over the taskbar) with the app, chat and all.',
+      category: 'Application',
+      context: 'global',
+      defaultBindings: ['F11'],
+      keywords: 'fullscreen full screen borderless taskbar immersive window maximize theater theatre cinema',
+      run: () => app().toggleWindowFullscreen(),
+    },
 
     // ---------------- Navigation ----------------
     {

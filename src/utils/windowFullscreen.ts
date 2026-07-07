@@ -26,6 +26,11 @@ export const syncTauriWindowFullscreen = async (entering: boolean): Promise<void
       }
       await win.setFullscreen(true);
     } else {
+      // If the app is in its own borderless full-screen mode, the player only
+      // borrowed an already-fullscreen window. Leave the window fullscreen on
+      // exit so closing the video doesn't kick the whole app back to windowed.
+      const { useAppStore } = await import('../stores/AppStore');
+      if (useAppStore.getState().isWindowFullscreen) return;
       await win.setFullscreen(false);
       if (restoreMaximizedAfterFullscreen) {
         // After repeated fullscreen→exit cycles, Win32's saved restore

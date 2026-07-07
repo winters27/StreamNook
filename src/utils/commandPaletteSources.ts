@@ -224,6 +224,14 @@ function buildQuickActions(): PaletteItem[] {
       run: () => useAppStore.getState().openSettings('Profile'),
     },
     {
+      id: 'window.toggleFullscreen',
+      section: 'Quick Actions',
+      title: 'Toggle full screen',
+      subtitle: 'Fill the whole screen (over the taskbar) with the app, chat and all',
+      keywords: 'fullscreen full screen borderless taskbar immersive window maximize theater theatre cinema',
+      run: () => useAppStore.getState().toggleWindowFullscreen(),
+    },
+    {
       id: 'qa.goHome',
       section: 'Quick Actions',
       title: 'Go to Home',

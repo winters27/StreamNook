@@ -288,6 +288,11 @@ interface AppState {
   setLiveDropProgress: (status: DropProgressStatus | null) => void;
   isTheaterMode: boolean;
   originalChatPlacement: string | null;
+  // Borderless full screen: the whole app window (title bar, sidebar, player,
+  // chat) covers the entire screen including over the taskbar. Distinct from
+  // theater mode (hides chrome, stays windowed) and player fullscreen (video
+  // only). Mirrors the actual OS window state.
+  isWindowFullscreen: boolean;
   toasts: Toast[];
   isAutoSwitching: boolean;
   // Track when raid redirect occurred to prevent auto-switch from overriding
@@ -392,6 +397,7 @@ interface AppState {
   openWhisperWithUser: (user: { id: string; login: string; display_name: string; profile_image_url?: string }) => void;
   clearWhisperTargetUser: () => void;
   toggleTheaterMode: () => void;
+  toggleWindowFullscreen: () => Promise<void>;
   loginToTwitch: () => Promise<void>;
   logoutFromTwitch: () => Promise<void>;
   /** Make a linked account the main (watch & stream as it), then re-establish identity. */
@@ -515,6 +521,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   setLiveDropProgress: (status: DropProgressStatus | null) => set({ liveDropProgress: status }),
   isTheaterMode: false,
   originalChatPlacement: null,
+  isWindowFullscreen: false,
   toasts: [],
   isAutoSwitching: false,
   // Track when raid redirect occurred to prevent auto-switch from overriding
@@ -2277,6 +2284,25 @@ export const useAppStore = create<AppState>((set, get) => ({
         isTheaterMode: false,
         chatPlacement: state.originalChatPlacement || 'right'
       });
+    }
+  },
+
+  toggleWindowFullscreen: async () => {
+    try {
+      const { getCurrentWindow } = await import('@tauri-apps/api/window');
+      const win = getCurrentWindow();
+      const next = !(await win.isFullscreen());
+      // A borderless (decorations: false) window that is WS_MAXIMIZE keeps its
+      // maximized chrome and leaves the taskbar showing even after
+      // setFullscreen(true). Drop the maximize first so we cover the whole screen.
+      if (next && (await win.isMaximized())) {
+        await win.unmaximize();
+      }
+      await win.setFullscreen(next);
+      set({ isWindowFullscreen: next });
+      trackActivity(next ? 'Entered full screen' : 'Exited full screen');
+    } catch (err) {
+      Logger.error('[Fullscreen] Failed to toggle window fullscreen:', err);
     }
   },
 
