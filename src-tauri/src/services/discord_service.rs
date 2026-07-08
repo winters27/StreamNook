@@ -19,21 +19,11 @@ use strsim::normalized_levenshtein;
 // Discord asset keys - these must match the asset names uploaded to Discord Developer Portal
 const DISCORD_LARGE_IMAGE: &str = "streamnook_logo";
 const DISCORD_SMALL_IMAGE_TWITCH: &str = "twitch";
-// Discord application (client) ID for StreamNook's rich presence.
-const DISCORD_CLIENT_ID: &str = "1436402207485464596";
+// Discord application (client) ID for StreamNook's rich presence. Dedicated
+// StreamNook-only app, separate from the Penrose bot's application.
+const DISCORD_CLIENT_ID: &str = "1524098616648663110";
 // Where the rich-presence call-to-action button points.
 const DOWNLOAD_URL: &str = "https://streamnook.app";
-
-// Dev-build "now editing" presence (a StreamNook-flavored take on the
-// zed-discord-presence look). Only ever shown in a debug build, so it's
-// effectively private to the dev session. The language + editor icons are
-// reused from that project's hosted icon set, so external image URLs are
-// proxied by Discord the same way the Twitch category box art already is (no
-// Developer Portal upload needed). Base URL must keep its trailing slash.
-const ZRPC_ICON_BASE: &str =
-    "https://raw.githubusercontent.com/xhyrom/zed-discord-presence/main/assets/icons/";
-// Shown as the "workspace" line, matching ZRPC's "In {workspace}".
-const DEV_WORKSPACE: &str = "StreamNook";
 
 pub struct DiscordService;
 
@@ -50,14 +40,6 @@ struct DiscordState {
     // READY frame. Used to personalize a few idle phrases. None until we connect
     // (or if Discord doesn't return one).
     discord_username: Option<String>,
-    // Dev-build only: display path ("folder/file.ext") of the most recently
-    // saved source file, surfaced by the source-tree watcher. None until the
-    // watcher finds something.
-    dev_file: Option<String>,
-    // Dev-build only: whether the source-tree watcher task has been spawned, so
-    // we only ever start one. Unused in release (the watcher never runs there).
-    #[allow(dead_code)]
-    dev_watcher_started: bool,
 }
 
 lazy_static! {
@@ -69,8 +51,6 @@ lazy_static! {
             .as_secs() as i64,
         current_key: None,
         discord_username: None,
-        dev_file: None,
-        dev_watcher_started: false,
     }));
 }
 
@@ -293,14 +273,6 @@ impl DiscordService {
     async fn set_idle_presence_internal(
         guard: &mut tokio::sync::MutexGuard<'_, DiscordState>,
     ) -> Result<()> {
-        // In a dev/HMR build we never show the normal idle "browsing" presence;
-        // route to the fixed "currently coding" presence instead. Returning here
-        // also leaves start_time untouched, so the dev "elapsed" timer keeps
-        // running from when the session connected instead of resetting.
-        if cfg!(debug_assertions) {
-            return Self::set_dev_presence_internal(guard).await;
-        }
-
         // Dropping back to idle clears the per-stream identity and restarts the
         // timer, so the next stream we open begins its "watching for" counter
         // from zero instead of inheriting a stale elapsed time.
@@ -348,237 +320,6 @@ impl DiscordService {
         Ok(())
     }
 
-    /// Set the dev-build "now editing" presence (a StreamNook take on the
-    /// zed-discord-presence look).
-    ///
-    /// Only reached from a debug build, so it never appears for end users. Shows
-    /// `In StreamNook (branch)` over `Working on folder/file.ext`, with the
-    /// matching language icon as the large image and the Zed logo as the small
-    /// image. The current file is supplied by a source-tree watcher (started
-    /// here, once); the elapsed timer reuses the session `start_time` and is left
-    /// untouched so it climbs steadily instead of resetting on every update.
-    async fn set_dev_presence_internal(
-        guard: &mut tokio::sync::MutexGuard<'_, DiscordState>,
-    ) -> Result<()> {
-        // Spawn the source-tree watcher once so the presence tracks the file
-        // being edited. Debug builds only; in release this block is compiled out
-        // and the watcher never runs, so `dev_file` stays None.
-        #[cfg(debug_assertions)]
-        if !guard.dev_watcher_started {
-            guard.dev_watcher_started = true;
-            Self::start_dev_watcher();
-        }
-
-        let timestamp = guard.start_time;
-        let dev_file = guard.dev_file.clone();
-
-        #[cfg(debug_assertions)]
-        let branch = Self::git_branch();
-        #[cfg(not(debug_assertions))]
-        let branch: Option<String> = None;
-
-        if let Some(client) = &mut guard.client {
-            // Language label + icon name from the file extension; reused from the
-            // ZRPC icon set so the look matches.
-            let (icon, lang) = dev_file
-                .as_deref()
-                .and_then(|f| f.rsplit('.').next())
-                .map(Self::lang_for_ext)
-                .unwrap_or(("zed", "Code"));
-
-            let large_image = format!("{}{}.png", ZRPC_ICON_BASE, icon);
-            let small_image = format!("{}zed.png", ZRPC_ICON_BASE);
-
-            let details = match &branch {
-                Some(b) => format!("In {} ({})", DEV_WORKSPACE, b),
-                None => format!("In {}", DEV_WORKSPACE),
-            };
-            let state = match &dev_file {
-                Some(f) => format!("Working on {}", f),
-                None => "Live dev build".to_string(),
-            };
-
-            let activity = Activity::new()
-                .details(details.as_str())
-                .state(state.as_str())
-                .assets(
-                    Assets::new()
-                        .large_image(large_image.as_str())
-                        .large_text(lang)
-                        .small_image(small_image.as_str())
-                        .small_text("Zed"),
-                )
-                .timestamps(Timestamps::new().start(timestamp))
-                .activity_type(ActivityType::Playing);
-
-            client
-                .set_activity(activity)
-                .map_err(|e| anyhow::anyhow!("Failed to set dev presence: {}", e))?;
-        }
-        Ok(())
-    }
-
-    /// Map a file extension to a (ZRPC icon name, human language label) pair.
-    fn lang_for_ext(ext: &str) -> (&'static str, &'static str) {
-        match ext.to_ascii_lowercase().as_str() {
-            "rs" => ("rust", "Rust"),
-            "ts" => ("ts", "TypeScript"),
-            "tsx" => ("tsx", "TypeScript React"),
-            "js" | "mjs" | "cjs" => ("js", "JavaScript"),
-            "jsx" => ("jsx", "JavaScript React"),
-            "css" => ("css", "CSS"),
-            "scss" | "sass" => ("scss", "SCSS"),
-            "json" | "jsonc" => ("json", "JSON"),
-            "md" | "markdown" => ("markdown", "Markdown"),
-            "html" | "htm" => ("html", "HTML"),
-            "toml" => ("toml", "TOML"),
-            "yml" | "yaml" => ("yaml", "YAML"),
-            "svg" => ("svg", "SVG"),
-            "ps1" => ("powershell", "PowerShell"),
-            "sh" | "bash" => ("shell", "Shell"),
-            _ => ("text", "Code"),
-        }
-    }
-
-    /// True for source file extensions the dev watcher should consider.
-    #[cfg(debug_assertions)]
-    fn is_source_ext(ext: &str) -> bool {
-        matches!(
-            ext.to_ascii_lowercase().as_str(),
-            "rs" | "ts"
-                | "tsx"
-                | "js"
-                | "mjs"
-                | "cjs"
-                | "jsx"
-                | "css"
-                | "scss"
-                | "sass"
-                | "json"
-                | "jsonc"
-                | "md"
-                | "html"
-                | "htm"
-                | "toml"
-                | "yml"
-                | "yaml"
-                | "svg"
-                | "ps1"
-                | "sh"
-        )
-    }
-
-    /// Read the current git branch from the repo's `.git/HEAD`, for the
-    /// "In StreamNook (branch)" line. Falls back to a short commit hash when in a
-    /// detached HEAD, or None if the repo can't be read.
-    #[cfg(debug_assertions)]
-    fn git_branch() -> Option<String> {
-        let head = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .parent()?
-            .join(".git")
-            .join("HEAD");
-        let content = std::fs::read_to_string(head).ok()?;
-        let line = content.trim();
-        match line.strip_prefix("ref: refs/heads/") {
-            Some(branch) => Some(branch.to_string()),
-            None => Some(line.chars().take(7).collect()),
-        }
-    }
-
-    /// Find the most recently modified source file under the StreamNook source
-    /// tree and return its display path ("folder/file.ext"). During an HMR
-    /// session this is whatever file was just saved, i.e. the one being edited.
-    #[cfg(debug_assertions)]
-    fn newest_source_file() -> Option<String> {
-        use std::path::Path;
-        // CARGO_MANIFEST_DIR is the `src-tauri` dir at compile time. Debug builds
-        // are only ever run on the machine that compiled them, so this resolves.
-        let manifest = env!("CARGO_MANIFEST_DIR");
-        let roots = [format!("{}/src", manifest), format!("{}/../src", manifest)];
-
-        let mut best: Option<(String, std::time::SystemTime)> = None;
-        for root in &roots {
-            Self::scan_newest(Path::new(root), &mut best);
-        }
-        best.map(|(display, _)| display)
-    }
-
-    /// Recursive helper for `newest_source_file`. Walks `dir`, skipping build and
-    /// dependency folders, and keeps the newest source file seen so far.
-    #[cfg(debug_assertions)]
-    fn scan_newest(dir: &std::path::Path, best: &mut Option<(String, std::time::SystemTime)>) {
-        let entries = match std::fs::read_dir(dir) {
-            Ok(e) => e,
-            Err(_) => return,
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            let meta = match entry.metadata() {
-                Ok(m) => m,
-                Err(_) => continue,
-            };
-            if meta.is_dir() {
-                let name = entry.file_name();
-                let name = name.to_string_lossy();
-                if matches!(name.as_ref(), "node_modules" | "target" | ".git" | "dist") {
-                    continue;
-                }
-                Self::scan_newest(&path, best);
-            } else if meta.is_file() {
-                let ext = match path.extension().and_then(|e| e.to_str()) {
-                    Some(e) => e,
-                    None => continue,
-                };
-                if !Self::is_source_ext(ext) {
-                    continue;
-                }
-                let modified = match meta.modified() {
-                    Ok(m) => m,
-                    Err(_) => continue,
-                };
-                let is_newer = best.as_ref().map(|(_, t)| modified > *t).unwrap_or(true);
-                if is_newer {
-                    let file = path
-                        .file_name()
-                        .map(|f| f.to_string_lossy().to_string())
-                        .unwrap_or_default();
-                    let display = match path.parent().and_then(|p| p.file_name()) {
-                        Some(parent) => format!("{}/{}", parent.to_string_lossy(), file),
-                        None => file,
-                    };
-                    *best = Some((display, modified));
-                }
-            }
-        }
-    }
-
-    /// Spawn the background source-tree watcher (debug builds only). Every few
-    /// seconds it finds the newest source file and, when that changes, refreshes
-    /// the dev presence so it tracks what's being edited. No-ops while Discord
-    /// isn't connected; the scan is cheap (source dirs only, never node_modules
-    /// or target).
-    #[cfg(debug_assertions)]
-    fn start_dev_watcher() {
-        tokio::spawn(async move {
-            loop {
-                tokio::time::sleep(Duration::from_secs(3)).await;
-                let newest = tokio::task::spawn_blocking(Self::newest_source_file)
-                    .await
-                    .ok()
-                    .flatten();
-                let Some(display) = newest else { continue };
-
-                let mut guard = DISCORD_STATE.lock().await;
-                // Only refresh when connected and the file actually changed, so we
-                // don't spam Discord with identical updates.
-                if guard.client.is_some() && guard.dev_file.as_deref() != Some(display.as_str()) {
-                    guard.dev_file = Some(display);
-                    let _ = Self::set_dev_presence_internal(&mut guard).await;
-                }
-            }
-        });
-    }
-
     /// Update presence when watching a stream
     pub async fn update_presence(
         details: &str,
@@ -597,25 +338,6 @@ impl DiscordService {
 
         if !discord_enabled {
             return Ok(());
-        }
-
-        // Dev/HMR build: never advertise whatever stream is open for testing.
-        // Connect if needed, then show the fixed "currently coding" presence and
-        // skip the whole category-resolution path below.
-        if cfg!(debug_assertions) {
-            let mut guard = DISCORD_STATE.lock().await;
-            if guard.client.is_none() {
-                match Self::connect_client() {
-                    Ok((client, username)) => {
-                        guard.client = Some(client);
-                        if username.is_some() {
-                            guard.discord_username = username;
-                        }
-                    }
-                    Err(_) => return Ok(()), // Discord not running - silently skip
-                }
-            }
-            return Self::set_dev_presence_internal(&mut guard).await;
         }
 
         // Resolve the category image BEFORE taking the Discord lock so a slow
