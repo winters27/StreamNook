@@ -1,3 +1,15 @@
+## [8.2.2] - 2026-07-08
+
+### 🐛 Bug Fixes
+- **Improvements to region-based quality unlocking.** Refinements to how higher qualities are handled in regions where Twitch restricts them.
+
+### 🤖 Also from us
+Two free Discord bots for any server:
+- **Cadence**, a full music bot you can run from your phone or the web, not just from chat commands. Everyone in the voice call can search, queue, and control playback from a single link, and you can connect Spotify to see your playlists and drop them straight into the queue.
+- **Penrose**, an all-in-one moderation and community bot with deep, highly customizable controls: anti-nuke, moderation, automation, and per-server setups for nearly everything.
+
+Both are completely free. Find them at [streamnook.app/bots](https://streamnook.app/bots).
+
 ## [8.2.1] - 2026-07-06
 
 ### ✨ Features
