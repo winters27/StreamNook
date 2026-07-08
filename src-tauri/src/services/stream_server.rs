@@ -151,6 +151,13 @@ impl StreamServer {
         // can read `get_stream_low_latency` and pick the right hls.js mode.
         let upstream = stream_url.clone();
 
+        // A region-relayed upstream (its playlist proxied through our relay for
+        // geo-unlock) is inherently higher-latency, and its segments come from a
+        // distant CDN. The parts-based low-latency origin's tight per-segment
+        // deadlines can't ride that latency and abandon segments (a freeze), so
+        // force the stable whole-segment path, which buffers and waits instead.
+        let region_relayed = upstream.contains("/quality-media");
+
         // Serialize the whole start sequence (TOCTOU guard): without this two
         // concurrent cold starts could both spawn a warp server and both run the
         // shared SOLO origin's start, racing each other's edge setup.
@@ -166,11 +173,16 @@ impl StreamServer {
             reset_ad_state();
             // Bring up the parts-based LL-HLS origin for the new stream (a no-op unless
             // the experimental setting enabled it and the channel is low-latency).
-            let outcome = crate::services::ll_origin::start(upstream).await;
-            log::debug!(
-                "[StreamServer] LL origin start (reuse): active={}",
-                outcome.active
-            );
+            // Skipped for a region-relayed upstream (stable buffered path only).
+            if region_relayed {
+                log::info!("[StreamServer] region-relayed upstream; stable path (LL origin skipped)");
+            } else {
+                let outcome = crate::services::ll_origin::start(upstream).await;
+                log::debug!(
+                    "[StreamServer] LL origin start (reuse): active={}",
+                    outcome.active
+                );
+            }
             // Return the existing port by parsing it from a static variable
             return Self::get_current_port().await;
         }
@@ -180,8 +192,12 @@ impl StreamServer {
 
         *PROXY_URL.lock().await = Some(stream_url);
         reset_ad_state();
-        let outcome = crate::services::ll_origin::start(upstream).await;
-        log::debug!("[StreamServer] LL origin start: active={}", outcome.active);
+        if region_relayed {
+            log::info!("[StreamServer] region-relayed upstream; stable path (LL origin skipped)");
+        } else {
+            let outcome = crate::services::ll_origin::start(upstream).await;
+            log::debug!("[StreamServer] LL origin start: active={}", outcome.active);
+        }
 
         // Store the port
         *CURRENT_PORT.lock().await = Some(port);

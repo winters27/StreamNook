@@ -266,18 +266,19 @@ pub(crate) async fn fetch_auth_master(channel: &str, oauth_token: Option<&str>) 
     let master = resp.text().await?;
 
     // Region unlock: when logged in but geo-blocked from a high tier (1440p/2160p,
-    // flagged AUTHZ_GEO in the include_unavailable blob), re-fetch the master
-    // through the streamnook.app relay from an allowed region so those tiers arrive
-    // with real signed URLs. Best-effort — any failure keeps the local master, and
-    // it only fires for an authenticated viewer who is actually geo-blocked, so
-    // unaffected viewers pay nothing.
-    // When logged in but geo-blocked from a high tier, recover it through the relay.
+    // flagged AUTHZ_GEO in the include_unavailable blob), fetch a region master
+    // through the streamnook.app relay and graft ONLY the unlocked high tiers onto
+    // the viewer's own master. The base tiers keep their locally-signed URLs, which
+    // play reliably from here; only the added tier rides the relay's region-signed
+    // URL. This never swaps a tier the viewer already had, so playback of the base
+    // qualities can't regress if a relay URL doesn't hold up from the viewer's
+    // location. Best-effort, and only fires for an authenticated, geo-blocked viewer.
     if authenticated && geo_blocked_tier_present(&master) {
         // authenticated == oauth_token.is_some(), so this cannot panic.
         let oauth = oauth_token.expect("authenticated implies an oauth token");
-        if let Some(recovered) = recover_geo_blocked_master(channel, oauth).await {
-            debug!("[Resolver] {channel}: geo-blocked high tier recovered via region relay");
-            return Ok(recovered);
+        if let Some(relay_master) = recover_geo_blocked_master(channel, oauth).await {
+            debug!("[Resolver] {channel}: grafting region-unlocked high tier onto the local master");
+            return Ok(splice_missing_tiers(&master, &relay_master));
         }
         debug!("[Resolver] {channel}: geo block detected but the region relay did not recover");
     }
@@ -289,6 +290,23 @@ pub(crate) async fn fetch_auth_master(channel: &str, oauth_token: Option<&str>) 
 /// so a viewer geo-blocked from the high tiers gets one carrying their real signed
 /// URLs. See the QualityRelay Durable Object in the streamnook.app worker.
 const QUALITY_RELAY_URL: &str = "https://modroom.streamnook.app/quality-master";
+
+/// The relay's media-playlist proxy. A region-unlocked tier's playlist is routed
+/// through this so its live reloads keep egressing from the relay's region (the
+/// geo gate is re-checked on every reload). Segments still load direct.
+const QUALITY_MEDIA_URL: &str = "https://modroom.streamnook.app/quality-media";
+
+/// Wrap a region-signed media-playlist URL so the player fetches it (and every
+/// live reload) through the relay's region instead of directly from the viewer's
+/// blocked location. This is what makes an unlocked tier actually playable, not
+/// just present in the menu.
+fn relay_media_url(original: &str) -> String {
+    format!(
+        "{}?region=weur&u={}",
+        QUALITY_MEDIA_URL,
+        urlencoding::encode(original)
+    )
+}
 
 /// True when `master` describes a rendition Twitch hid from THIS viewer for their
 /// country (`AUTHZ_GEO`), read from the `include_unavailable` session-data blob.
@@ -330,6 +348,102 @@ fn extract_quoted_attr(line: &str, key: &str) -> Option<String> {
     let rest = &line[start..];
     let end = rest.find('"')?;
     Some(rest[..end].to_string())
+}
+
+/// The video height of an `#EXT-X-STREAM-INF` line, from `RESOLUTION=WxH`
+/// (unquoted) or the `NAME="1440p60"` label. None for audio-only.
+fn stream_inf_height(inf: &str) -> Option<u32> {
+    if let Some(pos) = inf.find("RESOLUTION=") {
+        let rest = &inf[pos + "RESOLUTION=".len()..];
+        let val = rest.split(',').next().unwrap_or(rest);
+        if let Some(h) = val.split(['x', 'X']).nth(1).and_then(|h| h.trim().parse::<u32>().ok()) {
+            return Some(h);
+        }
+    }
+    if let Some(name) = extract_quoted_attr(inf, "NAME") {
+        let digits: String = name.chars().take_while(|c| c.is_ascii_digit()).collect();
+        if let Ok(h) = digits.parse::<u32>() {
+            return Some(h);
+        }
+    }
+    None
+}
+
+/// Heights of every video rendition in `master`.
+fn stream_inf_heights(master: &str) -> std::collections::HashSet<u32> {
+    let mut set = std::collections::HashSet::new();
+    for line in master.lines() {
+        if line.trim_start().starts_with("#EXT-X-STREAM-INF:") {
+            if let Some(h) = stream_inf_height(line) {
+                set.insert(h);
+            }
+        }
+    }
+    set
+}
+
+/// The `#EXT-X-STREAM-INF` (plus any preceding `#EXT-X-MEDIA` tag and the URL)
+/// blocks in `master` whose height is NOT already in `have`.
+fn missing_tier_blocks(master: &str, have: &std::collections::HashSet<u32>) -> Vec<String> {
+    let lines: Vec<&str> = master.lines().collect();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < lines.len() {
+        let inf = lines[i];
+        if !inf.trim_start().starts_with("#EXT-X-STREAM-INF:") {
+            i += 1;
+            continue;
+        }
+        let mut j = i + 1;
+        while j < lines.len()
+            && (lines[j].trim().is_empty() || lines[j].trim_start().starts_with('#'))
+        {
+            j += 1;
+        }
+        if j >= lines.len() {
+            break;
+        }
+        if let Some(h) = stream_inf_height(inf) {
+            if !have.contains(&h) {
+                let mut block = String::new();
+                if i > 0 {
+                    let prev = lines[i - 1].trim_start();
+                    if prev.starts_with("#EXT-X-MEDIA:") && prev.contains("TYPE=VIDEO") {
+                        block.push_str(lines[i - 1]);
+                        block.push('\n');
+                    }
+                }
+                block.push_str(inf);
+                block.push('\n');
+                // Route this unlocked tier's playlist reloads through the relay's
+                // region so it stays playable from a blocked location.
+                block.push_str(&relay_media_url(lines[j].trim()));
+                out.push(block);
+            }
+        }
+        i = j + 1;
+    }
+    out
+}
+
+/// Keep `base` (the viewer's own locally-signed master, whose tiers play reliably
+/// from their location) and append only the video renditions `extra` (the region
+/// relay's master) has that `base` lacks — the unlocked high tiers. Never swaps a
+/// base tier for a region-signed URL, so the qualities the viewer already had can't
+/// regress if a relay URL fails to play from where they are.
+fn splice_missing_tiers(base: &str, extra: &str) -> String {
+    let have = stream_inf_heights(base);
+    let blocks = missing_tier_blocks(extra, &have);
+    if blocks.is_empty() {
+        return base.to_string();
+    }
+    let mut out = base.trim_end().to_string();
+    for b in &blocks {
+        out.push('\n');
+        out.push_str(b);
+    }
+    out.push('\n');
+    out
 }
 
 /// Ask the relay to re-fetch `channel`'s master from an allowed region. AUTHZ_GEO
