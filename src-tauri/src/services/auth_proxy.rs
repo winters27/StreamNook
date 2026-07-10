@@ -274,13 +274,13 @@ pub(crate) async fn fetch_auth_master(channel: &str, oauth_token: Option<&str>) 
     // qualities can't regress if a relay URL doesn't hold up from the viewer's
     // location. Best-effort, and only fires for an authenticated, geo-blocked viewer.
     if authenticated && geo_blocked_tier_present(&master) {
-        // authenticated == oauth_token.is_some(), so this cannot panic.
+        // Authenticated but geo-blocked from the high tiers: graft the
+        // region-unlocked tiers on. authenticated == oauth_token.is_some().
         let oauth = oauth_token.expect("authenticated implies an oauth token");
-        if let Some(relay_master) = recover_geo_blocked_master(channel, oauth).await {
-            debug!("[Resolver] {channel}: grafting region-unlocked high tier onto the local master");
-            return Ok(splice_missing_tiers(&master, &relay_master));
+        match recover_geo_blocked_master(channel, oauth).await {
+            Some(relay_master) => return Ok(splice_missing_tiers(&master, &relay_master)),
+            None => log::debug!("[auth_proxy] {channel}: geo-unlock relay recover failed"),
         }
-        debug!("[Resolver] {channel}: geo block detected but the region relay did not recover");
     }
 
     Ok(master)
