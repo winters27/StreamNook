@@ -1,10 +1,11 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useContextMenuStore } from '../stores/contextMenuStore';
 import { useAppStore } from '../stores/AppStore';
 import { usemultiNookStore } from '../stores/multiNookStore';
-import { LayoutGrid, Heart, UserPlus, UserMinus, Loader2, Scissors, Copy, ClipboardPaste, Type, User, MessageSquarePlus } from 'lucide-react';
+import { LayoutGrid, Heart, UserPlus, UserMinus, Loader2, Scissors, Copy, ClipboardPaste, Type, User, MessageSquarePlus, Share2, Check } from 'lucide-react';
 import { Logger } from '../utils/logger';
 import { invoke } from '@tauri-apps/api/core';
+import { buildShareUrl } from '../utils/shareLink';
 
 export const StreamContextMenu: React.FC = () => {
     const { isOpen, x, y, stream, inputElement, selectionText, menuType, isFollowing, isCheckingFollow, closeMenu, toggleFollow } = useContextMenuStore();
@@ -12,6 +13,10 @@ export const StreamContextMenu: React.FC = () => {
     const { addSlot, slots } = usemultiNookStore();
     
     const menuRef = useRef<HTMLDivElement>(null);
+    const [copied, setCopied] = useState(false);
+
+    // Reset the "copied" confirmation whenever the menu closes or reopens.
+    useEffect(() => { if (!isOpen) setCopied(false); }, [isOpen]);
 
     // Close on escape key
     useEffect(() => {
@@ -24,10 +29,10 @@ export const StreamContextMenu: React.FC = () => {
     }, [isOpen, closeMenu]);
 
     // Handle collision detection / positioning
-    // 200px approx width, 180px approx height (5 actions: View Profile, Add to
-    // MultiNook, Open in MultiChat, Favorite, Follow)
+    // 200px approx width, 215px approx height (6 actions: View Profile, Add to
+    // MultiNook, Pop out chat, Share, Favorite, Follow)
     const MENU_WIDTH = 200;
-    const MENU_HEIGHT = 180;
+    const MENU_HEIGHT = 215;
     
     let safeX = x;
     let safeY = y;
@@ -237,6 +242,21 @@ export const StreamContextMenu: React.FC = () => {
         }
     };
 
+    // Copy the shareable web link. It resolves on streamnook.app, which opens the
+    // app when installed and falls back to Twitch otherwise. Shows an inline check
+    // confirmation, then dismisses so the menu isn't left hanging.
+    const handleShare = async (e: React.MouseEvent) => {
+        e.stopPropagation();
+        try {
+            await navigator.clipboard.writeText(buildShareUrl(stream.user_login));
+            setCopied(true);
+            window.setTimeout(() => { setCopied(false); closeMenu(); }, 1100);
+        } catch (err) {
+            Logger.error('[StreamContextMenu] Failed to copy share link:', err);
+            closeMenu();
+        }
+    };
+
     const handleFollow = (e: React.MouseEvent) => {
         e.stopPropagation();
         if (isCheckingFollow) return;
@@ -324,6 +344,22 @@ export const StreamContextMenu: React.FC = () => {
                 >
                     <MessageSquarePlus size={16} />
                     <span>Pop out chat</span>
+                </button>
+
+                {/* Share. Copies a streamnook.app/w/<channel> link. The icon and
+                    label swap to a check + confirmation on copy, with a little pop. */}
+                <button
+                    onClick={handleShare}
+                    className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium transition-all ${
+                        copied
+                            ? 'text-green-400'
+                            : 'text-textSecondary hover:text-accent hover:bg-glass-hover'
+                    }`}
+                >
+                    <span key={copied ? 'copied' : 'share'} className="inline-flex animate-in zoom-in-50 duration-200">
+                        {copied ? <Check size={16} /> : <Share2 size={16} />}
+                    </span>
+                    <span>{copied ? 'Link copied!' : 'Share'}</span>
                 </button>
 
                 {/* Favorite */}

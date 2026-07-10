@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo, useRef, useCallback, useSyncExternalStore } from 'react';
-import { MessageCircle, UserPlus, UserMinus, Loader2, ChevronDown, ChevronUp, Pencil, X, Gift } from 'lucide-react';
+import { MessageCircle, UserPlus, UserMinus, Loader2, ChevronDown, ChevronUp, Pencil, X, Gift, Share2, Check } from 'lucide-react';
+import { buildShareUrl } from '../utils/shareLink';
 import { motion, AnimatePresence, useScroll, useTransform, useReducedMotion, useMotionValue, animate } from 'framer-motion';
 import { setUserNickname, setUserColor } from '../utils/userChatOverrides';
 import { invoke } from '@tauri-apps/api/core';
@@ -537,6 +538,8 @@ const UserProfileCard = ({
   // Follow state
   const [isFollowing, setIsFollowing] = useState<boolean | null>(null);
   const [followLoading, setFollowLoading] = useState(false);
+  // Share confirmation (copies streamnook.app/w/<login>).
+  const [shareCopied, setShareCopied] = useState(false);
 
   // Get channel context
   const getChannelContext = useCallback(() => {
@@ -617,6 +620,12 @@ const UserProfileCard = ({
     let cancelled = false;
     setHistoricalAttempted(true);
     setHistoricalLoading(true);
+    // Failsafe: the backend caps every log source, but never let the spinner
+    // stick if the IPC call itself wedges. Whatever local session history the
+    // card already shows stays; we just stop implying more is still coming.
+    const failsafe = setTimeout(() => {
+      if (!cancelled) setHistoricalLoading(false);
+    }, 8000);
     (async () => {
       try {
         const { invoke } = await import('@tauri-apps/api/core');
@@ -635,11 +644,13 @@ const UserProfileCard = ({
         Logger.warn('[UserProfileCard] Historical chat fetch failed:', e);
         if (!cancelled) setHistoricalChannelLogged(false);
       } finally {
+        clearTimeout(failsafe);
         if (!cancelled) setHistoricalLoading(false);
       }
     })();
     return () => {
       cancelled = true;
+      clearTimeout(failsafe);
     };
   }, [showMessages, historicalAttempted, getChannelContext, username, userId]);
 
@@ -1587,6 +1598,25 @@ const UserProfileCard = ({
               >
                 Open on Twitch
               </a>
+              {/* Share. Copies the streamnook.app/w/<channel> link; icon and label
+                  pop to a check on copy. Full width under the action grid. */}
+              <button
+                onClick={async () => {
+                  try {
+                    await navigator.clipboard.writeText(buildShareUrl(login));
+                    setShareCopied(true);
+                    window.setTimeout(() => setShareCopied(false), 1400);
+                  } catch (err) {
+                    Logger.error('[UserProfileCard] Failed to copy share link:', err);
+                  }
+                }}
+                className={`col-span-2 glass-button text-xs py-2.5 px-3 rounded-md text-center transition-colors flex items-center justify-center gap-1.5 w-full ${shareCopied ? 'text-green-400' : 'text-white hover:bg-accent/20'}`}
+              >
+                <span key={shareCopied ? 'copied' : 'share'} className="inline-flex animate-in zoom-in-50 duration-200">
+                  {shareCopied ? <Check size={14} className="text-green-400" /> : <Share2 size={14} className="text-accent" />}
+                </span>
+                {shareCopied ? 'Link copied!' : 'Share'}
+              </button>
             </div>
 
             {/* Trigger for the messages takeover. Chevron points UP because

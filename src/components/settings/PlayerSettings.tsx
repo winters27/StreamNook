@@ -28,6 +28,7 @@ const OVERLAY_BUTTONS: { id: string; label: string }[] = [
   { id: 'subscribe', label: 'Subscribe / Gift' },
   { id: 'clip', label: 'Create Clip' },
   { id: 'song', label: 'Identify Song' },
+  { id: 'share', label: 'Share' },
   { id: 'clipsvods', label: 'Clips & VODs' },
   { id: 'multinook', label: 'Add to MultiNook' },
   { id: 'refresh', label: 'Refresh' },

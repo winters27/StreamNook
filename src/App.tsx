@@ -130,6 +130,9 @@ function App() {
   const autoHideActive = chatAutoHide && isSideChat;
   const [chatRevealed, setChatRevealed] = useState(false);
   const chatRevealTimer = useRef<number | null>(null);
+  // A streamnook:// deep link that landed while the app was still booting. Played
+  // once boot finishes (see the deep-link effects below).
+  const pendingWatchChannelRef = useRef<string | null>(null);
   const revealChat = () => {
     if (chatRevealTimer.current) { window.clearTimeout(chatRevealTimer.current); chatRevealTimer.current = null; }
     setChatRevealed(true);
@@ -363,6 +366,45 @@ function App() {
       unlistenPromise.then((unlisten) => unlisten());
     };
   }, []);
+
+  // streamnook:// deep links (the share links resolve here). The Rust handler
+  // emits `streamnook://watch` for links opened while we're running; the
+  // take_pending_watch_link command drains one the app was cold-started with.
+  // Either path plays the channel, deferring until boot finishes so startStream
+  // has settings/auth loaded.
+  useEffect(() => {
+    const openChannel = (channel: string) => {
+      const login = channel.trim().toLowerCase();
+      if (!login) return;
+      if (useAppStore.getState().isBooting) {
+        pendingWatchChannelRef.current = login;
+      } else {
+        void useAppStore.getState().startStream(login);
+      }
+    };
+
+    const unlistenPromise = listen<string>('streamnook:watch', (event) => {
+      if (event.payload) openChannel(event.payload);
+    });
+
+    // Cold start: the app was launched by the link before this listener existed.
+    invoke<string | null>('take_pending_watch_link')
+      .then((channel) => { if (channel) openChannel(channel); })
+      .catch(() => { /* older backend without the command; safe to ignore */ });
+
+    return () => {
+      unlistenPromise.then((unlisten) => unlisten());
+    };
+  }, []);
+
+  // Flush a deep link that arrived mid-boot, once the app is ready.
+  useEffect(() => {
+    if (!isBooting && pendingWatchChannelRef.current) {
+      const channel = pendingWatchChannelRef.current;
+      pendingWatchChannelRef.current = null;
+      void useAppStore.getState().startStream(channel);
+    }
+  }, [isBooting]);
 
   // Global Context Menu Blocker (exempting inputs)
   useEffect(() => {

@@ -55,6 +55,56 @@ use tauri::{
 use tauri_plugin_clipboard_manager::ClipboardExt;
 use tokio::sync::Mutex as TokioMutex;
 
+/// A `streamnook://` deep link that arrived before the frontend was listening
+/// (cold start). The webview drains it via `take_pending_watch_link` on mount.
+#[derive(Default)]
+struct PendingWatchLink(Mutex<Option<String>>);
+
+/// Parse a `streamnook://` share link into a Twitch channel login to open.
+///
+/// Accepts `streamnook://watch/<channel>` and `streamnook://w/<channel>` (the
+/// format the share button and web landing page produce), plus a bare
+/// `streamnook://<channel>` fallback. Returns a sanitized login (lowercase,
+/// `[a-z0-9_]`) or None when there's nothing watchable in the URL.
+fn parse_watch_link(url: &tauri::Url) -> Option<String> {
+    if url.scheme() != "streamnook" {
+        return None;
+    }
+    // The action ("watch"/"w") is the URL authority; the channel is the first
+    // path segment. A bare streamnook://<channel> has the channel as the authority.
+    let action = url.host_str().unwrap_or("");
+    let first_segment = url
+        .path_segments()
+        .and_then(|mut segments| segments.next())
+        .unwrap_or("");
+    let raw = match action {
+        "watch" | "w" => first_segment,
+        _ => action,
+    };
+    // Twitch logins are at most 25 chars; cap so a padded/junk URL can't emit an
+    // oversized string to the frontend.
+    let clean: String = raw
+        .trim()
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '_')
+        .take(25)
+        .collect::<String>()
+        .to_lowercase();
+    if clean.is_empty() {
+        None
+    } else {
+        Some(clean)
+    }
+}
+
+/// Drain a deep link the app was cold-started with, if any. The frontend calls
+/// this once on mount so a link that fired before its listener existed still
+/// opens the channel. Returns None when the app wasn't launched from a link.
+#[tauri::command]
+fn take_pending_watch_link(state: tauri::State<'_, PendingWatchLink>) -> Option<String> {
+    state.0.lock().ok().and_then(|mut guard| guard.take())
+}
+
 /// Bring the main StreamNook window forward — used by the tray icon left-click
 /// and the "Show StreamNook" menu item. Restores from minimized if needed and
 /// re-shows if the window was hidden to the tray on close.
@@ -331,6 +381,15 @@ fn main() {
     let eventsub_service_state = commands::eventsub::EventSubServiceState(eventsub_service.clone());
 
     Builder::default()
+        // Single-instance MUST be first: a streamnook:// deep link opened while the
+        // app is already running launches a second process with the URL as its only
+        // argv. This forwards that argv to the running instance instead of spawning a
+        // duplicate window. The `deep-link` feature re-feeds the URL to the deep-link
+        // plugin automatically (firing on_open_url below), so the callback only has to
+        // bring our window forward.
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            show_main_window(app);
+        }))
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_opener::init())
         // Remember each window's size/position/maximized state across restarts.
@@ -404,6 +463,43 @@ fn main() {
             {
                 use tauri_plugin_deep_link::DeepLinkExt;
                 let _ = app.deep_link().register_all();
+            }
+
+            // Resolve streamnook:// share links to a channel and hand it to the UI.
+            //
+            // Two arrival paths, both covered here:
+            //  - Warm (app running): the single-instance plugin re-feeds the URL, the
+            //    deep-link plugin emits, on_open_url fires, we emit to the (mounted)
+            //    frontend.
+            //  - Cold (app launched by the link): the plugin already emitted before this
+            //    listener (and the webview) existed, so we also drain get_current()
+            //    into PendingWatchLink, which the frontend pulls on mount.
+            {
+                use tauri_plugin_deep_link::DeepLinkExt;
+                app.manage(PendingWatchLink::default());
+
+                let watch_handle = app_handle.clone();
+                app.deep_link().on_open_url(move |event| {
+                    for url in event.urls() {
+                        if let Some(channel) = parse_watch_link(&url) {
+                            show_main_window(&watch_handle);
+                            let _ = watch_handle.emit("streamnook:watch", channel);
+                        }
+                    }
+                });
+
+                if let Ok(Some(urls)) = app.deep_link().get_current() {
+                    for url in urls {
+                        if let Some(channel) = parse_watch_link(&url) {
+                            if let Some(pending) = app.try_state::<PendingWatchLink>() {
+                                if let Ok(mut guard) = pending.0.lock() {
+                                    *guard = Some(channel.clone());
+                                }
+                            }
+                            let _ = app_handle.emit("streamnook:watch", channel);
+                        }
+                    }
+                }
             }
 
             // Create and manage the background service correctly within the setup hook
@@ -629,6 +725,7 @@ fn main() {
             get_app_authors,
             fetch_exchange_rates,
             get_window_size,
+            take_pending_watch_link,
             ensure_main_window,
             close_main_window,
             calculate_aspect_ratio_size,
@@ -695,6 +792,7 @@ fn main() {
             force_refresh_token,
             get_twitch_token,
             check_stream_online,
+            check_streams_online,
             get_streams_by_game_name,
             get_streams_by_game_id,
             get_streams_by_game_with_tags,

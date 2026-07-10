@@ -4,9 +4,11 @@ import Hls from 'hls.js';
 import Plyr from 'plyr';
 import 'plyr/dist/plyr.css';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Loader2, RefreshCcw, Home, LayoutGrid, Shield, ShieldCheck, ShieldAlert, Clapperboard, Music } from 'lucide-react';
+import { Loader2, RefreshCcw, Home, LayoutGrid, Shield, ShieldCheck, ShieldAlert, Clapperboard, Music, Share2, Check } from 'lucide-react';
 import { Heart, HeartBreak, ArrowLeft, X as XIcon } from 'phosphor-react';
 import { useAppStore } from '../stores/AppStore';
+import { useContextMenuStore } from '../stores/contextMenuStore';
+import { buildShareUrl } from '../utils/shareLink';
 import { usemultiNookStore } from '../stores/multiNookStore';
 import { useChannelSocial } from '../hooks/useChannelSocial';
 import StreamTitleWithEmojis from './StreamTitleWithEmojis';
@@ -369,6 +371,20 @@ const VideoPlayer = () => {
   // still respects its own context gate below (clippable, live-only, etc.).
   const overlayButtonOn = (id: string) =>
     !settings.player_overlay_buttons || settings.player_overlay_buttons.includes(id);
+
+  // Share the currently-playing channel. Copies the streamnook.app/w/<channel>
+  // link, then flips the button to a check for a beat as confirmation.
+  const [shareCopied, setShareCopied] = useState(false);
+  const handleSharePlayer = async () => {
+    if (!currentStream?.user_login) return;
+    try {
+      await navigator.clipboard.writeText(buildShareUrl(currentStream.user_login));
+      setShareCopied(true);
+      window.setTimeout(() => setShareCopied(false), 1400);
+    } catch (err) {
+      Logger.error('[VideoPlayer] Failed to copy share link:', err);
+    }
+  };
 
   // Track consecutive fatal errors to determine when stream is truly offline
   const fatalErrorCountRef = useRef<number>(0);
@@ -2078,6 +2094,15 @@ const VideoPlayer = () => {
         position: 'relative',
         ...letterboxStyle,
       }}
+      // Right-clicking the video opens the same stream menu as a tile/sidebar
+      // entry (Share, Favorite, Follow, ...), scoped to the channel that's playing.
+      onContextMenu={(e) => {
+        if (currentStream) {
+          useContextMenuStore.getState().openMenu(e, currentStream);
+        } else {
+          e.preventDefault();
+        }
+      }}
     >
       <video
         ref={videoRef}
@@ -2458,6 +2483,26 @@ const VideoPlayer = () => {
               ) : (
                 <Music className="w-4 h-4 text-white hover:text-accent transition-colors duration-200" />
               )}
+            </button>
+            </Tooltip>
+          )}
+
+          {/* Share button. Copies the streamnook.app/w/<channel> link; the icon
+              pops to a check on copy, and the tooltip confirms. */}
+          {overlayButtonOn('share') && currentStream && (
+            <Tooltip content={shareCopied ? 'Link copied!' : `Share ${currentStream.user_name}`} side="bottom">
+            <button
+              onClick={handleSharePlayer}
+              className="flex items-center justify-center p-2 glass-button rounded-lg"
+              style={{ backdropFilter: 'blur(16px)' }}
+            >
+              <span key={shareCopied ? 'copied' : 'share'} className="inline-flex animate-in zoom-in-50 duration-200">
+                {shareCopied ? (
+                  <Check className="w-4 h-4 text-green-400" />
+                ) : (
+                  <Share2 className="w-4 h-4 text-white hover:text-accent transition-colors duration-200" />
+                )}
+              </span>
             </button>
             </Tooltip>
           )}
