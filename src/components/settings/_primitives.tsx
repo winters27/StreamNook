@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react';
+import { useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 
 interface SettingsSectionProps {
   label: string;
@@ -78,30 +78,95 @@ interface SegmentedSelectProps<T extends string> {
   value: T;
   options: SegmentedOption<T>[];
   onChange: (value: T) => void;
+  /** Stretch to fill the row. Off by default so the control sizes to its labels
+   *  instead of spanning the whole width as detached full-width buttons. */
+  fullWidth?: boolean;
 }
 
+// A unified segmented control: one recessed track with the segments packed
+// inside it and a single raised "thumb" that slides between them on change.
+// The thumb is measured off the active segment, so it works with the
+// variable-width labels of the default (content-sized) layout.
 export const SegmentedSelect = <T extends string>({
   value,
   options,
   onChange,
-}: SegmentedSelectProps<T>) => (
-  <div className="flex gap-2">
-    {options.map((opt) => {
-      const isActive = value === opt.value;
-      return (
-        <button
-          key={opt.value}
-          onClick={() => onChange(opt.value)}
-          style={{ borderRadius: 8 }}
-          className={`flex-1 px-4 py-2 text-sm font-medium transition-all ${
-            isActive
-              ? 'glass-input text-textPrimary'
-              : 'glass-button text-textSecondary hover:text-textPrimary'
-          }`}
-        >
-          {opt.label}
-        </button>
-      );
-    })}
-  </div>
-);
+  fullWidth = false,
+}: SegmentedSelectProps<T>) => {
+  const trackRef = useRef<HTMLDivElement>(null);
+  const btnRefs = useRef<Record<string, HTMLButtonElement | null>>({});
+  const measuredOnce = useRef(false);
+  const [thumb, setThumb] = useState<{ left: number; width: number; ready: boolean; animate: boolean }>({
+    left: 0,
+    width: 0,
+    ready: false,
+    animate: false,
+  });
+
+  // Position the thumb over the active segment; re-measure on selection change,
+  // option change, and any reflow (font load, container resize). The very first
+  // placement is instant so it never slides in from the corner on mount.
+  useLayoutEffect(() => {
+    const measure = () => {
+      const el = btnRefs.current[value];
+      if (!el) return;
+      const animate = measuredOnce.current;
+      measuredOnce.current = true;
+      setThumb({ left: el.offsetLeft, width: el.offsetWidth, ready: true, animate });
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    if (trackRef.current) ro.observe(trackRef.current);
+    return () => ro.disconnect();
+  }, [value, options]);
+
+  const reduceMotion =
+    typeof window !== 'undefined' &&
+    window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+
+  return (
+    <div
+      ref={trackRef}
+      className={`${fullWidth ? 'flex w-full' : 'inline-flex'} relative gap-0.5 p-0.5 rounded-lg`}
+      style={{
+        background: 'rgba(151,177,185,0.06)',
+        boxShadow: 'inset 0 1px 2px rgba(0,0,0,0.32), inset 0 0 0 1px rgba(151,177,185,0.12)',
+      }}
+    >
+      {/* The sliding thumb — one shared element that animates between segments. */}
+      <div
+        aria-hidden
+        style={{
+          position: 'absolute',
+          top: 2,
+          bottom: 2,
+          left: thumb.left,
+          width: thumb.width,
+          borderRadius: 6,
+          background: 'rgba(151,177,185,0.15)',
+          boxShadow: '0 1px 1px rgba(0,0,0,0.22), inset 0 0 0 1px rgba(255,255,255,0.06)',
+          opacity: thumb.ready ? 1 : 0,
+          transition: thumb.animate && !reduceMotion
+            ? 'left 280ms cubic-bezier(0.34,1.4,0.5,1), width 280ms cubic-bezier(0.34,1.4,0.5,1), opacity 140ms ease'
+            : 'opacity 140ms ease',
+          pointerEvents: 'none',
+        }}
+      />
+      {options.map((opt) => {
+        const isActive = value === opt.value;
+        return (
+          <button
+            key={opt.value}
+            ref={(el) => { btnRefs.current[opt.value] = el; }}
+            onClick={() => onChange(opt.value)}
+            className={`${fullWidth ? 'flex-1' : ''} relative z-[1] px-3 py-1 text-[13px] font-medium rounded-md transition-colors ${
+              isActive ? 'text-textPrimary' : 'text-textMuted hover:text-textSecondary'
+            }`}
+          >
+            {opt.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+};
