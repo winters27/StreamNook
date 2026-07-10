@@ -1702,57 +1702,76 @@ impl TwitchService {
 
         match data {
             Some(arr) => {
-                // For each game, fetch the viewer count by getting streams for that game
-                let mut games_with_viewers = Vec::new();
+                // Each top game needs a viewer-count total, which comes from a
+                // second Helix call per game (streams?game_id=...). Fire them
+                // concurrently (bounded) instead of one-at-a-time: a page of 40
+                // games was doing 40 sequential round-trips, which is what made
+                // the Categories view take many seconds to load. `buffered` keeps
+                // the original top-games order while capping in-flight requests.
+                use futures_util::StreamExt;
+                const MAX_CONCURRENT: usize = 10;
 
-                for game in arr {
-                    let mut game_data = game.clone();
+                let mut games_with_viewers: Vec<serde_json::Value> =
+                    futures_util::stream::iter(arr.iter().cloned().map(|game| {
+                        let client = client.clone();
+                        let token = token.clone();
+                        async move {
+                            let mut game_data = game.clone();
 
-                    // Get game ID
-                    if let Some(game_id) = game.get("id").and_then(|id| id.as_str()) {
-                        // Fetch streams for this game to get total viewer count
-                        let streams_url = format!(
-                            "https://api.twitch.tv/helix/streams?game_id={}&first=100",
-                            game_id
-                        );
+                            if let Some(game_id) = game.get("id").and_then(|id| id.as_str()) {
+                                let streams_url = format!(
+                                    "https://api.twitch.tv/helix/streams?game_id={}&first=100",
+                                    game_id
+                                );
 
-                        let mut streams_request =
-                            client.get(&streams_url).header("Client-Id", CLIENT_ID);
+                                let mut streams_request =
+                                    client.get(&streams_url).header("Client-Id", CLIENT_ID);
 
-                        if let Some(token) = &token {
-                            streams_request =
-                                streams_request.header(AUTHORIZATION, format!("Bearer {}", token));
-                        }
+                                if let Some(token) = &token {
+                                    streams_request = streams_request
+                                        .header(AUTHORIZATION, format!("Bearer {}", token));
+                                }
 
-                        if let Ok(streams_response) = streams_request.send().await {
-                            if let Ok(streams_json) =
-                                streams_response.json::<serde_json::Value>().await
-                            {
-                                // Sum up viewer counts from all streams
-                                if let Some(streams_data) =
-                                    streams_json.get("data").and_then(|d| d.as_array())
-                                {
-                                    let total_viewers: i64 = streams_data
-                                        .iter()
-                                        .filter_map(|s| {
-                                            s.get("viewer_count").and_then(|v| v.as_i64())
-                                        })
-                                        .sum();
+                                if let Ok(streams_response) = streams_request.send().await {
+                                    if let Ok(streams_json) =
+                                        streams_response.json::<serde_json::Value>().await
+                                    {
+                                        if let Some(streams_data) =
+                                            streams_json.get("data").and_then(|d| d.as_array())
+                                        {
+                                            let total_viewers: i64 = streams_data
+                                                .iter()
+                                                .filter_map(|s| {
+                                                    s.get("viewer_count").and_then(|v| v.as_i64())
+                                                })
+                                                .sum();
 
-                                    // Add viewer_count to game data
-                                    if let Some(obj) = game_data.as_object_mut() {
-                                        obj.insert(
-                                            "viewer_count".to_string(),
-                                            serde_json::json!(total_viewers),
-                                        );
+                                            if let Some(obj) = game_data.as_object_mut() {
+                                                obj.insert(
+                                                    "viewer_count".to_string(),
+                                                    serde_json::json!(total_viewers),
+                                                );
+                                            }
+                                        }
                                     }
                                 }
                             }
-                        }
-                    }
 
-                    games_with_viewers.push(game_data);
-                }
+                            game_data
+                        }
+                    }))
+                    .buffered(MAX_CONCURRENT)
+                    .collect()
+                    .await;
+
+                // Order each page by the viewer totals we just summed, highest
+                // first. Twitch's games/top is only roughly viewer-ordered; this
+                // makes the Categories grid strictly descending within the page.
+                games_with_viewers.sort_by(|a, b| {
+                    let va = a.get("viewer_count").and_then(|v| v.as_i64()).unwrap_or(0);
+                    let vb = b.get("viewer_count").and_then(|v| v.as_i64()).unwrap_or(0);
+                    vb.cmp(&va)
+                });
 
                 Ok((games_with_viewers, next_cursor))
             }
@@ -2632,6 +2651,46 @@ impl TwitchService {
             }
             _ => Ok(None), // Stream is offline
         }
+    }
+
+    /// Batched liveness check. Helix `streams` accepts up to 100 `user_login`
+    /// params per call, so an N-login allow-list resolves in ceil(N/100) requests
+    /// instead of N. Offline logins are simply absent from the response, so the
+    /// returned vec is exactly the live subset. This replaces firing one
+    /// `check_stream_online` per channel (an ACL like EWC has ~1180 channels; the
+    /// per-channel fan-out rate-limited and silently dropped live channels).
+    pub async fn check_streams_online(user_logins: &[String]) -> Result<Vec<TwitchStream>> {
+        let token = Self::get_token().await.ok();
+        let client = crate::services::http::client().clone();
+
+        let mut live: Vec<TwitchStream> = Vec::new();
+
+        for chunk in user_logins.chunks(100) {
+            // ?first=100&user_login=a&user_login=b... — first=100 so a fully-live
+            // chunk isn't truncated by Helix's default page size of 20.
+            let params: String = chunk
+                .iter()
+                .map(|l| format!("user_login={}", urlencoding::encode(l)))
+                .collect::<Vec<_>>()
+                .join("&");
+            let url = format!("https://api.twitch.tv/helix/streams?first=100&{}", params);
+
+            let mut request = client.get(&url).header("Client-Id", CLIENT_ID);
+            if let Some(token) = &token {
+                request = request.header(AUTHORIZATION, format!("Bearer {}", token));
+            }
+
+            let response = request.send().await?.json::<serde_json::Value>().await?;
+            if let Some(arr) = response.get("data").and_then(|d| d.as_array()) {
+                for item in arr {
+                    if let Ok(stream) = serde_json::from_value::<TwitchStream>(item.clone()) {
+                        live.push(stream);
+                    }
+                }
+            }
+        }
+
+        Ok(live)
     }
 
     /// Get the game ID by game name

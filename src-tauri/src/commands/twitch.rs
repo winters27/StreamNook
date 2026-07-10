@@ -1178,6 +1178,16 @@ pub async fn check_stream_online(user_login: String) -> Result<Option<TwitchStre
         .map_err(|e| e.to_string())
 }
 
+/// Batched liveness check for many logins (chunked 100/call). Returns only the
+/// logins that are currently live. Use this over N× check_stream_online for
+/// large allow-lists (e.g. special-event ACL drops).
+#[tauri::command]
+pub async fn check_streams_online(user_logins: Vec<String>) -> Result<Vec<TwitchStream>, String> {
+    TwitchService::check_streams_online(&user_logins)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 /// Get streams by game name (convenience method that resolves game name to ID)
 /// Returns streams sorted by viewer count (highest first)
 #[tauri::command]
