@@ -2,7 +2,7 @@ use crate::models::drops::*;
 use crate::services::drops_auth_service::DropsAuthService;
 use anyhow::Result;
 use chrono::{DateTime, Utc};
-use log::{debug, error};
+use log::{debug, error, info, warn};
 use reqwest::header::{HeaderMap, HeaderValue, ACCEPT, AUTHORIZATION};
 use reqwest::Client;
 use serde::Deserialize;
@@ -390,26 +390,57 @@ impl DropsService {
                 CampaignStatus::Active
             };
 
-            // Parse allowed channels
+            // Parse allowed channels (ACL)
+            // A non-empty `allow.channels` list is an enforced allowlist unless
+            // `isEnabled` is explicitly false. `isEnabled` is often absent on
+            // special-event campaigns (e.g. EWC), so default to true to match the
+            // DropCampaignDetails parser instead of silently dropping the ACL.
             let mut allowed_channels = Vec::new();
             let mut is_acl_based = false;
 
             if let Some(allow) = campaign_json["allow"].as_object() {
-                if allow
-                    .get("isEnabled")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false)
-                {
-                    if let Some(channels) = allow["channels"].as_array() {
-                        is_acl_based = !channels.is_empty();
-                        for channel in channels {
-                            if let (Some(id), Some(name)) =
-                                (channel["id"].as_str(), channel["name"].as_str())
-                            {
-                                allowed_channels.push(AllowedChannel {
-                                    id: id.to_string(),
-                                    name: name.to_string(),
-                                });
+                if let Some(channels) = allow.get("channels").and_then(|v| v.as_array()) {
+                    if !channels.is_empty() {
+                        let is_enabled = allow
+                            .get("isEnabled")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(true);
+
+                        if is_enabled {
+                            is_acl_based = true;
+                            for channel in channels {
+                                if let (Some(id), Some(name)) =
+                                    (channel["id"].as_str(), channel["name"].as_str())
+                                {
+                                    allowed_channels.push(AllowedChannel {
+                                        id: id.to_string(),
+                                        name: name.to_string(),
+                                    });
+                                }
+                            }
+
+                            info!(
+                                "[Drops/ACL] inventory campaign '{}' game '{}': is_acl_based={}, raw_channels={}, parsed_channels={}, allow.isEnabled={:?}",
+                                campaign_json["name"].as_str().unwrap_or("unknown"),
+                                campaign_json["game"]["name"].as_str().unwrap_or("?"),
+                                is_acl_based,
+                                channels.len(),
+                                allowed_channels.len(),
+                                allow.get("isEnabled"),
+                            );
+
+                            // An ACL campaign that parses to zero channels is
+                            // unfarmable: the farmer has no candidates and reports
+                            // "no channels live" even while streams are up. That
+                            // means the entries didn't match `{id, name}` — dump the
+                            // first raw one so the actual field shape is visible.
+                            if allowed_channels.is_empty() {
+                                warn!(
+                                    "[Drops/ACL] campaign '{}' is ACL-restricted but parsed 0 of {} channels — unfarmable. First raw entry: {}",
+                                    campaign_json["name"].as_str().unwrap_or("unknown"),
+                                    channels.len(),
+                                    channels.first().map(|c| c.to_string()).unwrap_or_else(|| "none".into()),
+                                );
                             }
                         }
                     }
@@ -853,11 +884,27 @@ impl DropsService {
                                         });
                                     }
                                 }
-                                debug!(
-                                    "  ACL campaign: {} allowed channels for {}",
+                                info!(
+                                    "[Drops/ACL] details campaign '{}' game '{}': is_acl_based={}, raw_channels={}, parsed_channels={}, allow.isEnabled={:?}",
+                                    campaign_json["name"].as_str().unwrap_or("unknown"),
+                                    campaign_json["game"]["name"].as_str().unwrap_or("?"),
+                                    is_acl_based,
+                                    channels.len(),
                                     allowed_channels.len(),
-                                    campaign_json["name"].as_str().unwrap_or("unknown")
+                                    allow.get("isEnabled"),
                                 );
+
+                                // ACL campaign that parsed to zero channels is
+                                // unfarmable (no candidates) even with live streams;
+                                // dump the first raw entry to expose the field shape.
+                                if allowed_channels.is_empty() {
+                                    warn!(
+                                        "[Drops/ACL] campaign '{}' is ACL-restricted but parsed 0 of {} channels — unfarmable. First raw entry: {}",
+                                        campaign_json["name"].as_str().unwrap_or("unknown"),
+                                        channels.len(),
+                                        channels.first().map(|c| c.to_string()).unwrap_or_else(|| "none".into()),
+                                    );
+                                }
                             }
                         }
                     }

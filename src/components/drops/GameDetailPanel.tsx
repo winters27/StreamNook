@@ -325,6 +325,36 @@ export default function GameDetailPanel({
         // reading 0 while the badge sits claimed in the collection.
         return matchesEarnedBadge(drop.benefit_edges?.[0]?.name, earnedBadgeTitles);
     };
+
+    // Union of every drop id we can prove is already earned, matching how the
+    // Active Campaigns filter decides ownership: this game's claimed inventory,
+    // plus real-time claims from the progress array, plus claimed drops from
+    // EVERY game's inventory (catches rewards from expired campaigns that the
+    // backend's completed list has dropped).
+    const earnedDropIds = new Set<string>(ownedDropIds);
+    progress.forEach(p => { if (p.is_claimed === true) earnedDropIds.add(p.drop_id); });
+    allGames.forEach(g => g.inventory_items.forEach(item => item.campaign.time_based_drops.forEach(d => {
+        if (d.progress?.is_claimed === true) earnedDropIds.add(d.id);
+    })));
+
+    // Single rule for "this watch-time reward is still collectible." It mirrors
+    // the Active Campaigns per-drop check exactly, so the Completed Campaigns
+    // section can be its precise complement. This closes the bug where a reissued
+    // campaign — owned by benefit/name match with no per-drop progress — was
+    // hidden from Active (via isRewardOwned) yet never qualified for Completed
+    // (which demanded per-drop progress), so it disappeared from the panel.
+    // Keep in sync with the Active section's inline logic below.
+    const isDropEarnable = (drop: TimeBasedDrop): boolean => {
+        const dp = drop.progress || progress.find(p => p.drop_id === drop.id) || null;
+        if (isRewardOwned(drop, dp)) return false;
+        if (dp?.is_claimed === true) return false;
+        if (earnedDropIds.has(drop.id)) return false;
+        if (drop.benefit_edges?.some(b => ownedBenefitIds.has(b.id))) return false;
+        if (matchesEarnedBadge(drop.benefit_edges?.[0]?.name, earnedBadgeTitles)) return false;
+        const required = dp?.required_minutes_watched || drop.required_minutes_watched || 0;
+        if (required <= 0) return false; // reward isn't earned by watching
+        return (dp?.current_minutes_watched || 0) < required; // not yet 100% → still earnable
+    };
     // Check if automation this game
     // Use current_drop.game_name OR current_channel.game_name as fallback (current_drop may not be set immediately)
     const isProgressingThisGame = dropProgress?.active && (
@@ -1058,27 +1088,20 @@ export default function GameDetailPanel({
                         
 
                         
-                        // Filter campaigns: show only 100% complete campaigns here
-                        // IMPORTANT: Only show campaigns where drops have ACTUAL progress/claim data
-                        // Drops completed via benefit ID matching (no progress) should appear in "Your Collection" instead
+                        // A campaign is Completed when it's the exact complement of
+                        // Active: it has at least one watch-time reward, and NONE of
+                        // its watch-time rewards are still earnable (all owned, claimed,
+                        // or 100% watched). Using the same isDropEarnable rule as Active
+                        // is what stops a fully-earned campaign from vanishing — the old
+                        // check demanded per-drop progress data a reissued/earned
+                        // campaign never carries, so it showed in neither section.
                         const completedCampaigns = mergedCampaigns.filter(campaign => {
-                            // A campaign is complete if ALL drops are 100% complete or claimed WITH actual progress data
-                            if (campaign.time_based_drops.length === 0) return false;
-                            
-                            return campaign.time_based_drops.every(drop => {
-                                const dropProgress = drop.progress || progress.find(p => p.drop_id === drop.id);
-                                
-                                // Require actual progress data to show in this section
-                                // Drops without progress (benefit-only matches) will show in "Your Collection" instead
-                                if (!dropProgress) return false;
-                                
-                                // Check if drop is complete (100% watched or claimed)
-                                const isComplete = dropProgress.current_minutes_watched >= dropProgress.required_minutes_watched &&
-                                    dropProgress.required_minutes_watched > 0;
-                                const isClaimed = dropProgress.is_claimed;
-                                
-                                return isComplete || isClaimed;
+                            const hasWatchTimeReward = campaign.time_based_drops.some(drop => {
+                                const dp = drop.progress || progress.find(p => p.drop_id === drop.id);
+                                return (dp?.required_minutes_watched || drop.required_minutes_watched || 0) > 0;
                             });
+                            if (!hasWatchTimeReward) return false;
+                            return !campaign.time_based_drops.some(isDropEarnable);
                         });
 
                         if (completedCampaigns.length === 0) return null;
@@ -1100,6 +1123,7 @@ export default function GameDetailPanel({
                                             campaign={campaign}
                                             inventoryItems={game.inventory_items}
                                             progress={progress}
+                                            completedDropIds={earnedDropIds}
                                             completedBenefitIds={completedBenefitIds}
                                             dropProgress={dropProgress}
                                             onClaimDrop={onClaimDrop}
@@ -1523,7 +1547,7 @@ function CampaignCard({
         const required = dropProgress?.required_minutes_watched || drop.required_minutes_watched || 0;
         const current = dropProgress
             ? (dropProgress.is_claimed ? required : (dropProgress.current_minutes_watched || 0))
-            : 0;
+            : (isGloballyCompleted ? required : 0);
 
         const progressPercent = required > 0 ? (current / required) * 100 : 0;
 
@@ -1534,12 +1558,21 @@ function CampaignCard({
             imageUrl: benefit?.image_url || '',
             benefitName: benefit?.name || drop.name,
             isClaimed: dropProgress?.is_claimed || false, // Only trust actual claim status, not benefit ID matching
+            // Earned = claimed here OR owned from a previous/expired campaign instance.
+            // Drives the "done" look in the timeline so a completed campaign doesn't
+            // render as grey/0%. isClaimed stays for the actual Claim affordance.
+            isEarned: (dropProgress?.is_claimed || false) || isGloballyCompleted,
             progressPercent, // Show actual progress, not forced 100%
             isInProgress: progressPercent > 0 && progressPercent < 100 && !dropProgress?.is_claimed,
             isCollectible: isDropCollectible(drop, inventoryItems), // Track if drop is collectible - check inventory as fallback
             isGloballyCompleted, // Track if this drop was earned from a previous/expired campaign
         };
     });
+
+    // Every watch-time reward already earned — the campaign is done, so we show a
+    // "Completed" tag instead of prompting the user to go watch it again.
+    const watchTimeRewards = dropRewards.filter(r => (r.requiredMinutes || 0) > 0);
+    const allEarned = watchTimeRewards.length > 0 && watchTimeRewards.every(r => r.isEarned);
 
     return (
         <div className="glass-panel p-4 border border-borderLight">
@@ -1580,7 +1613,13 @@ function CampaignCard({
                     it. A provider (opt-in plugin) can hang its own control in the
                     drops.card-action slot to take this over (e.g. earn without
                     watching), in which case we render that instead. */}
-                {!isProgressingThisCampaign && isCollectible && (
+                {!isProgressingThisCampaign && allEarned && (
+                    <span className="text-[10px] font-semibold text-green-400 flex items-center gap-1 bg-green-500/10 px-2 py-1 rounded shrink-0">
+                        <Check size={11} />
+                        Completed
+                    </span>
+                )}
+                {!isProgressingThisCampaign && isCollectible && !allEarned && (
                     cardActions.length > 0
                         ? cardActions.map((c) => {
                             const Control = c.Component as React.ComponentType<DropCardActionContext>;
@@ -1639,14 +1678,14 @@ function CampaignCard({
                 const currentMinutes = Math.min(
                     timed.reduce((mx, r) => {
                         const dp = resolveDropProgress(r.dropId);
-                        const cur = r.isClaimed ? r.requiredMinutes : (dp ? Math.round(dp.current_minutes_watched) : 0);
+                        const cur = r.isEarned ? r.requiredMinutes : (dp ? Math.round(dp.current_minutes_watched) : 0);
                         return Math.max(mx, cur);
                     }, 0),
                     maxRequired
                 );
                 const fillPercent = maxRequired > 0 ? Math.min((currentMinutes / maxRequired) * 100, 100) : 0;
-                const nextReward = timed.find(r => !r.isClaimed && currentMinutes < r.requiredMinutes);
-                const ready = dropRewards.filter(r => !r.isClaimed && r.progressPercent >= 100);
+                const nextReward = timed.find(r => !r.isEarned && currentMinutes < r.requiredMinutes);
+                const ready = dropRewards.filter(r => !r.isEarned && r.progressPercent >= 100);
 
                 return (
                     <div>
@@ -1669,11 +1708,11 @@ function CampaignCard({
                             </div>
                             {timed.map(r => {
                                 const pos = maxRequired > 0 ? (r.requiredMinutes / maxRequired) * 100 : 0;
-                                const reached = r.isClaimed || currentMinutes >= r.requiredMinutes;
+                                const reached = r.isEarned || currentMinutes >= r.requiredMinutes;
                                 return (
                                     <Tooltip
                                         key={r.dropId}
-                                        content={`${r.benefitName} · ${r.requiredMinutes}m${r.isClaimed ? ' · claimed' : reached ? ' · ready' : ''}`}
+                                        content={`${r.benefitName} · ${r.requiredMinutes}m${r.isClaimed ? ' · claimed' : r.isGloballyCompleted ? ' · earned' : reached ? ' · ready' : ''}`}
                                         delay={150}
                                         side="top"
                                     >
@@ -1682,13 +1721,13 @@ function CampaignCard({
                                             style={{ left: `${pos}%` }}
                                         >
                                             <div className={`w-3 h-3 rounded-full border-2 flex items-center justify-center transition-colors ${
-                                                r.isClaimed
+                                                r.isEarned
                                                     ? 'bg-green-500 border-green-500'
                                                     : reached
                                                         ? 'bg-yellow-500 border-yellow-500'
                                                         : 'bg-background border-borderLight'
                                             }`}>
-                                                {r.isClaimed && <Check size={7} className="text-white" />}
+                                                {r.isEarned && <Check size={7} className="text-white" />}
                                             </div>
                                         </div>
                                     </Tooltip>

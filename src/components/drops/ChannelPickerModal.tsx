@@ -20,8 +20,9 @@ export interface PickableChannel {
   userId: string;
   viewerCount: number;
   isLive: boolean;
-  /** The category the channel is currently streaming (live only). For ACL drops a
-   *  channel only earns while it's in the campaign's game, so this gates "earnable". */
+  /** The category the channel is currently streaming (live only), shown for context.
+   *  Not an eligibility gate: ACL drops are earned on any allow-listed live channel
+   *  regardless of category (special events span many games). */
   currentGame?: string;
   avatarUrl?: string;
   /** The live stream object (carries game_name etc.) so the caller can hand it
@@ -83,18 +84,12 @@ export default function ChannelPickerModal({
       if (isAclBased && allowedChannels.length > 0) {
         // Allow-listed campaign: only the permitted channels that are LIVE right now
         // (offline ones can't be watched/collected, so we don't list them at all).
-        const checked = await Promise.all(
-          allowedChannels.map(async (ch): Promise<PickableChannel | null> => {
-            try {
-              const stream = await invoke<TwitchStream | null>('check_stream_online', { userLogin: ch.name });
-              if (stream) return streamToChannel(stream);
-            } catch (err) {
-              Logger.warn('[ChannelPicker] live check failed for', ch.name, err);
-            }
-            return null;
-          })
-        );
-        result = checked.filter((c): c is PickableChannel => c !== null);
+        // One batched call (chunked 100/request in Rust) instead of one request per
+        // channel — a special-event ACL like EWC has ~1180 channels, and the old
+        // per-channel fan-out rate-limited and silently dropped live ones.
+        const logins = allowedChannels.map(ch => ch.name);
+        const streams = await invoke<TwitchStream[]>('check_streams_online', { userLogins: logins });
+        result = (streams || []).map(streamToChannel);
       } else {
         // Open campaign: list whoever is live in the game right now.
         const [streams] = await invoke<[TwitchStream[], string | null]>('get_streams_by_game_name', {
@@ -140,12 +135,14 @@ export default function ChannelPickerModal({
 
   if (!isOpen) return null;
 
-  // Only live channels that can earn this drop right now. For ACL drops that means
-  // the channel must be streaming the campaign's game; offline / wrong-game channels
-  // are excluded entirely.
-  const matchesGame = (c: PickableChannel) =>
-    !isAclBased || (c.currentGame ?? '').toLowerCase() === gameName.toLowerCase();
-  const earnable = channels.filter(c => c.isLive && matchesGame(c));
+  // Live channels that can earn this drop right now.
+  //  - Open campaigns already fetched only channels live in the campaign's game.
+  //  - ACL campaigns: the allow-list is what grants the drop, independent of the
+  //    category being streamed. Umbrella events (e.g. EWC, whose game is
+  //    "Special Events") list participating channels playing dozens of different
+  //    real games, so requiring the channel's current category to equal the
+  //    campaign game wrongly hid almost all of them. Membership + live is the gate.
+  const earnable = channels.filter(c => c.isLive);
 
   return (
     <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 sm:p-6">
@@ -183,7 +180,7 @@ export default function ChannelPickerModal({
               <p className="text-sm font-medium text-textPrimary mb-1">Nothing to earn this on right now</p>
               <p className="text-xs text-textSecondary max-w-[18rem] mx-auto leading-snug">
                 {isAclBased
-                  ? `This reward only drops on its participating channels while they're streaming ${gameName}. None are right now, so check back later.`
+                  ? `This reward only drops on its participating channels while they're live. None are right now, so check back later.`
                   : `No one is streaming ${gameName} right now. Check back later.`}
               </p>
             </div>
