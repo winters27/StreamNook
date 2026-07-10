@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useState, useRef, useCallback, useMemo } from 'react';
 import { useAppStore, HomeTab } from '../stores/AppStore';
 import { createPortal } from 'react-dom';
-import { Search, ArrowLeft, Heart, Maximize2, X, Gift, Pickaxe, LayoutGrid, Flame, ArrowUpRight, Undo2, Users, User, Loader2, MessageSquare } from 'lucide-react';
+import { Search, ArrowLeft, Heart, Maximize2, X, Gift, Pickaxe, LayoutGrid, Flame, ArrowUpRight, Undo2, Users, User, Loader2, MessageSquare, Clock } from 'lucide-react';
 import { motion, LayoutGroup, AnimatePresence } from 'framer-motion';
 import { usemultiNookStore } from '../stores/multiNookStore';
 
@@ -14,6 +14,14 @@ import { useContextMenuStore } from '../stores/contextMenuStore';
 import { Tooltip } from './ui/Tooltip';
 import { GlassSelect } from './ui/GlassSelect';
 import { CategorySearchBox } from './ui/CategorySearchBox';
+import {
+    loadRecentSearches,
+    addRecentSearch,
+    removeRecentSearch,
+    clearRecentSearches,
+    type RecentSearch,
+    type SearchMode,
+} from '../utils/searchHistory';
 
 import { Logger } from '../utils/logger';
 import { useVisibleInterval } from '../utils/useVisibleInterval';
@@ -23,35 +31,6 @@ interface DropCampaign {
     name: string;
     game_id: string;
     game_name: string;
-}
-
-interface DropChannel {
-    id: string;
-    name: string;
-    display_name: string;
-    game_name: string;
-    viewer_count: number;
-    is_live: boolean;
-    drops_enabled: boolean;
-}
-
-interface CurrentDropInfo {
-    campaign_id: string;
-    campaign_name: string;
-    drop_id: string;
-    drop_name: string;
-    required_minutes: number;
-    current_minutes: number;
-    game_name: string;
-}
-
-interface DropProgressStatus {
-    active: boolean;
-    current_channel: DropChannel | null;
-    current_campaign: string | null;
-    current_drop: CurrentDropInfo | null;
-    eligible_channels: DropChannel[];
-    last_update: string;
 }
 
 const FlyingDot = ({ startX, startY, targetX, targetY }: { startX: number, startY: number, targetX: number, targetY: number }) => {
@@ -433,6 +412,31 @@ const Home = () => {
     const [categorySearchResults, setCategorySearchResults] = useState<TwitchCategory[]>([]);
     const [searchMode, setSearchMode] = useState<'streamers' | 'categories'>('streamers');
     const [isSearching, setIsSearching] = useState(false);
+    // Recent searches shown under the search bar when it's focused and empty.
+    const [recentSearches, setRecentSearches] = useState<RecentSearch[]>([]);
+    const [historyOpen, setHistoryOpen] = useState(false);
+    // Search history is scoped to the view a search launches from, so Following,
+    // Discover, and Categories each keep their own separate list.
+    const searchScope = useMemo(() => {
+        const origin = activeTab === 'search' ? searchReturnTab : activeTab;
+        switch (origin) {
+            case 'following':
+                return 'following';
+            case 'browse':
+            case 'category':
+                return 'categories';
+            default:
+                return 'discover';
+        }
+    }, [activeTab, searchReturnTab]);
+    const scopeLabel =
+        searchScope === 'following' ? 'Following' : searchScope === 'categories' ? 'Categories' : 'Discover';
+    // Reload the visible list when the scope changes (switching tabs) and each
+    // time the dropdown opens, so an external clear (e.g. the command palette's
+    // "Clear search history") is reflected without needing a tab switch.
+    useEffect(() => {
+        setRecentSearches(loadRecentSearches(searchScope));
+    }, [searchScope, historyOpen]);
 
     // Guard against landing on an orphaned "search" tab. Search query/results are
     // local state, so they reset whenever Home remounts (e.g. after exiting a
@@ -517,6 +521,11 @@ const Home = () => {
     const [animatingHearts, setAnimatingHearts] = useState<Set<string>>(new Set());
     const [isSearchExpanded, setIsSearchExpanded] = useState(false);
     const searchInputRef = useRef<HTMLInputElement>(null);
+    // The recent-searches dropdown is portaled to <body> because the top nav frame
+    // clips overflow — an in-flow absolute dropdown gets cut off and reads as
+    // invisible. We anchor it to the search bar's rect instead.
+    const searchBarRef = useRef<HTMLDivElement>(null);
+    const [historyRect, setHistoryRect] = useState<{ top: number; left: number; width: number } | null>(null);
 
     const isMountedRef = useRef(true);
     useEffect(() => {
@@ -597,6 +606,24 @@ const Home = () => {
             searchInputRef.current.focus();
         }
     }, [isSearchExpanded]);
+
+    // Keep the portaled recent-searches dropdown anchored under the search bar.
+    // The top nav doesn't scroll, so the rect only shifts on window resize.
+    useEffect(() => {
+        if (!(isSearchExpanded && historyOpen)) {
+            setHistoryRect(null);
+            return;
+        }
+        const update = () => {
+            const el = searchBarRef.current;
+            if (!el) return;
+            const r = el.getBoundingClientRect();
+            setHistoryRect({ top: r.bottom + 8, left: r.left, width: r.width });
+        };
+        update();
+        window.addEventListener('resize', update);
+        return () => window.removeEventListener('resize', update);
+    }, [isSearchExpanded, historyOpen]);
 
     const loadTopGames = async (background = false) => {
         if (!background) {
@@ -1270,8 +1297,17 @@ const Home = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [videosSort, videosPeriod]);
 
-    const handleSearch = async () => {
-        if (!searchQuery.trim()) return;
+    // `opts` lets a recent-search entry replay itself: `query` overrides the box
+    // text and `mode` forces streamer- or category-search regardless of the tab
+    // it's launched from. Called with no args from the input (Enter), it keeps
+    // the original tab-driven behavior.
+    const handleSearch = async (opts?: { query?: string; mode?: SearchMode }) => {
+        const q = (opts?.query ?? searchQuery).trim();
+        if (!q) return;
+        if (opts?.query !== undefined && opts.query !== searchQuery) {
+            setSearchQuery(opts.query);
+        }
+        setHistoryOpen(false);
 
         // Remember where this search was launched from. Search query/results live
         // in local state, so they're wiped when Home unmounts during playback;
@@ -1282,32 +1318,39 @@ const Home = () => {
         }
 
         setIsSearching(true);
+        let usedMode: SearchMode = 'streamers';
         try {
-            if (activeTab === 'browse' || (activeTab === 'search' && searchMode === 'categories')) {
+            const forceStreamers = opts?.mode === 'streamers';
+            const forceCategories = opts?.mode === 'categories';
+            if (!forceStreamers && (forceCategories || activeTab === 'browse' || (activeTab === 'search' && searchMode === 'categories'))) {
+                usedMode = 'categories';
                 setSearchMode('categories');
                 setActiveTab('search');
-                const results = await invoke('search_categories', { query: searchQuery, limit: 40 }) as TwitchCategory[];
+                const results = await invoke('search_categories', { query: q, limit: 40 }) as TwitchCategory[];
                 setCategorySearchResults(results);
                 setSearchResults([]);
-            } else if ((activeTab === 'category' && selectedCategory) || (activeTab === 'search' && searchMode === 'streamers' && selectedCategory)) {
+            } else if (!forceStreamers && ((activeTab === 'category' && selectedCategory) || (activeTab === 'search' && searchMode === 'streamers' && selectedCategory))) {
+                usedMode = 'streamers';
                 setSearchMode('streamers');
                 setActiveTab('search');
-                const results = await invoke('search_channels', { query: searchQuery }) as TwitchStream[];
-                
-                const filtered = results.filter(s => 
-                    (selectedCategory.id && s.game_id === selectedCategory.id) || 
+                const results = await invoke('search_channels', { query: q }) as TwitchStream[];
+
+                const filtered = results.filter(s =>
+                    (selectedCategory.id && s.game_id === selectedCategory.id) ||
                     (selectedCategory.name && s.game_name?.toLowerCase() === selectedCategory.name.toLowerCase())
                 );
-                
+
                 setSearchResults(filtered);
                 setCategorySearchResults([]);
             } else {
+                usedMode = 'streamers';
                 setSearchMode('streamers');
                 setActiveTab('search');
-                const results = await invoke('search_channels', { query: searchQuery }) as TwitchStream[];
+                const results = await invoke('search_channels', { query: q }) as TwitchStream[];
                 setSearchResults(results);
                 setCategorySearchResults([]);
             }
+            setRecentSearches(addRecentSearch(searchScope, q, usedMode));
         } catch (e) {
             Logger.error('Search failed:', e);
             setSearchResults([]);
@@ -1322,6 +1365,7 @@ const Home = () => {
             handleSearch();
         } else if (e.key === 'Escape') {
             setIsSearchExpanded(false);
+            setHistoryOpen(false);
             setSearchQuery('');
             setSearchResults([]);
             setCategorySearchResults([]);
@@ -1718,7 +1762,7 @@ const Home = () => {
             {!(activeTab === 'category' && selectedCategory) && (
                 <div className="flex flex-col relative box-border overflow-hidden z-20">
                     <div className="flex gap-3 relative z-30 px-4 py-2.5 min-h-[48px] items-center justify-center border-b border-borderSubtle bg-background/95 backdrop-blur-md">
-                    <div className="relative flex items-center glass-panel px-1.5 py-1 !rounded-xl">
+                    <div ref={searchBarRef} className="relative flex items-center glass-panel px-1.5 py-1 !rounded-xl">
                         {/* Navigation buttons - fade out when search is expanded */}
                         <LayoutGroup>
                         <div className={`flex items-center gap-1 transition-opacity duration-300 ${isSearchExpanded ? 'opacity-0' : 'opacity-100'}`}>
@@ -1835,7 +1879,11 @@ const Home = () => {
                                 value={searchQuery}
                                 onChange={(e) => setSearchQuery(e.target.value)}
                                 onKeyDown={handleSearchKeyPress}
+                                onFocus={() => setHistoryOpen(true)}
                                 onBlur={() => {
+                                    // Item clicks use onMouseDown + preventDefault, so blur only
+                                    // fires when focus really leaves the search — safe to close.
+                                    setHistoryOpen(false);
                                     if (!searchQuery.trim()) {
                                         setIsSearchExpanded(false);
                                     }
@@ -1874,6 +1922,66 @@ const Home = () => {
                             )}
                             </AnimatePresence>
                         </motion.div>
+
+                        {/* Recent searches — shown under the bar while it's focused. Filters
+                            live as you type; each entry replays its own streamer/category mode.
+                            Portaled to <body> (the nav frame clips overflow). No AnimatePresence
+                            wrapper: it filters out portal nodes (not valid elements), so wrapping
+                            one renders nothing — the motion.div still animates in on its own. */}
+                        {isSearchExpanded && historyOpen && historyRect && (() => {
+                            const ql = searchQuery.trim().toLowerCase();
+                            const items = recentSearches.filter((r) => !ql || r.query.toLowerCase().includes(ql));
+                            if (items.length === 0) return null;
+                            return createPortal(
+                                <motion.div
+                                    initial={{ opacity: 0, y: -4 }}
+                                    animate={{ opacity: 1, y: 0 }}
+                                    exit={{ opacity: 0, y: -4 }}
+                                    transition={{ duration: 0.12 }}
+                                    style={{ position: 'fixed', top: historyRect.top, left: historyRect.left, width: historyRect.width }}
+                                    className="z-[1000] rounded-xl overflow-hidden py-1 shadow-xl border border-borderSubtle bg-background/95 backdrop-blur-md"
+                                >
+                                    <div className="flex items-center justify-between px-3 py-1">
+                                        <span className="flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-wide text-textSecondary">
+                                            <Clock size={11} /> Recent · {scopeLabel}
+                                        </span>
+                                        <button
+                                            onMouseDown={(e) => { e.preventDefault(); setRecentSearches(clearRecentSearches(searchScope)); }}
+                                            className="text-[11px] text-textSecondary hover:text-textPrimary transition-colors"
+                                        >
+                                            Clear
+                                        </button>
+                                    </div>
+                                    {items.map((r) => (
+                                        <div
+                                            key={`${r.mode}:${r.query}`}
+                                            className="group mx-1 flex items-center gap-2 rounded-lg px-2 hover:bg-white/5"
+                                        >
+                                            <button
+                                                onMouseDown={(e) => { e.preventDefault(); handleSearch({ query: r.query, mode: r.mode }); }}
+                                                className="flex min-w-0 flex-1 items-center gap-2 py-1.5 text-left text-sm text-textPrimary"
+                                            >
+                                                {r.mode === 'categories'
+                                                    ? <LayoutGrid size={14} className="flex-shrink-0 text-textSecondary" />
+                                                    : <User size={14} className="flex-shrink-0 text-textSecondary" />}
+                                                <span className="truncate">{r.query}</span>
+                                                <span className="ml-auto flex-shrink-0 text-[11px] text-textSecondary">
+                                                    {r.mode === 'categories' ? 'Category' : 'Channel'}
+                                                </span>
+                                            </button>
+                                            <button
+                                                onMouseDown={(e) => { e.preventDefault(); setRecentSearches(removeRecentSearch(searchScope, r.query, r.mode)); }}
+                                                className="flex-shrink-0 rounded p-1 text-textSecondary opacity-0 transition-all hover:text-textPrimary group-hover:opacity-100"
+                                                aria-label={`Remove ${r.query}`}
+                                            >
+                                                <X size={12} />
+                                            </button>
+                                        </div>
+                                    ))}
+                                </motion.div>,
+                                document.body,
+                            );
+                        })()}
                     </div>
                 {/* Return to Stream Button - absolute right */}
                 {streamUrl && (
