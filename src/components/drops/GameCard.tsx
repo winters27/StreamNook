@@ -260,13 +260,22 @@ export default function GameCard({
                     loading="lazy"
                 />
 
-                {/* Top-Left: Status Badges - only READY (removed AUTOMATION badge) */}
+                {/* Top-Left: Status Badges - READY (claimable) or DONE (fully earned) */}
                 <div className="absolute top-2 left-2 z-10 flex flex-col gap-1.5">
                     {/* Claimable badge */}
                     {claimableCount > 0 && (
                         <div className="drops-badge-glass-lg !bg-green-600/50 !border-green-500/70">
                             <Check size={14} className="text-green-200" />
                             <span className="text-green-200">{claimableCount} READY</span>
+                        </div>
+                    )}
+                    {/* Done badge — every drop for this game is already earned. Marks
+                        the card so it's not re-opened expecting something to collect.
+                        Suppressed while anything is claimable or actively collecting. */}
+                    {game.all_drops_claimed && claimableCount === 0 && !isDropProgressing && (
+                        <div className="drops-badge-glass-lg !bg-black/45 !border-green-500/50">
+                            <Check size={14} className="text-green-300" />
+                            <span className="text-green-300">DONE</span>
                         </div>
                     )}
                 </div>
@@ -375,6 +384,14 @@ export default function GameCard({
                 ) : (
                     /* Normal State: Show campaign/drop info with Collect All button */
                     <div className="flex items-center justify-between mt-0.5">
+                        {game.all_drops_claimed ? (
+                            /* Fully earned — show the finished state instead of the
+                               (now misleading) live campaign/drop counts. */
+                            <span className="flex items-center gap-1 text-green-400 text-xs font-medium min-w-0">
+                                <Check size={12} className="shrink-0" />
+                                All rewards collected
+                            </span>
+                        ) : (
                         <div className="flex items-center gap-2 text-textSecondary text-xs min-w-0">
                             {/* Campaign count */}
                             {campaignCount > 0 && (
@@ -428,6 +445,7 @@ export default function GameCard({
                                 </span>
                             )}
                         </div>
+                        )}
 
                         {/* Collect All button removed - users can click into game details to start automation specific campaigns */}
                     </div>

@@ -29,6 +29,13 @@ const EXTERNAL_DROPS_STATUS_SLOT = 'drops.status';
 // minute, so poll a bit faster than that to track it without lag.
 const REFRESH_MS = 30_000;
 
+// While farming an active drop, cumulative watch time should climb ~1/min. If
+// it stays flat this long, the watched stream has almost certainly gone offline
+// (or stopped crediting) — a case the video-side offline detection can miss when
+// the low-latency proxy keeps serving stale segments after a stream ends. This
+// is the drops-side fallback trigger for the offline auto-switch.
+const FARMED_STREAM_STALL_MS = 4 * 60 * 1000;
+
 // Shape an external provider pushes into its status slot. `active` = a session/
 // target is set; `is_active` = actively progressing a channel right now. These
 // are the provider's contract field names (kept until a coordinated rename).
@@ -137,6 +144,7 @@ export default function DropProgressController() {
             const store = useAppStore.getState();
             store.setLiveDropProgress(null);
             store.setDropProgressActive(false);
+            store.setDropProgressComplete(false);
             emit('drop-progress', {
                 active: false,
                 current_channel: null,
@@ -215,9 +223,18 @@ export default function DropProgressController() {
 
     // ---- Native watch-to-earn: drive the display when no provider is present ----
     const nativeActiveRef = useRef(false);
+    // Set when the watched game's campaign is fully earned (nothing left to farm),
+    // so the completion status is emitted once rather than every poll.
+    const nativeCompleteRef = useRef(false);
     // The game we last showed progress for, so the keep-last guard only holds
     // within the SAME stream/game (a real game switch clears stale progress).
     const lastGameRef = useRef<string | undefined>(undefined);
+    // Offline/stall watchdog for the farmed stream (see FARMED_STREAM_STALL_MS):
+    // the highest cumulative watch time seen, when it last advanced, and whether
+    // this stall episode has already been acted on (so we react once per stall).
+    const lastCumulativeRef = useRef(-1);
+    const lastAdvanceAtRef = useRef(0);
+    const stallHandledRef = useRef(false);
 
     useEffect(() => {
         let disposed = false;
@@ -322,19 +339,77 @@ export default function DropProgressController() {
         };
 
         const clearNative = () => {
-            if (!nativeActiveRef.current) return;
+            if (!nativeActiveRef.current && !nativeCompleteRef.current) return;
             nativeActiveRef.current = false;
+            nativeCompleteRef.current = false;
+            lastCumulativeRef.current = -1;
+            lastAdvanceAtRef.current = 0;
+            stallHandledRef.current = false;
             const store = useAppStore.getState();
             store.setLiveDropProgress(null);
             store.setDropProgressActive(false);
+            store.setDropProgressComplete(false);
             emit('drop-progress', {
                 active: false,
+                complete: false,
                 current_channel: null,
                 current_campaign: null,
                 current_drop: null,
                 eligible_channels: [],
                 last_update: new Date().toISOString(),
             } as DropProgressStatus).catch(() => {});
+        };
+
+        // The watched game's campaign has every watch-time reward earned — nothing
+        // left to farm. Emit a completion status (active:false, complete:true) so
+        // the title-bar badge shows a "done" check instead of reverting to the
+        // idle gift, and the overlay reflects it. Idempotent across polls.
+        const markNativeComplete = (channel: DropChannel, campaignId: string) => {
+            nativeActiveRef.current = false;
+            const store = useAppStore.getState();
+            const status: DropProgressStatus = {
+                active: false,
+                complete: true,
+                current_channel: channel,
+                current_campaign: campaignId,
+                current_drop: null,
+                eligible_channels: [],
+                last_update: new Date().toISOString(),
+            };
+            store.setLiveDropProgress(status);
+            store.setDropProgressActive(false);
+            store.setDropProgressComplete(true);
+            if (!nativeCompleteRef.current) emit('drop-progress', status).catch(() => {});
+            nativeCompleteRef.current = true;
+        };
+
+        // Fallback reaction when the farmed stream stalls (offline). Reuses the
+        // app's existing offline auto-switch when it's enabled — that re-verifies
+        // the stream is down, moves to another live stream in the SAME category
+        // (which re-arms the drop), and notifies. When auto-switch is off we don't
+        // move the stream, but still confirm offline and surface a clear cue so
+        // farming isn't left silently hanging with no indication.
+        const handleFarmedStreamStall = async () => {
+            const store = useAppStore.getState();
+            const autoSwitchEnabled = store.settings?.auto_switch?.enabled ?? true;
+            if (autoSwitchEnabled) {
+                store.handleStreamOffline();
+                return;
+            }
+            try {
+                const live = await invoke<unknown | null>('check_stream_online', { userLogin });
+                if (live === null) {
+                    store.addToast(
+                        `${displayName ?? userLogin ?? 'Stream'} went offline — drop farming paused. Pick another stream to keep earning.`,
+                        'info',
+                    );
+                } else {
+                    // Still live (just slow to credit): allow re-detection.
+                    stallHandledRef.current = false;
+                }
+            } catch {
+                stallHandledRef.current = false;
+            }
         };
 
         const refresh = async () => {
@@ -348,6 +423,12 @@ export default function DropProgressController() {
             // badge never blinks off between polls.
             const gameChanged = lastGameRef.current !== gameName;
             lastGameRef.current = gameName;
+            if (gameChanged) {
+                // New stream/game: restart the stall watchdog from scratch.
+                lastCumulativeRef.current = -1;
+                lastAdvanceAtRef.current = 0;
+                stallHandledRef.current = false;
+            }
             try {
                 const campaigns = await invoke<DropCampaign[]>('get_active_drop_campaigns').catch(() => null);
                 if (disposed) return;
@@ -370,8 +451,28 @@ export default function DropProgressController() {
                 if (disposed) return;
                 const matched = rawMatched;
                 const picked = pickCurrentDrop(matched, progress, inventory?.items ?? [], inventory?.completed_drops ?? []);
-                // Campaign present but every tier is reached/claimed — nothing to show.
-                if (!picked) { clearNative(); return; }
+                // Campaign present but every tier is reached/claimed. If the campaign
+                // actually had watch-time rewards, that's DONE (all farmed) — surface
+                // it as complete so the badge/overlay stop reading as in-progress.
+                // A campaign with no watch-time rewards has simply nothing to show.
+                if (!picked) {
+                    const hasWatchTimeReward = matched.time_based_drops.some((d) => (d.required_minutes_watched ?? 0) > 0);
+                    if (hasWatchTimeReward) {
+                        const doneChannel: DropChannel = {
+                            id: userId,
+                            name: userLogin ?? '',
+                            display_name: displayName ?? userLogin ?? '',
+                            game_name: gameName,
+                            viewer_count: 0,
+                            is_live: true,
+                            drops_enabled: true,
+                        };
+                        markNativeComplete(doneChannel, matched.id);
+                    } else {
+                        clearNative();
+                    }
+                    return;
+                }
                 const drop = picked.drop;
                 const cumulative = picked.cumulative;
 
@@ -380,6 +481,25 @@ export default function DropProgressController() {
                 // the last good badge rather than dropping to 0%. (On a fresh stream
                 // nativeActiveRef is false, so a genuine 0%-start still shows.)
                 if (cumulative === 0 && nativeActiveRef.current && !gameChanged) return;
+
+                // Offline/stall watchdog: while an active drop is being farmed the
+                // cumulative time should keep climbing. If it advanced, (re)start
+                // the clock; if it's been flat past the threshold, react once
+                // (auto-switch to another live channel / surface an offline cue).
+                if (cumulative > 0) {
+                    if (cumulative > lastCumulativeRef.current || lastAdvanceAtRef.current === 0) {
+                        lastAdvanceAtRef.current = Date.now();
+                        stallHandledRef.current = false;
+                    } else if (
+                        nativeActiveRef.current &&
+                        !stallHandledRef.current &&
+                        Date.now() - lastAdvanceAtRef.current >= FARMED_STREAM_STALL_MS
+                    ) {
+                        stallHandledRef.current = true;
+                        void handleFarmedStreamStall();
+                    }
+                    lastCumulativeRef.current = Math.max(lastCumulativeRef.current, cumulative);
+                }
 
                 const channel: DropChannel = {
                     id: userId,
@@ -399,6 +519,10 @@ export default function DropProgressController() {
                     last_update: new Date().toISOString(),
                 };
                 nativeActiveRef.current = true;
+                // A fresh in-progress drop supersedes any earlier "done" state (e.g. a
+                // new reward tier or campaign appeared for this game).
+                nativeCompleteRef.current = false;
+                useAppStore.getState().setDropProgressComplete(false);
                 emit('drop-progress', status).catch(() => {});
                 // Push fresh progress for EVERY tier of the watched campaign, each
                 // as the cumulative time capped at that tier's threshold (so lower

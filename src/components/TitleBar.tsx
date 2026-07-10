@@ -1,5 +1,5 @@
 import { Window } from '@tauri-apps/api/window';
-import { Gift, User, Settings, Store, Proportions, MessageCircle, Pickaxe, Clock, Tv, Download, LogIn, Sparkles } from 'lucide-react';
+import { Gift, User, Settings, Store, Proportions, MessageCircle, Pickaxe, Clock, Tv, Download, LogIn, Sparkles, Check } from 'lucide-react';
 import { Minus, X, CornersOut, CornersIn, ArrowsOut, ArrowsIn, Medal } from 'phosphor-react';
 import { useState, useEffect, useLayoutEffect, useRef, useMemo, useCallback } from 'react';
 import { createPortal } from 'react-dom';
@@ -43,7 +43,7 @@ const getUpdateStageProgress = (stage: string | null): number => {
 const TitleBar = () => {
   const store = useAppStore();
 
-  const { openSettings, setShowDropsOverlay, setShowMarketplaceOverlay, setShowBadgesOverlay, setShowWhispersOverlay, isAuthenticated, currentUser, dropProgressActive, isTheaterMode, toggleTheaterMode, isWindowFullscreen, toggleWindowFullscreen, streamUrl, settings, whisperImportState, updateInfo, addToast } = store;
+  const { openSettings, setShowDropsOverlay, setShowMarketplaceOverlay, setShowBadgesOverlay, setShowWhispersOverlay, isAuthenticated, currentUser, dropProgressActive, dropProgressComplete, isTheaterMode, toggleTheaterMode, isWindowFullscreen, toggleWindowFullscreen, streamUrl, settings, whisperImportState, updateInfo, addToast } = store;
   // Count of installed plugins with an update available, for the Marketplace badge.
   const pluginUpdateCount = usePluginUpdates((s) => s.ids.length);
   // Update flow: 'idle' → 'installing' (download/extract) → 'installed' (staged;
@@ -483,6 +483,9 @@ const TitleBar = () => {
               // percentage (even at 0%), like it has always been, never a
               // placeholder gift. The gift shimmer is only for points-only.
               const showProgressBadge = dropProgressActive;
+              // Every watch-time reward for the watched game is earned — show a
+              // "done" check instead of the idle gift. Active progress wins over it.
+              const showCompleteBadge = dropProgressComplete && !dropProgressActive;
 
               // Drops and channel points run off a separate Twitch sign-in that
               // logout clears (signing out of the main account signs drops out
@@ -504,6 +507,8 @@ const TitleBar = () => {
               } else if (dropProgressActive) {
                 giftClass = 'gift-shimmer-gold';
                 title = `Drops progress: ${progressPercent}%`;
+              } else if (showCompleteBadge) {
+                title = 'Drops complete — all rewards earned for this game';
               } else if (channelPointsActive) {
                 giftClass = 'gift-shimmer-silver';
                 title = 'Drops & Points (Channel Points Active)';
@@ -539,6 +544,9 @@ const TitleBar = () => {
                       <span className="drops-progress-inline">
                         {progressPercent}%
                       </span>
+                    ) : showCompleteBadge ? (
+                      // Done: every watch-time reward for the watched game is earned
+                      <Check size={14} className="text-green-400" />
                     ) : (
                       // Normal Gift icon when not automation drops
                       <Gift size={14} className={isAnyAutomationActive ? giftClass : ''} />
