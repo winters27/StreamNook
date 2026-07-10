@@ -52,3 +52,6 @@ supabase/
 # System
 .DS_Store
 Thumbs.db
+
+# Wrangler / Cloudflare local dev cache (streamnook.app tooling)
+.wrangler/
