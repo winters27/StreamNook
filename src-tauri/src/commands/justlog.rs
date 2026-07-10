@@ -2,6 +2,10 @@ use crate::services::twitch_service::TwitchService;
 use serde::{Deserialize, Serialize};
 
 const JUSTLOG_BASE: &str = "https://logs.ivr.fi";
+// best-logs (ZonianMidian) routes a channel/user to whichever justlog instance
+// actually logs it. logs.ivr.fi covers a lot but not everything, so without this
+// the Justlog source silently goes empty on channels it doesn't log.
+const BESTLOGS_BASE: &str = "https://logs.zonian.dev";
 const ROBOTTY_BASE: &str = "https://recent-messages.robotty.de";
 const TWITCH_GQL_URL: &str = "https://gql.twitch.tv/gql";
 const TWITCH_WEB_CLIENT_ID: &str = env!("TWITCH_WEB_CLIENT_ID");
@@ -47,6 +51,23 @@ struct RobottyResponse {
     messages: Vec<String>,
 }
 
+/// best-logs discovery response. We only need the instance lists; each is an
+/// array of justlog base URLs (e.g. "https://logs.ivr.fi") sorted with the
+/// best-coverage instance first.
+#[derive(Debug, Deserialize)]
+struct BestLogsResponse {
+    #[serde(default, rename = "userLogs")]
+    user_logs: Option<BestLogsInstanceList>,
+    #[serde(default, rename = "channelLogs")]
+    channel_logs: Option<BestLogsInstanceList>,
+}
+
+#[derive(Debug, Deserialize)]
+struct BestLogsInstanceList {
+    #[serde(default)]
+    instances: Vec<String>,
+}
+
 /// Fetch a user's historical chat messages in a given channel by combining
 /// four upstream sources, ranked by reliability:
 ///
@@ -59,8 +80,10 @@ struct RobottyResponse {
 ///    2026-01-12 — captured with a regular user token returning 200.
 ///    Returns ~30 recent channel messages from all senders; filtered
 ///    client-side to the target user.
-/// 3. **Justlog** (`logs.ivr.fi`): per-user history for opted-in channels.
-///    Deep coverage; 404s when the channel isn't logged.
+/// 3. **Justlog**, routed via best-logs: deep per-user history for logged
+///    channels. best-logs (`logs.zonian.dev`) resolves which justlog instance
+///    logs the channel; falls back to `logs.ivr.fi` directly. 404s when no
+///    instance logs the channel.
 /// 4. **recent-messages.robotty.de**: third-party channel backlog mirror,
 ///    last ~100 messages. Available for nearly any channel.
 ///
@@ -108,11 +131,18 @@ pub async fn fetch_user_chat_logs(
         }
     };
 
+    // Hard per-source cap. The popup renders local session history immediately
+    // and only waits on this call to fill the empty state, so a single slow
+    // third-party source (justlog/robotty/best-logs having a bad moment) must
+    // never stall the whole card. Any source that exceeds the cap yields empty
+    // and the others still answer. The reqwest client's own 8s timeout is the
+    // outer bound; this is the tighter interactive one.
+    let src_cap = std::time::Duration::from_secs(6);
     let (twitch_modlogs_result, twitch_buffer_result, justlog_result, robotty_result) = tokio::join!(
-        twitch_modlogs_fut,
-        twitch_buffer_fut,
-        fetch_from_justlog(&client, &channel_lower, &username_lower),
-        fetch_from_robotty(&client, &channel_lower, &username_lower),
+        async { tokio::time::timeout(src_cap, twitch_modlogs_fut).await.unwrap_or_else(|_| Ok(Vec::new())) },
+        async { tokio::time::timeout(src_cap, twitch_buffer_fut).await.unwrap_or_else(|_| Ok(Vec::new())) },
+        async { tokio::time::timeout(src_cap, fetch_from_justlog(&client, &channel_lower, &username_lower)).await.unwrap_or_else(|_| Ok(Vec::new())) },
+        async { tokio::time::timeout(src_cap, fetch_from_robotty(&client, &channel_lower, &username_lower)).await.unwrap_or_else(|_| Ok(Vec::new())) },
     );
 
     let mut merged: Vec<JustlogMessage> = Vec::new();
@@ -399,15 +429,54 @@ async fn fetch_from_twitch_gql(
     Ok(messages)
 }
 
+/// Ask best-logs which justlog instance logs this channel+user and return that
+/// instance's base URL. Prefers an instance that logs the target user; falls
+/// back to one that logs the channel (the user may simply have no messages yet).
+/// Returns None if best-logs is unreachable or reports the channel isn't logged
+/// anywhere, in which case the caller uses logs.ivr.fi directly.
+///
+/// Uses best-logs' lightweight discovery endpoint (`/api/{channel}/{user}`), NOT
+/// its `/channel/...` proxy mirror: the mirror is Cloudflare rate-limited (it
+/// returns a 1015 page under even light load), the discovery endpoint is not.
+async fn resolve_justlog_instance(
+    client: &reqwest::Client,
+    channel: &str,
+    username: &str,
+) -> Option<String> {
+    let url = format!("{}/api/{}/{}", BESTLOGS_BASE, channel, username);
+    // Short, dedicated timeout: discovery is just a routing hint. If best-logs
+    // is slow or Cloudflare-challenges us, bail fast and let the caller fall
+    // back to logs.ivr.fi rather than burning the justlog branch's whole budget.
+    let response = client
+        .get(&url)
+        .timeout(std::time::Duration::from_secs(3))
+        .send()
+        .await
+        .ok()?;
+    if !response.status().is_success() {
+        return None;
+    }
+    let parsed: BestLogsResponse = response.json().await.ok()?;
+    parsed
+        .user_logs
+        .and_then(|l| l.instances.into_iter().next())
+        .or_else(|| parsed.channel_logs.and_then(|l| l.instances.into_iter().next()))
+        .filter(|base| base.starts_with("https://") || base.starts_with("http://"))
+}
+
 async fn fetch_from_justlog(
     client: &reqwest::Client,
     channel: &str,
     username: &str,
 ) -> Result<Vec<JustlogMessage>, String> {
-    let url = format!(
-        "{}/channel/{}/user/{}?json=1",
-        JUSTLOG_BASE, channel, username
-    );
+    // Route to whichever instance actually logs this channel; fall back to
+    // logs.ivr.fi directly when best-logs can't resolve one (unreachable, or the
+    // channel genuinely isn't logged anywhere — ivr.fi will then 404 cleanly).
+    let base = resolve_justlog_instance(client, channel, username)
+        .await
+        .unwrap_or_else(|| JUSTLOG_BASE.to_string());
+
+    let url = format!("{}/channel/{}/user/{}?json=1", base, channel, username);
 
     let response = client
         .get(&url)
