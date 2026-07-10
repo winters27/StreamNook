@@ -841,9 +841,16 @@ impl LlOrigin {
     /// result before constructing hls.js.
     pub async fn start(self: Arc<Self>, upstream_playlist_url: String) -> StartOutcome {
         self.stop();
-        if DISABLED.load(Ordering::Relaxed) {
-            return StartOutcome::default();
-        }
+        // The experimental-low-latency kill switch (`DISABLED`, default on) gates the
+        // TS parts path, which has a clean fallback (the stable whole-segment path
+        // plays H.264/TS fine). CMAF (HEVC/AV1) has no working fallback: the stable
+        // path promotes the in-progress prefetch hint as a whole segment, but a
+        // progressive fMP4 fragment is incomplete and trips an MSE append error, so the
+        // stream won't play at all. So we probe first, then honor the switch for TS only
+        // and always let CMAF through (native passthrough, the proven path). This is
+        // what lets a region-unlocked 1440p tier play without the user turning on the
+        // setting.
+        let force_disabled = DISABLED.load(Ordering::Relaxed);
         let gen = self.generation.load(Ordering::SeqCst);
         let client = http_client();
 
@@ -877,8 +884,17 @@ impl LlOrigin {
         // Pick the container from the upstream shape: `#EXT-X-MAP` ⇒ CMAF (fMP4),
         // otherwise MPEG-TS. TS is the H.264 (source/"chunked") case — the common one.
         let (container, init_url) = match up.init_url.clone() {
+            // CMAF (HEVC/AV1): the origin is the only path that serves it cleanly, so it
+            // runs even when the experimental switch is on. Native fMP4 passthrough.
             Some(u) => (Container::Cmaf, u),
             None => {
+                // MPEG-TS (H.264): the stable whole-segment path serves this fine, so
+                // the TS parts path stays opt-in behind the experimental switch (and its
+                // own build-time sign-off). Return the pre-probe default so the common
+                // case's latency cushion is byte-for-byte what it was before this probe.
+                if force_disabled {
+                    return StartOutcome::default();
+                }
                 if !ENABLE_TS_LL_ORIGIN {
                     debug!(
                         "[LLOrigin] low-latency MPEG-TS stream; TS origin disabled, using fallback"
