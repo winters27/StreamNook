@@ -126,7 +126,7 @@ export const getTierAccent = (n: number): TierAccent => {
   if (n === 1) return { rgb: '139, 92, 246', auraAlpha: 0.16 }; // Ethereal violet
   if (n <= 10) return { rgb: '251, 191, 36', auraAlpha: 0.13 }; // Mythic amber
   if (n <= 100) return { rgb: '34, 211, 238', auraAlpha: 0.1 }; // Ascendant cyan
-  if (n <= 1000) return { rgb: '226, 232, 240', auraAlpha: 0.05 }; // Founder near-white
+  if (n <= 250) return { rgb: '226, 232, 240', auraAlpha: 0.05 }; // Founder near-white
   return { rgb: '148, 163, 184', auraAlpha: 0.04 }; // Member muted
 };
 
@@ -169,7 +169,7 @@ const getTierBase = (n: number): TierInfo => {
       labelClassName: `${LABEL_BASE_CLASS} text-accent`,
     };
   }
-  if (n <= 1000) {
+  if (n <= 250) {
     return {
       label: 'Founder',
       numberClassName: `${NUMBER_BASE_CLASS} text-textPrimary`,
