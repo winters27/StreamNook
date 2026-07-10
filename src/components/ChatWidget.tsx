@@ -16,7 +16,7 @@ const ChannelPointsIcon = ({ className = "", size = 14 }: { className?: string; 
 );
 import { DropProgressStatus } from '../types';
 import { useTwitchChat } from '../hooks/useTwitchChat';
-import { useChannelEmotes, ensureChannelEmotes, getChannelEmotes, refreshChannelEmotes, useChannelChat, setChannelPaused } from '../stores/chatConnectionStore';
+import { useChannelEmotes, ensureChannelEmotes, getChannelEmotes, refreshChannelEmotes, useChannelChat, setChannelPaused, injectRedemptionMessage } from '../stores/chatConnectionStore';
 import { makeKey } from '../utils/providerKey';
 import type { ProviderId } from '../types/providers';
 import { KickAccountChip } from './KickAccountChip';
@@ -650,6 +650,44 @@ const ChatWidget = ({ channelOverride, hypeTrainOverride }: ChatWidgetProps = {}
 
 
   const settings = useAppStore((s) => s.settings);
+
+  // No-input channel-point redemptions (from Twitch's channel-wide community
+  // points feed). Message-style and text-input rewards already surface in chat
+  // on their own, so we inject only the ones that otherwise wouldn't show, as a
+  // native-looking redemption row. Gated by a setting (defaults on).
+  useEffect(() => {
+    if (!isTwitch) return;
+    const channelId = currentStream?.user_id;
+    const channelLogin = currentStream?.user_login;
+    if (!channelId || !channelLogin) return;
+    const unlisten = listen<{
+      channel_id: string;
+      user_login: string;
+      user_name: string;
+      user_id: string;
+      reward_id: string;
+      reward_title: string;
+      reward_cost: number;
+      is_input_required: boolean;
+      redemption_id: string;
+    }>('channel-points-community-redemption', (event) => {
+      const p = event.payload;
+      if (p.channel_id !== channelId || p.is_input_required) return;
+      if (useAppStore.getState().settings.show_channel_point_redemptions === false) return;
+      injectRedemptionMessage(channelLogin.toLowerCase(), {
+        userLogin: p.user_login,
+        userName: p.user_name,
+        userId: p.user_id,
+        rewardId: p.reward_id,
+        rewardTitle: p.reward_title,
+        cost: p.reward_cost,
+        redemptionId: p.redemption_id,
+      });
+    });
+    return () => {
+      unlisten.then((fn) => fn()).catch(() => {});
+    };
+  }, [isTwitch, currentStream?.user_id, currentStream?.user_login]);
   const [selectedUser, setSelectedUser] = useState<{
     userId: string;
     username: string;
@@ -3126,18 +3164,22 @@ const ChatWidget = ({ channelOverride, hypeTrainOverride }: ChatWidgetProps = {}
     <>
       <div ref={setChatContainerEl} className="h-full bg-secondary overflow-hidden flex flex-col relative">
         {/* Prediction Overlay - floating at top of chat */}
-        <PredictionOverlay
-          channelId={currentStream?.user_id}
-          channelLogin={currentStream?.user_login}
-          isHypeTrainActive={!!currentHypeTrain}
-        />
+        {settings.show_predictions !== false && (
+          <PredictionOverlay
+            channelId={currentStream?.user_id}
+            channelLogin={currentStream?.user_login}
+            isHypeTrainActive={!!currentHypeTrain}
+          />
+        )}
 
         {/* Poll Overlay - floating at top of chat (same slot as predictions) */}
-        <PollOverlay
-          channelId={currentStream?.user_id}
-          channelLogin={currentStream?.user_login}
-          isHypeTrainActive={!!currentHypeTrain}
-        />
+        {settings.show_polls !== false && (
+          <PollOverlay
+            channelId={currentStream?.user_id}
+            channelLogin={currentStream?.user_login}
+            isHypeTrainActive={!!currentHypeTrain}
+          />
+        )}
 
         {/* Chat header - transforms when Hype Train active */}
         {/* flex-col-reverse keeps the stream-info row on top while the hype bar

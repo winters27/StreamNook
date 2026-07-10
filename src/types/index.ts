@@ -145,6 +145,11 @@ export interface DropsDeviceCodeInfo {
 
 export interface DropProgressStatus {
   active: boolean;
+  // Every watch-time reward for the watched game/campaign is already earned, so
+  // there is nothing left to farm. Distinct from `active: false` (nothing being
+  // watched): complete means "done here", so the UI shows a finished state
+  // rather than reverting to the idle gift.
+  complete?: boolean;
   current_channel: DropChannel | null;
   current_campaign: string | null;
   current_drop: CurrentDropInfo | null;
@@ -686,6 +691,9 @@ export interface Settings {
   multi_nook_presets?: MultiNookPreset[]; // Saved, named channel sets openable into the grid in one click
   multi_nook_active_preset_id?: string; // Id of the preset currently loaded into the grid (the "equipped" preset), if any
   show_mod_logs?: boolean; // Whether to display the Mod Logs pane
+  show_polls?: boolean; // Show the live poll overlay card at the top of chat (default on)
+  show_predictions?: boolean; // Show the live prediction overlay card at the top of chat (default on)
+  show_channel_point_redemptions?: boolean; // Show no-input channel-point redemptions as chat rows (default on)
   chat_logging?: ChatLoggingSettings; // Save chat to plain text files as you watch
   moderation?: ModerationSettings;
   keybindings?: KeybindingOverrides; // Customizable keyboard shortcut overrides (id -> chords)

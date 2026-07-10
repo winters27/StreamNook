@@ -167,10 +167,11 @@ impl ChannelPointsWebSocketService {
         *self.auth_token.write().await = auth_token.to_string();
         *self.user_id.write().await = user_id.to_string();
 
-        // Each channel now generates 3 topics (video-playback, predictions, polls) - removed raid
+        // Each channel now generates 4 topics (video-playback, predictions, polls,
+        // community-points-channel) - removed raid.
         // Plus 2 global topics (community-points-user and predictions-user)
         // Use 10 channels per connection - testing shows 48 topics fails but 6 succeeds
-        // 10 channels * 3 topics + 2 global = 32 topics (safe, under the 50 cap)
+        // 10 channels * 4 topics + 2 global = 42 topics (safe, under the 50 cap)
         const MAX_CHANNELS_PER_CONNECTION: usize = 10;
 
         // Calculate how many WebSocket connections we need
@@ -263,6 +264,12 @@ impl ChannelPointsWebSocketService {
 
             // Polls (channel-scoped: POLL_CREATE / POLL_UPDATE / POLL_COMPLETE)
             topics.push(format!("polls.{}", channel_id));
+
+            // Channel-wide community points feed: every viewer's reward
+            // redemption (reward-redeemed). Broadcast to all listeners with no
+            // broadcaster auth, so it surfaces redemptions on any channel you
+            // watch, not just ones you own or moderate.
+            topics.push(format!("community-points-channel-v1.{}", channel_id));
         }
 
         // User predictions results
@@ -466,6 +473,15 @@ impl ChannelPointsWebSocketService {
                             }
                             "polls" => {
                                 Self::handle_poll_event(
+                                    message_data,
+                                    app_handle,
+                                    channel_id,
+                                    active_viewing_channels,
+                                )
+                                .await;
+                            }
+                            "community-points-channel-v1" => {
+                                Self::handle_channel_redemption_event(
                                     message_data,
                                     app_handle,
                                     channel_id,
@@ -1020,6 +1036,102 @@ impl ChannelPointsWebSocketService {
         );
 
         let _ = app_handle.emit(emit_event, payload);
+    }
+
+    /// Handle the channel-wide community points feed (`community-points-channel-v1`).
+    ///
+    /// This is broadcast to every viewer with no broadcaster auth, so it's how we
+    /// surface OTHER viewers' reward redemptions on a channel we're only watching.
+    /// We forward every `reward-redeemed` event with an `is_input_required` flag;
+    /// the frontend shows the no-input ones (input rewards' text isn't public, and
+    /// message-style rewards already appear in chat on their own).
+    async fn handle_channel_redemption_event(
+        message_data: Value,
+        app_handle: &AppHandle,
+        channel_id: Option<String>,
+        active_viewing_channels: &Arc<RwLock<HashSet<String>>>,
+    ) {
+        // Only for channels we're actively watching (skip background farming channels).
+        if let Some(ref cid) = channel_id {
+            if !active_viewing_channels.read().await.contains(cid) {
+                return;
+            }
+        }
+
+        if message_data["type"].as_str() != Some("reward-redeemed") {
+            return;
+        }
+
+        let redemption = match message_data["data"]["redemption"].as_object() {
+            Some(r) => r,
+            None => return,
+        };
+        let user = redemption.get("user");
+        let reward = redemption.get("reward");
+
+        // Twitch's redemption id — a stable dedupe key so the same redemption
+        // injected by more than one open chat view collapses to one row.
+        let redemption_id = redemption.get("id").and_then(|v| v.as_str()).unwrap_or("");
+        let user_id = user.and_then(|u| u["id"].as_str()).unwrap_or("");
+        let user_login = user.and_then(|u| u["login"].as_str()).unwrap_or("");
+        let user_name = user
+            .and_then(|u| u["display_name"].as_str())
+            .filter(|s| !s.is_empty())
+            .unwrap_or(user_login);
+
+        let reward_id = reward.and_then(|r| r["id"].as_str()).unwrap_or("");
+        let reward_title = reward.and_then(|r| r["title"].as_str()).unwrap_or("");
+        let reward_cost = reward.and_then(|r| r["cost"].as_i64()).unwrap_or(0);
+        let reward_prompt = reward.and_then(|r| r["prompt"].as_str()).unwrap_or("");
+        let is_input_required = reward
+            .and_then(|r| r["is_user_input_required"].as_bool())
+            .unwrap_or(false);
+        let user_input = redemption
+            .get("user_input")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let background_color = reward
+            .and_then(|r| r["background_color"].as_str())
+            .unwrap_or("");
+
+        // Reward image (image / default_image can be null); prefer the largest.
+        let image_url = reward
+            .and_then(|r| r.get("image").or_else(|| r.get("default_image")))
+            .and_then(|img| {
+                img["url_4x"]
+                    .as_str()
+                    .or_else(|| img["url_2x"].as_str())
+                    .or_else(|| img["url_1x"].as_str())
+            })
+            .unwrap_or("");
+
+        if reward_title.is_empty() {
+            return;
+        }
+
+        debug!(
+            "Community redemption on {:?}: {} redeemed '{}' ({} pts)",
+            channel_id, user_name, reward_title, reward_cost
+        );
+
+        let _ = app_handle.emit(
+            "channel-points-community-redemption",
+            json!({
+                "channel_id": channel_id,
+                "redemption_id": redemption_id,
+                "user_id": user_id,
+                "user_login": user_login,
+                "user_name": user_name,
+                "reward_id": reward_id,
+                "reward_title": reward_title,
+                "reward_cost": reward_cost,
+                "reward_prompt": reward_prompt,
+                "is_input_required": is_input_required,
+                "user_input": user_input,
+                "background_color": background_color,
+                "image_url": image_url,
+            }),
+        );
     }
 
     /// Start ping keeper to maintain connections. Idempotent — if a keeper is

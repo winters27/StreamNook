@@ -405,6 +405,50 @@ const ChatSettings = ({ hidePlacement = false }: { hidePlacement?: boolean } = {
         />
       </SettingsSection>
 
+      <SettingsSection
+        id="settings-section-chat-events"
+        label="Chat Events"
+        description="What live channel activity shows while you watch. Turn any of these off to keep chat clean."
+      >
+        <SettingsRow
+          title="Polls"
+          description="Show a live poll card at the top of chat when the streamer runs one, with the running vote tally."
+          control={
+            <Toggle
+              enabled={settings.show_polls ?? true}
+              onChange={() => updateSettings({ ...settings, show_polls: !(settings.show_polls ?? true) })}
+            />
+          }
+        />
+        <SettingsRow
+          title="Predictions"
+          description="Show a live prediction card at the top of chat, with the outcomes and how points are stacking up."
+          control={
+            <Toggle
+              enabled={settings.show_predictions ?? true}
+              onChange={() =>
+                updateSettings({ ...settings, show_predictions: !(settings.show_predictions ?? true) })
+              }
+            />
+          }
+        />
+        <SettingsRow
+          title="Channel point redemptions"
+          description="Drop a chat row when someone redeems a reward that doesn't post its own message (for example a no-input reward). Rewards that already post to chat are unaffected."
+          control={
+            <Toggle
+              enabled={settings.show_channel_point_redemptions ?? true}
+              onChange={() =>
+                updateSettings({
+                  ...settings,
+                  show_channel_point_redemptions: !(settings.show_channel_point_redemptions ?? true),
+                })
+              }
+            />
+          }
+        />
+      </SettingsSection>
+
       <SettingsSection label="Chat Logging">
         <SettingsRow
           title="Save chat logs"

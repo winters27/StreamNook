@@ -2061,6 +2061,60 @@ export function injectSystemMessage(channel: string, message: string, songCard?:
   });
 }
 
+/** Inject a no-input channel-points redemption as a chat row. Reuses the native
+ *  highlight-message render path (via the `custom-reward-id` tag) so it reads as
+ *  a redemption, with the redeemer as the author and the reward name as the body.
+ *  No-ops when the channel's chat isn't open. Message-style rewards post their
+ *  own PRIVMSG, so callers should only pass the no-input ones. */
+export function injectRedemptionMessage(
+  channel: string,
+  r: {
+    userLogin: string;
+    userName: string;
+    userId?: string;
+    rewardId: string;
+    rewardTitle: string;
+    cost?: number;
+    color?: string;
+    redemptionId?: string;
+  },
+): void {
+  // A stable id from Twitch's redemption id (when present) makes this idempotent:
+  // the same redemption seen by two open chat views collapses to one row.
+  const id = r.redemptionId
+    ? `redeem-${r.redemptionId}`
+    : `redeem-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+  const login = r.userLogin || r.userName;
+  const name = r.userName || r.userLogin || login;
+  const body =
+    r.cost && r.cost > 0 ? `${r.rewardTitle} (${r.cost.toLocaleString()})` : r.rewardTitle;
+  withSlice(channel, (slice) => {
+    if (slice.seenMessageIds.has(id)) return;
+    pushMessage(slice, {
+      id,
+      username: login,
+      display_name: name,
+      color: r.color || '#9147ff',
+      badges: [],
+      content: body,
+      segments: [{ type: 'text', content: body }],
+      is_action: false,
+      is_first_message: false,
+      is_mentioned: false,
+      is_from_shared_chat: false,
+      user_id: r.userId || '',
+      tags: new Map([
+        ['user-id', r.userId || ''],
+        ['id', id],
+        ['display-name', name],
+        // Triggers the redemption highlight + label in ChatMessage.
+        ['custom-reward-id', r.rewardId || 'sn-redemption'],
+      ]),
+    });
+    slice.seenMessageIds.add(id);
+  });
+}
+
 export function setChannelPaused(channel: string, paused: boolean): void {
   withSlice(channel, (slice) => {
     slice.isPausedForBuffer = paused;
