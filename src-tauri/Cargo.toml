@@ -1,6 +1,6 @@
 [package]
 name = "StreamNook"
-version = "8.2.2"
+version = "8.3.0"
 description = "StreamNook"
 authors = ["Brandon Winters"]
 license = ""
@@ -80,6 +80,11 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 log = "0.4"
 env_logger = "0.11"
 tauri-plugin-deep-link = "2.4.7"
+# Companion to deep-link: when a streamnook:// URL is opened while the app is
+# already running, Windows launches a second copy with the URL as its argv.
+# single-instance forwards that argv to the running instance (which re-feeds it
+# to the deep-link plugin) instead of spawning a duplicate window.
+tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
 tauri-plugin-clipboard-manager = "2.3.2"
 
 # Screen capture for the Profile share feature. xcap grabs real WebView pixels

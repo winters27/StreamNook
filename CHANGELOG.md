@@ -1,3 +1,36 @@
+## [8.3.0] - 2026-07-09
+
+## 🎉 New: Design your stream's chat overlay, hosted for you
+> Build a chat overlay right inside StreamNook and paste one link into OBS. It merges Twitch, Kick, YouTube, and TikTok into a single feed and renders 7TV paints, badges, and emotes the way your viewers see them. You design it in a live builder that shows exactly what goes on stream, and it keeps working with StreamNook closed.
+
+Find it under:
+```
+Settings  >  Stream Overlay
+```
+
+---
+
+### ✨ Features
+- **Stream Overlay builder.** A new design studio under Settings with a live preview: choose your platforms, fonts, spacing, and background, toggle which events show per platform, convert Super Chat amounts to your currency, and block specific bot names per source. Publish once for a permanent OBS link that stays in sync as you tweak it.
+- **Share a stream in one click.** New Share buttons on the player, the right-click menu, and profile cards copy a streamnook.app link, and opening a StreamNook link jumps straight to that channel in the app.
+- **Channel point redemptions in chat.** Reward redemptions from across the channel now show inline in chat. New toggles let you hide redemptions, polls, or predictions to keep things clean.
+- **Recent searches.** The search bar remembers what you looked up, kept separately for Following, Discover, and Categories, so you can jump back with one click.
+- **Drops completion at a glance.** Fully earned games show a DONE badge, and the title bar shows a check when you have finished a game's watch-time drops.
+
+### 🐛 Bug Fixes
+- **Region-blocked high qualities play reliably.** Higher tiers your region restricts (like 1440p) that use newer video formats no longer fail to load. They play automatically, with nothing to set up.
+- **Special-event drops are farmable again.** Large event campaigns like EWC that list hundreds of channels were being silently hidden or dropped. Every eligible live channel now shows and earns correctly, on any of them, regardless of category.
+- **Finished and reissued drop campaigns stop disappearing** from the drops panel, and now render as complete instead of vanishing.
+- **Farming recovers when a stream ends.** If a farmed stream goes offline but keeps serving stale video, StreamNook notices the stall and switches channels or tells you, instead of hanging.
+- **Chat history fills in on more channels** by finding the right log source, and a slow source no longer stalls the whole history card.
+- **The profile history spinner no longer hangs.** It clears itself if the lookup wedges.
+
+### ⚡ Performance
+- **Categories loads faster.** Viewer counts load in parallel and sort correctly by viewers, so the grid fills in quickly.
+
+### 🔧 Maintenance
+- Joining a channel now seeds more recent chat history, so chat looks alive right away.
+
 ## [8.2.2] - 2026-07-08
 
 ### 🐛 Bug Fixes
