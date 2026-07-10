@@ -14,6 +14,7 @@ import {
   HelpCircle,
   Sparkles,
   Shield,
+  MonitorPlay,
   User,
   Search,
   LogOut,
@@ -25,6 +26,7 @@ import InterfaceSettings from './settings/InterfaceSettings';
 import PlayerSettings from './settings/PlayerSettings';
 import ChatSettings from './settings/ChatSettings';
 import ModerationSettings from './settings/ModerationSettings';
+import OverlaySettings from './settings/OverlaySettings';
 import ThemeSettings from './settings/ThemeSettings';
 import IntegrationsSettings from './settings/IntegrationsSettings';
 import CacheSettings from './settings/CacheSettings';
@@ -51,6 +53,7 @@ const TABS: TabMeta[] = [
   { id: 'Player',          label: 'Player',          icon: PlayCircle,    tint: 'rgba(120, 155, 200, 0.22)', description: 'Streamlink, video player, and auto-switch' },
   { id: 'Chat',            label: 'Chat',            icon: MessageSquare, tint: 'rgba(150, 160, 210, 0.22)', description: 'Chat design, behavior, and pop-out' },
   { id: 'Moderation',      label: 'Moderation',      icon: Shield,        tint: 'rgba(210, 140, 140, 0.22)', description: 'Mod logs, visibility, and mass actions' },
+  { id: 'Overlay',         label: 'Stream Overlay',  icon: MonitorPlay,   tint: 'rgba(130, 185, 210, 0.22)', description: 'Design a chat overlay for OBS and StreamElements' },
   { id: 'Interface',       label: 'Interface',       icon: Layout,        tint: 'rgba(140, 195, 170, 0.22)', description: 'Sidebar, compact mode, and chrome' },
   { id: 'Theme',           label: 'Theme',           icon: Palette,       tint: 'rgba(220, 145, 175, 0.20)', description: 'Color theme and theme editor' },
   { id: 'Integrations',    label: 'Integrations',    icon: Plug,          tint: 'rgba(180, 150, 210, 0.22)', description: 'Connected apps and services' },
@@ -179,17 +182,40 @@ const SettingsDialog = () => {
             transition={{ type: 'spring', stiffness: 380, damping: 30 }}
             onClick={(e) => e.stopPropagation()}
             className={`liquid-glass-panel flex overflow-hidden ${
-              compactWindow
-                ? 'w-[94vw] md:w-[90vw] lg:w-[86vw] xl:w-[82vw] max-w-[1480px] h-[90vh] max-h-[980px]'
-                : 'w-full h-full'
+              !compactWindow
+                // Opt-in full-page (Interface › Settings Window) fills the window
+                // edge to edge for every tab.
+                ? 'w-full h-full'
+                : activeTab === 'Overlay'
+                  // The Overlay builder is a design studio: fill nearly the whole
+                  // window (so the live preview + all controls fit at once, no
+                  // scrolling) with only a thin uniform margin. NO max cap — it
+                  // scales with the screen so the preview always fits. Still inset
+                  // + rounded, so its corners never poke the app's window frame.
+                  // max-w/h are set (not omitted) so the grow/shrink eases the
+                  // CONSTRAINT too — a max-* going to/from `none` can't animate and
+                  // would snap the size abruptly.
+                  ? 'w-[calc(100vw-1.5rem)] h-[calc(100vh-1.5rem)] max-w-[100vw] max-h-[100vh]'
+                  : 'w-[94vw] md:w-[90vw] lg:w-[86vw] xl:w-[82vw] max-w-[1480px] h-[90vh] max-h-[980px]'
             }`}
-            // Full-page fills the window edge-to-edge, so drop the panel's
-            // rounded corners (which would otherwise reveal blurred backdrop
-            // wedges at the four corners). Explicit 12<->0 values (rather than
-            // undefined) give the radius a defined start/end in BOTH directions
-            // so the .liquid-glass-panel `transition: all` eases it symmetrically
-            // whether you're growing to full-page or shrinking back to compact.
-            style={{ borderRadius: compactWindow ? 12 : 0 }}
+            // Rounded in every floating mode (including the larger Overlay studio),
+            // so switching tabs only eases the SIZE, never sharpens the corners.
+            // Only the explicit full-page mode drops to 0 to fill edge to edge
+            // without revealing blurred backdrop wedges at the corners. Explicit
+            // 12<->0 (not undefined) gives the radius a defined start/end so it
+            // eases symmetrically both ways.
+            //
+            // Scope the transition to the SIZE properties with a snappy ease-out
+            // (quint): the shared `.liquid-glass-panel` uses `transition: all`,
+            // which drags the 96px backdrop-filter into every resize frame and
+            // makes the grow/shrink stutter. Animating only size + radius keeps it
+            // smooth and snappy.
+            style={{
+              borderRadius: compactWindow ? 12 : 0,
+              transition: ['width', 'height', 'max-width', 'max-height', 'border-radius']
+                .map((p) => `${p} 0.4s cubic-bezier(0.22, 1, 0.36, 1)`)
+                .join(', '),
+            }}
           >
             <aside className="flex w-[240px] flex-shrink-0 flex-col border-r border-white/[0.06] py-3">
               <div className="px-2">
@@ -423,6 +449,7 @@ const SettingsDialog = () => {
                     {activeTab === 'Player' && <PlayerSettings />}
                     {activeTab === 'Chat' && <ChatSettings />}
                     {activeTab === 'Moderation' && <ModerationSettings />}
+                    {activeTab === 'Overlay' && <OverlaySettings />}
                     {activeTab === 'Theme' && <ThemeSettings />}
                     {activeTab === 'Integrations' && <IntegrationsSettings />}
                     {activeTab === 'Notifications' && <NotificationsSettings />}

@@ -28,6 +28,7 @@ import { getBuiltInSnippets, type Snippet } from './commandPaletteCopypastas';
 import type { TwitchStream, TwitchVideo, TwitchClip } from '../types';
 import type { ChannelAboutData, SocialMediaLink } from '../types/panels';
 import { getShortcutDisplayMap } from '../keybindings/registry';
+import { clearAllRecentSearches } from './searchHistory';
 import { getPlayerControls } from '../keybindings/playerControls';
 import { getBindableCommand } from '../keybindings/commands';
 
@@ -222,6 +223,17 @@ function buildQuickActions(): PaletteItem[] {
       subtitle: 'Account, badges, StreamNook identity',
       keywords: 'profile account me',
       run: () => useAppStore.getState().openSettings('Profile'),
+    },
+    {
+      id: 'qa.clearSearchHistory',
+      section: 'Quick Actions',
+      title: 'Clear search history',
+      subtitle: 'Forget all remembered searches across every view',
+      keywords: 'clear search history recent searches wipe delete forget remove following discover categories',
+      run: () => {
+        clearAllRecentSearches();
+        useAppStore.getState().addToast('Search history cleared', 'success');
+      },
     },
     {
       id: 'window.toggleFullscreen',
@@ -726,6 +738,10 @@ function buildQuickActions(): PaletteItem[] {
 interface SettingsEntry {
   tab: SettingsTab;
   section?: string;
+  /** Overrides the displayed title (defaults to `section`, then `tab`). Lets a
+   *  single section expose several rows in the palette — one per control — so a
+   *  specific toggle name lands on its own result. */
+  label?: string;
   /** DOM id of the matching <SettingsSection> (or its wrapper), when one exists.
    *  Passed to openSettings so the palette scrolls to the section, not just the
    *  tab. Mirrors `sectionId` in src/components/settings/searchIndex.ts. */
@@ -760,6 +776,10 @@ const SETTINGS_CATALOG: SettingsEntry[] = [
   { tab: 'Chat', keywords: 'chat placement design fonts dividers timestamps mentions emotes logging channel points highlights commands reminders' },
   { tab: 'Chat', section: 'Chat Placement', keywords: 'chat placement position right bottom hidden where show hide' },
   { tab: 'Chat', section: 'Channel Points', keywords: 'channel points auto claim bonus chest reward collect points' },
+  { tab: 'Chat', section: 'Chat Events', sectionId: 'settings-section-chat-events', keywords: 'chat events live activity overlay show hide toggle turn off in chat' },
+  { tab: 'Chat', section: 'Chat Events', sectionId: 'settings-section-chat-events', label: 'Polls', keywords: 'polls poll vote voting live poll overlay chat event show hide toggle turn off' },
+  { tab: 'Chat', section: 'Chat Events', sectionId: 'settings-section-chat-events', label: 'Predictions', keywords: 'predictions prediction bet outcome channel points overlay chat event show hide toggle turn off' },
+  { tab: 'Chat', section: 'Chat Events', sectionId: 'settings-section-chat-events', label: 'Channel Point Redemptions', keywords: 'channel point redemptions redeem reward no input chat row show hide toggle turn off' },
   { tab: 'Chat', section: 'Chat Logging', keywords: 'chat logging save logs text files folder per channel timestamps events moderation record history' },
   { tab: 'Chat', section: 'Chat Design', keywords: 'chat design font size weight spacing dividers timestamps seconds mention colors reply name separator style prefix colon dot arrow pipe dash chip bracket accent bar pinned message collapse bar alternating backgrounds' },
   { tab: 'Chat', section: 'Link Previews', keywords: 'link preview previews load card url unfurl embed trusted sources shorten links domains clean' },
@@ -784,6 +804,14 @@ const SETTINGS_CATALOG: SettingsEntry[] = [
   { tab: 'Moderation', section: 'Message Visibility', keywords: 'message visibility announce mod actions inline hide strikethrough removed banned timed out deleted' },
   { tab: 'Moderation', section: 'Log Highlights', keywords: 'log highlights color code mod log severity highlight style category colors' },
   { tab: 'Moderation', section: 'Mass Actions', keywords: 'mass actions nuke undo regex phrase bulk purge sweep' },
+
+  // Overlay
+  { tab: 'Overlay', keywords: 'stream overlay chat overlay obs streamelements streamlabs browser source on-stream chat box widget multi-platform merged chat emotes 7tv paints badges cosmetics stream chat on screen' },
+  { tab: 'Overlay', section: 'Sources', keywords: 'overlay sources platforms twitch kick youtube tiktok merge source tag which platform label dot' },
+  { tab: 'Overlay', section: 'Typography', keywords: 'overlay font family size line height message spacing typography text' },
+  { tab: 'Overlay', section: 'Emotes & Badges', keywords: 'overlay emote size badges show hide scale' },
+  { tab: 'Overlay', section: 'Appearance', keywords: 'overlay appearance text color shadow legibility timestamps transparent solid background opacity scene' },
+  { tab: 'Overlay', section: 'Behavior', keywords: 'overlay behavior direction bottom top entrance animation fade slide max messages cap' },
 
   // Interface
   { tab: 'Interface', keywords: 'interface sidebar motion animations settings window compact view chrome layout' },
@@ -840,10 +868,10 @@ const SETTINGS_CATALOG: SettingsEntry[] = [
 
 function buildSettingsItems(): PaletteItem[] {
   return SETTINGS_CATALOG.map((entry) => {
-    const title = entry.section ? entry.section : entry.tab;
+    const title = entry.label ?? (entry.section ? entry.section : entry.tab);
     const subtitle = entry.section ? `Settings · ${entry.tab}` : 'Settings';
     return {
-      id: `settings.${entry.tab}.${entry.section ?? '_overview'}`,
+      id: `settings.${entry.tab}.${entry.section ?? '_overview'}${entry.label ? `.${entry.label}` : ''}`,
       section: 'Settings',
       title,
       subtitle,

@@ -62,7 +62,7 @@ export interface Toast {
   createdAt: number;
 }
 
-export type SettingsTab = 'Profile' | 'Interface' | 'Player' | 'Chat' | 'Moderation' | 'Theme' | 'Integrations' | 'Plugins' | 'Notifications' | 'Cache' | 'Command Palette' | 'Keybindings' | 'Backup' | 'Support' | "What's New" | 'Analytics';
+export type SettingsTab = 'Profile' | 'Interface' | 'Player' | 'Chat' | 'Moderation' | 'Overlay' | 'Theme' | 'Integrations' | 'Plugins' | 'Notifications' | 'Cache' | 'Command Palette' | 'Keybindings' | 'Backup' | 'Support' | "What's New" | 'Analytics';
 
 export type HomeTab = 'following' | 'recommended' | 'browse' | 'search' | 'category';
 
@@ -274,6 +274,12 @@ interface AppState {
   currentUser: TwitchUser | null;
   dropProgressActive: boolean;
   setDropProgressActive: (active: boolean) => void;
+  // True when every watch-time reward for the game currently being watched is
+  // already earned — nothing left to farm. Drives the title-bar "done" state.
+  // Set by the DropProgressController; independent of dropProgressActive so a
+  // finished game reads as complete rather than idle.
+  dropProgressComplete: boolean;
+  setDropProgressComplete: (complete: boolean) => void;
   // True when an external provider (an opt-in plugin) is registered for the
   // generic drops feature. Set by the always-mounted DropProgressController.
   // Provider-only controls render only when this is true; on its own core just
@@ -515,6 +521,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   currentUser: null,
   dropProgressActive: false,
   setDropProgressActive: (active: boolean) => set({ dropProgressActive: active }),
+  dropProgressComplete: false,
+  setDropProgressComplete: (complete: boolean) => set({ dropProgressComplete: complete }),
   externalDropsProvider: false,
   setExternalDropsProvider: (available: boolean) => set({ externalDropsProvider: available }),
   liveDropProgress: null,

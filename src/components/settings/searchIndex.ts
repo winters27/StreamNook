@@ -301,6 +301,34 @@ export const SETTINGS_INDEX: SettingsIndexEntry[] = [
   },
   {
     tab: 'Chat',
+    section: 'Chat Events',
+    sectionId: 'settings-section-chat-events',
+    title: 'Chat Events',
+    description: 'What live channel activity shows while you watch: polls, predictions, and channel point redemptions. Turn any off to keep chat clean.'
+  },
+  {
+    tab: 'Chat',
+    section: 'Chat Events',
+    sectionId: 'settings-section-chat-events',
+    title: 'Polls',
+    description: 'Show a live poll card at the top of chat when the streamer runs one, with the running vote tally.'
+  },
+  {
+    tab: 'Chat',
+    section: 'Chat Events',
+    sectionId: 'settings-section-chat-events',
+    title: 'Predictions',
+    description: 'Show a live prediction card at the top of chat, with the outcomes and how points are stacking up.'
+  },
+  {
+    tab: 'Chat',
+    section: 'Chat Events',
+    sectionId: 'settings-section-chat-events',
+    title: 'Channel point redemptions',
+    description: 'Drop a chat row when someone redeems a reward that does not post its own message, such as a no-input reward.'
+  },
+  {
+    tab: 'Chat',
     section: 'Chat Logging',
     title: 'Chat Logging',
     description: 'Save chat to plain text files as you watch: one folder per channel, one file per day. Log folder, per-channel filter, timestamps, events and moderation.'
@@ -762,6 +790,44 @@ export const SETTINGS_INDEX: SettingsIndexEntry[] = [
     section: 'Mass Actions',
     title: '/undo',
     description: 'Reverses the most recent /nuke on this channel. Bans and timeouts are reversible; deletes are permanent.'
+  },
+
+  // === Overlay ===
+  {
+    tab: 'Overlay',
+    section: 'Stream Overlay',
+    title: 'Stream Overlay',
+    description: 'Design a chat overlay for OBS, StreamElements, and Streamlabs browser sources. Put your multi-platform stream chat on screen with emotes, 7TV paints, badges, and cosmetics. On-stream chat widget, alerts, chat box.'
+  },
+  {
+    tab: 'Overlay',
+    section: 'Sources',
+    title: 'Sources',
+    description: 'Choose which platforms feed the overlay (Twitch, Kick, YouTube, TikTok) and whether to tag each message with its source platform.'
+  },
+  {
+    tab: 'Overlay',
+    section: 'Typography',
+    title: 'Font and Size',
+    description: 'Overlay font family, font size, line height, and spacing between messages.'
+  },
+  {
+    tab: 'Overlay',
+    section: 'Emotes & Badges',
+    title: 'Emotes and Badges',
+    description: 'Emote size on the overlay and whether chatter badges are shown.'
+  },
+  {
+    tab: 'Overlay',
+    section: 'Appearance',
+    title: 'Appearance',
+    description: 'Message text color, text shadow for legibility over any scene, timestamps, and a transparent or solid background.'
+  },
+  {
+    tab: 'Overlay',
+    section: 'Behavior',
+    title: 'Behavior',
+    description: 'Whether new messages appear at the bottom or top, message entrance animation, and the maximum messages kept on screen.'
   },
 
   // === Interface ===
