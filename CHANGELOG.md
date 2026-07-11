@@ -1,3 +1,21 @@
+## [8.3.1] - 2026-07-10
+
+### ✨ Features
+- **Consistent emoji across every platform, in the style you choose.** Emojis from Twitch, Kick, YouTube, and TikTok now render in one uniform style on your overlay instead of a mix that changed with your OS. Pick System, Apple, Google, Twitter, or Facebook in the overlay's Appearance settings, with live previews, and Twitter renders as crisp vector art.
+- **Custom fonts for your overlay.** Type any Google Font name and it loads instantly, no download needed, with a short guide and a live preview as you type. Fonts installed on your PC work too.
+- **Finer control over chat cosmetics.** New toggles to show or hide 7TV paints, StreamNook atmospheres, and third-party badges, and you can turn each badge provider (7TV, FFZ, Chatterino, and more) on or off individually.
+- **Hide chat commands from your overlay.** Add a prefix like ! or # to hide every command, or a specific command like !title to hide just that one.
+- **A cleaner overlay builder.** The settings are reorganized into clear tabs (Sources, Layout, Appearance, Filters, Events) with a roomier layout, so everything is easy to find.
+
+### 🐛 Bug Fixes
+- **Chat history goes deeper and fills in more reliably.** History cards recover sources that were silently coming up empty, keep working for people who use DNS-level ad blockers, and load deeper history in the background without the card freezing.
+- **Drops auto-claim actually claims.** Watching a farmed channel now detects when a drop hits 100% and claims it, retries a failed claim instead of giving up for the session, and no longer repeats the "drop ready" notification.
+- **Completed and reissued drops show correctly.** Fully earned campaigns no longer show a stray claim button or vanish from the panel, and a reissued reward is no longer mistaken for one you already own.
+- **The drops channel picker only shows channels that can actually earn.** For allow-list events, it lists only channels that are live in the campaign's required category, so you don't pick someone who's live but can't credit the drop.
+- **Kick reply emotes render properly** instead of showing raw markup.
+- **Earned-points notifications use the channel's real name** instead of the lowercase login.
+- **Shared links refresh their preview.** Re-sharing a channel link on a later day now shows the current stream in the unfurled preview instead of a stale one.
+
 ## [8.3.0] - 2026-07-09
 
 ## 🎉 New: Design your stream's chat overlay, hosted for you
