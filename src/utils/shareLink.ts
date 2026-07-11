@@ -10,7 +10,15 @@ const SHARE_BASE = 'https://streamnook.app/w';
 
 /** The web link to copy/share for a channel login. */
 export function buildShareUrl(channelLogin: string): string {
-  return `${SHARE_BASE}/${encodeURIComponent(normalizeLogin(channelLogin))}`;
+  // Day tag (MMDD). Discord caches a link's preview per exact URL for ~a day, so a
+  // plain /w/<channel> link re-shared later shows the card Discord cached earlier
+  // (e.g. last night's stream on a different game). Tagging the day keeps the link
+  // clean and readable while making a link shared on a new day a fresh URL that
+  // Discord re-crawls. The landing page ignores this for routing and mirrors it
+  // onto the card image URL.
+  const d = new Date();
+  const tag = `${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`;
+  return `${SHARE_BASE}/${encodeURIComponent(normalizeLogin(channelLogin))}?d=${tag}`;
 }
 
 /** The direct app-protocol link the landing page hands off to. */
