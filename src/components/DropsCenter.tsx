@@ -342,7 +342,7 @@ export default function DropsCenter() {
 
             // Owned-reward sets from the freshly fetched inventory, matching how the
             // full rebuild decides ownership: a reward counts as earned by its claim
-            // flag, by drop id, or by benefit id/name.
+            // flag, by drop id, by benefit id, or (badges only) by benefit name.
             const ownedBenefitIds = new Set<string>((inventoryData?.completed_drops || []).map(d => d.id));
             const ownedBenefitNames = new Set<string>(
                 (inventoryData?.completed_drops || []).map(d => (d.name || '').toLowerCase().trim()).filter(Boolean)
@@ -353,6 +353,14 @@ export default function DropsCenter() {
                     if (drop.progress?.is_claimed === true) ownedDropIds.add(drop.id);
                 });
             });
+            // Name matching is badge-only: a held badge can't be earned again, but
+            // a consumable reward reissued under a new campaign instance (same
+            // name, new benefit ids) is genuinely earnable again and must not be
+            // counted as already claimed.
+            const ownedByName = (name?: string) => {
+                const n = (name || '').toLowerCase().trim();
+                return !!n && ownedBenefitNames.has(n) && knownBadgeTitles.has(n);
+            };
 
             const gameOwnsDrop = (game: UnifiedGame) =>
                 game.active_campaigns.some(c => c.time_based_drops.some(d => d.id === dropId));
@@ -370,8 +378,7 @@ export default function DropsCenter() {
                             || (!hasCurrentProgress && (
                                 ownedDropIds.has(drop.id)
                                 || (drop.benefit_edges?.some(b =>
-                                    ownedBenefitIds.has(b.id) ||
-                                    (!!b.name && ownedBenefitNames.has(b.name.toLowerCase().trim()))
+                                    ownedBenefitIds.has(b.id) || ownedByName(b.name)
                                 ) ?? false)
                             ));
                         if (owned) {
@@ -835,9 +842,10 @@ export default function DropsCenter() {
 
             // Drops the user has genuinely EARNED, from unambiguous sources only: the
             // permanent gameEventDrops list + any inventory drop explicitly is_claimed.
-            // Match by benefit id AND benefit NAME (the same reward is reissued under new
-            // instances with new ids). NOTE: NOT claimed-by-index or "100% watched" here;
-            // those over-matched in-progress drops as earned.
+            // Match by benefit id, plus benefit NAME for badges only (a held badge
+            // can't be re-earned; a consumable reissued under a new campaign with the
+            // same name and new ids can be). NOTE: NOT claimed-by-index or "100%
+            // watched" here; those over-matched in-progress drops as earned.
             const ownedBenefitIds = new Set<string>((inventoryData?.completed_drops || []).map(d => d.id));
             const ownedBenefitNames = new Set<string>(
                 (inventoryData?.completed_drops || []).map(d => (d.name || '').toLowerCase().trim()).filter(Boolean)
@@ -854,6 +862,10 @@ export default function DropsCenter() {
                     }
                 });
             });
+            const ownedByName = (name?: string) => {
+                const n = (name || '').toLowerCase().trim();
+                return !!n && ownedBenefitNames.has(n) && knownBadgeTitles.has(n);
+            };
 
             // Update active flag and calculate all_drops_claimed for each game
             gamesMap.forEach(game => {
@@ -878,8 +890,7 @@ export default function DropsCenter() {
                                 || (!hasCurrentProgress && (
                                     ownedDropIds.has(drop.id)
                                     || (drop.benefit_edges?.some(b =>
-                                        ownedBenefitIds.has(b.id) ||
-                                        (!!b.name && ownedBenefitNames.has(b.name.toLowerCase().trim()))
+                                        ownedBenefitIds.has(b.id) || ownedByName(b.name)
                                     ) ?? false)
                                 ));
                             if (owned) {
