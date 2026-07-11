@@ -440,7 +440,12 @@ const UserProfileCard = ({
   // Twitch's MessageBufferChatHistory included it), showing as a duplicate.
   const [historicalMessages, setHistoricalMessages] = useState<{ timestamp: string; content: string; id?: string }[]>([]);
   const [historicalLoading, setHistoricalLoading] = useState(false);
-  const [historicalAttempted, setHistoricalAttempted] = useState(false);
+  const [deepLoading, setDeepLoading] = useState(false);
+  // Fetch guard as a REF, not state: if it were state and in the effect's deps,
+  // setting it would re-run the effect, whose cleanup sets `cancelled = true`,
+  // which then discards the in-flight fetch result. (That was the bug where deep
+  // history loaded but never rendered.) A ref set doesn't trigger a re-render.
+  const historicalAttemptedRef = useRef(false);
   const [historicalChannelLogged, setHistoricalChannelLogged] = useState(true);
 
   // Re-render when the StreamNook registry updates so the #N chip appears as soon as it loads
@@ -613,46 +618,88 @@ const UserProfileCard = ({
   // the messages view is opened. We don't pre-fetch because most popup opens
   // never expand messages — paying the request cost upfront would be wasteful.
   useEffect(() => {
-    if (!showMessages || historicalAttempted) return;
+    if (!showMessages || historicalAttemptedRef.current) return;
     const { channelName, channelId } = getChannelContext();
     if (!channelName || !username) return;
 
     let cancelled = false;
-    setHistoricalAttempted(true);
+    historicalAttemptedRef.current = true;
     setHistoricalLoading(true);
-    // Failsafe: the backend caps every log source, but never let the spinner
-    // stick if the IPC call itself wedges. Whatever local session history the
-    // card already shows stays; we just stop implying more is still coming.
+    setDeepLoading(true);
+    // Failsafe so neither phase can leave a spinner stuck if IPC wedges. Whatever
+    // is already shown stays; we just stop implying more is still coming.
     const failsafe = setTimeout(() => {
-      if (!cancelled) setHistoricalLoading(false);
-    }, 8000);
-    (async () => {
-      try {
-        const { invoke } = await import('@tauri-apps/api/core');
-        // channelId + userId enable the Twitch GQL source (mod-gated, deep
-        // history). When either is missing the Rust side silently skips
-        // Twitch GQL and falls back to Justlog + Robotty.
-        const messages = await invoke<{ timestamp: string; content: string; id?: string }[]>(
-          'fetch_user_chat_logs',
-          { channel: channelName, username, channelId, userId },
-        );
-        if (!cancelled) {
-          setHistoricalMessages(messages);
-          setHistoricalChannelLogged(messages.length > 0);
-        }
-      } catch (e) {
-        Logger.warn('[UserProfileCard] Historical chat fetch failed:', e);
-        if (!cancelled) setHistoricalChannelLogged(false);
-      } finally {
-        clearTimeout(failsafe);
-        if (!cancelled) setHistoricalLoading(false);
+      if (!cancelled) {
+        setHistoricalLoading(false);
+        setDeepLoading(false);
       }
+    }, 20000);
+
+    // Merge new messages into the historical set, de-duping by Twitch message id
+    // so the fast and deep phases (which overlap on recent messages) don't stack
+    // duplicates. Messages without an id fall through to the render's own dedupe.
+    const mergeHistorical = (
+      prev: { timestamp: string; content: string; id?: string }[],
+      incoming: { timestamp: string; content: string; id?: string }[],
+    ) => {
+      if (!incoming || incoming.length === 0) return prev;
+      const seen = new Set(prev.map((m) => m.id).filter(Boolean));
+      const add = incoming.filter((m) => !m.id || !seen.has(m.id));
+      return add.length ? prev.concat(add) : prev;
+    };
+
+    (async () => {
+      const { invoke } = await import('@tauri-apps/api/core');
+
+      // Fast phase: Twitch buffer + robotty + mod logs. Returns in ~1s, so the
+      // card fills right away. channelId + userId enable the Twitch GQL sources.
+      const fastP = invoke<{ timestamp: string; content: string; id?: string }[]>(
+        'fetch_user_chat_logs',
+        { channel: channelName, username, channelId, userId },
+      )
+        .then((messages) => {
+          Logger.info(
+            `[UserProfileCard] fast logs: channel=${channelName} user=${username} -> ${messages.length} msgs`,
+          );
+          if (!cancelled) {
+            setHistoricalMessages((prev) => mergeHistorical(prev, messages));
+            if (messages.length > 0) setHistoricalChannelLogged(true);
+          }
+        })
+        .catch((e) => Logger.warn('[UserProfileCard] fast chat fetch failed:', e))
+        .finally(() => {
+          if (!cancelled) setHistoricalLoading(false);
+        });
+
+      // Deep phase: Justlog (via best-logs, with proxy fallback). Can take several
+      // seconds; it merges in when it lands without holding up the card.
+      const deepP = invoke<{ timestamp: string; content: string; id?: string }[]>(
+        'fetch_user_deep_logs',
+        { channel: channelName, username },
+      )
+        .then((messages) => {
+          Logger.info(
+            `[UserProfileCard] deep logs: channel=${channelName} user=${username} -> ${messages.length} msgs`,
+          );
+          if (!cancelled && messages.length > 0) {
+            setHistoricalMessages((prev) => mergeHistorical(prev, messages));
+            setHistoricalChannelLogged(true);
+          }
+        })
+        .catch((e) => Logger.warn('[UserProfileCard] deep chat fetch failed:', e))
+        .finally(() => {
+          if (!cancelled) setDeepLoading(false);
+        });
+
+      await Promise.allSettled([fastP, deepP]);
+      clearTimeout(failsafe);
     })();
+
     return () => {
       cancelled = true;
       clearTimeout(failsafe);
     };
-  }, [showMessages, historicalAttempted, getChannelContext, username, userId]);
+  }, [showMessages, getChannelContext, username, userId]);
 
   // Compute selected paint from cached cosmetics (for instant display)
   const selectedPaint = useMemo(() => {
@@ -1125,7 +1172,7 @@ const UserProfileCard = ({
                         Back to profile
                       </button>
                       <span className="text-[10px] text-textSecondary uppercase tracking-wider font-semibold">
-                        Chat history{historicalLoading ? ' · loading…' : ''}
+                        Chat history{(historicalLoading || deepLoading) ? ' · loading…' : ''}
                       </span>
                     </div>
                     {(() => {
@@ -1197,7 +1244,7 @@ const UserProfileCard = ({
                       }
                       entries.sort((a, b) => a.ts - b.ts);
 
-                      if (entries.length === 0 && !historicalLoading) {
+                      if (entries.length === 0 && !historicalLoading && !deepLoading) {
                         return (
                           <div className="px-2">
                             <div className="flex flex-col items-center justify-center py-12 text-center">

@@ -1044,6 +1044,7 @@ fn main() {
             // Announcements
             fetch_announcements,
             fetch_user_chat_logs,
+            fetch_user_deep_logs,
             // Layout commands (message history only - height calculation removed)
             get_user_message_history,
             get_user_message_history_limited,

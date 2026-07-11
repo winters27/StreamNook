@@ -1,4 +1,4 @@
-use crate::services::twitch_service::TwitchService;
+use crate::services::drops_auth_service::DropsAuthService;
 use serde::{Deserialize, Serialize};
 
 const JUSTLOG_BASE: &str = "https://logs.ivr.fi";
@@ -8,7 +8,40 @@ const JUSTLOG_BASE: &str = "https://logs.ivr.fi";
 const BESTLOGS_BASE: &str = "https://logs.zonian.dev";
 const ROBOTTY_BASE: &str = "https://recent-messages.robotty.de";
 const TWITCH_GQL_URL: &str = "https://gql.twitch.tv/gql";
-const TWITCH_WEB_CLIENT_ID: &str = env!("TWITCH_WEB_CLIENT_ID");
+// Twitch's GQL treats recentChatMessages / viewerCardModLogs as first-party
+// queries: it 401s a USER token not minted under a first-party client-id, even if
+// the Client-ID header matches. So these calls use the SAME pair the rest of the
+// app's authed GQL uses (chat_identity, badges, channel points): the Twitch
+// Android client-id plus `DropsAuthService::get_token()` (a first-party token).
+// `TwitchService::get_token()` is StreamNook's OWN app token — fine for Helix, 401
+// for GQL. Persisted-query hashes are global, so the MessageBufferChatHistory hash
+// still resolves under the Android client-id.
+const TWITCH_ANDROID_CLIENT_ID: &str = env!("TWITCH_ANDROID_CLIENT_ID");
+
+/// First-party GQL headers, matching the app's other authenticated GQL calls.
+fn gql_headers(token: &str) -> reqwest::header::HeaderMap {
+    use reqwest::header::{HeaderMap, HeaderValue, ACCEPT, AUTHORIZATION};
+    let device_id = uuid::Uuid::new_v4().to_string().replace('-', "");
+    let session_id = uuid::Uuid::new_v4().to_string().replace('-', "");
+    let mut headers = HeaderMap::new();
+    headers.insert("Client-ID", HeaderValue::from_static(TWITCH_ANDROID_CLIENT_ID));
+    headers.insert(ACCEPT, HeaderValue::from_static("*/*"));
+    headers.insert("Accept-Encoding", HeaderValue::from_static("gzip"));
+    headers.insert(
+        AUTHORIZATION,
+        HeaderValue::from_str(&format!("OAuth {}", token))
+            .unwrap_or_else(|_| HeaderValue::from_static("")),
+    );
+    headers.insert("Origin", HeaderValue::from_static("https://www.twitch.tv"));
+    headers.insert("Referer", HeaderValue::from_static("https://www.twitch.tv"));
+    if let Ok(v) = HeaderValue::from_str(&device_id) {
+        headers.insert("X-Device-Id", v);
+    }
+    if let Ok(v) = HeaderValue::from_str(&session_id) {
+        headers.insert("Client-Session-Id", v);
+    }
+    headers
+}
 
 // Persisted-query hash for Twitch's `MessageBufferChatHistory` operation.
 // Captured from Twitch's web client traffic via NodeCapture on 2026-01-12;
@@ -131,18 +164,31 @@ pub async fn fetch_user_chat_logs(
         }
     };
 
-    // Hard per-source cap. The popup renders local session history immediately
-    // and only waits on this call to fill the empty state, so a single slow
-    // third-party source (justlog/robotty/best-logs having a bad moment) must
-    // never stall the whole card. Any source that exceeds the cap yields empty
-    // and the others still answer. The reqwest client's own 8s timeout is the
-    // outer bound; this is the tighter interactive one.
+    // FAST sources only. These return in ~1s, so the card can render them right
+    // away. Deep history (Justlog, which can take several seconds via the proxy)
+    // is a SEPARATE command (`fetch_user_deep_logs`) the frontend fires in
+    // parallel and merges in when it lands — so the whole popup never blocks on
+    // the slow source. Each capped so one bad source can't stall the fast batch.
     let src_cap = std::time::Duration::from_secs(6);
-    let (twitch_modlogs_result, twitch_buffer_result, justlog_result, robotty_result) = tokio::join!(
+    let (twitch_modlogs_result, twitch_buffer_result, robotty_result) = tokio::join!(
         async { tokio::time::timeout(src_cap, twitch_modlogs_fut).await.unwrap_or_else(|_| Ok(Vec::new())) },
         async { tokio::time::timeout(src_cap, twitch_buffer_fut).await.unwrap_or_else(|_| Ok(Vec::new())) },
-        async { tokio::time::timeout(src_cap, fetch_from_justlog(&client, &channel_lower, &username_lower)).await.unwrap_or_else(|_| Ok(Vec::new())) },
         async { tokio::time::timeout(src_cap, fetch_from_robotty(&client, &channel_lower, &username_lower)).await.unwrap_or_else(|_| Ok(Vec::new())) },
+    );
+
+    // Per-source diagnostic. Count: -1 = errored, 0 = empty, >0 = messages.
+    let count_of = |r: &Result<Vec<JustlogMessage>, String>| r.as_ref().map(|m| m.len() as i64).unwrap_or(-1);
+    let err_of = |r: &Result<Vec<JustlogMessage>, String>| r.as_ref().err().cloned().unwrap_or_default();
+    eprintln!(
+        "[chatlogs/fast] channel={} user={} -> modlogs={} buffer={} robotty={}\n  modlogs_err=[{}]\n  buffer_err=[{}]\n  robotty_err=[{}]",
+        channel_lower,
+        username_lower,
+        count_of(&twitch_modlogs_result),
+        count_of(&twitch_buffer_result),
+        count_of(&robotty_result),
+        err_of(&twitch_modlogs_result),
+        err_of(&twitch_buffer_result),
+        err_of(&robotty_result),
     );
 
     let mut merged: Vec<JustlogMessage> = Vec::new();
@@ -152,27 +198,60 @@ pub async fn fetch_user_chat_logs(
     if let Ok(mut m) = twitch_buffer_result {
         merged.append(&mut m);
     }
-    if let Ok(mut m) = justlog_result {
-        merged.append(&mut m);
-    }
     if let Ok(mut m) = robotty_result {
         merged.append(&mut m);
     }
 
-    // Sort by parsed unix-millis, NOT by the timestamp string. Different
-    // sources format timestamps differently (`Z` vs `+00:00`, with/without
-    // milliseconds), so string comparison can put the same instant in
-    // different positions. Convert once and use that for the order.
+    Ok(sort_and_dedupe(merged))
+}
+
+/// Deep per-user history: Justlog only (routed via best-logs, with proxy
+/// fallback for DNS-blocked instances). Split out from `fetch_user_chat_logs`
+/// because it can take several seconds — the card shows the fast sources
+/// immediately and merges this in when it arrives, so the popup never blocks on
+/// it. The frontend de-dupes across both calls, so overlap is harmless.
+#[tauri::command]
+pub async fn fetch_user_deep_logs(
+    channel: String,
+    username: String,
+) -> Result<Vec<JustlogMessage>, String> {
+    if channel.is_empty() || username.is_empty() {
+        return Ok(Vec::new());
+    }
+    let channel_lower = channel.to_lowercase();
+    let username_lower = username.to_lowercase();
+
+    let client = reqwest::Client::builder()
+        .user_agent("StreamNook")
+        .timeout(std::time::Duration::from_secs(16))
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    // Generous cap: this is OFF the card's critical path, so we'd rather wait for
+    // a slow proxy (a heavy chatter's full history measured ~7s) than drop it.
+    let cap = std::time::Duration::from_secs(15);
+    let result = tokio::time::timeout(cap, fetch_from_justlog(&client, &channel_lower, &username_lower))
+        .await
+        .unwrap_or_else(|_| Err("justlog: timed out".to_string()));
+
+    eprintln!(
+        "[chatlogs/deep] channel={} user={} -> justlog={}\n  justlog_err=[{}]",
+        channel_lower,
+        username_lower,
+        result.as_ref().map(|m| m.len() as i64).unwrap_or(-1),
+        result.as_ref().err().cloned().unwrap_or_default(),
+    );
+
+    Ok(sort_and_dedupe(result.unwrap_or_default()))
+}
+
+/// Sort by parsed unix-millis (not the timestamp string — sources format it
+/// differently) and dedupe by Twitch message id, falling back to (content +
+/// timestamp within 2s) when a source omitted the id. Shared by the fast and
+/// deep log commands.
+fn sort_and_dedupe(mut merged: Vec<JustlogMessage>) -> Vec<JustlogMessage> {
     merged.sort_by_key(|m| parse_timestamp_ms(&m.timestamp).unwrap_or(0));
 
-    // Dedupe by Twitch message ID when both messages have one. Every source
-    // we pull from has access to the IRC `id=` tag (the canonical message
-    // identifier), so the same message coming through Twitch GQL + Justlog
-    // + Robotty all carry the same id. For older entries where any source
-    // omitted the id, fall back to (content + timestamp-bucketed-to-2s) so
-    // we still catch obvious cross-source duplicates while not collapsing
-    // legitimate spam (Twitch's rate limit keeps even fast spammers above
-    // 1 message per second in practice).
     let mut deduped: Vec<JustlogMessage> = Vec::with_capacity(merged.len());
     let mut seen_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
     for msg in merged {
@@ -181,8 +260,6 @@ pub async fn fetch_user_chat_logs(
                 continue;
             }
         } else {
-            // No id available — match against any existing entry with same
-            // content and a timestamp within 2 seconds.
             let msg_ms = parse_timestamp_ms(&msg.timestamp).unwrap_or(0);
             let dup = deduped.iter().any(|existing| {
                 if existing.content != msg.content {
@@ -198,8 +275,7 @@ pub async fn fetch_user_chat_logs(
         }
         deduped.push(msg);
     }
-
-    Ok(deduped)
+    deduped
 }
 
 /// Parse any of the timestamp formats our three sources can emit into unix
@@ -228,7 +304,7 @@ async fn fetch_from_message_buffer(
     channel_login: &str,
     target_login: &str,
 ) -> Result<Vec<JustlogMessage>, String> {
-    let token = match TwitchService::get_token().await {
+    let token = match DropsAuthService::get_token().await {
         Ok(t) if !t.is_empty() => t,
         _ => return Ok(Vec::new()),
     };
@@ -249,8 +325,7 @@ async fn fetch_from_message_buffer(
 
     let response = client
         .post(TWITCH_GQL_URL)
-        .header("Client-ID", TWITCH_WEB_CLIENT_ID)
-        .header("Authorization", format!("OAuth {}", token))
+        .headers(gql_headers(&token))
         .json(&body)
         .send()
         .await
@@ -332,7 +407,7 @@ async fn fetch_from_twitch_gql(
     // ViewerCardModLogsMessagesError back and we silently fall through.
     // Authenticated request requires the user's OAuth token; without one
     // the query returns nothing useful, so skip the round trip.
-    let token = match TwitchService::get_token().await {
+    let token = match DropsAuthService::get_token().await {
         Ok(t) if !t.is_empty() => t,
         _ => return Ok(Vec::new()),
     };
@@ -374,8 +449,7 @@ async fn fetch_from_twitch_gql(
 
     let response = client
         .post(TWITCH_GQL_URL)
-        .header("Client-ID", TWITCH_WEB_CLIENT_ID)
-        .header("Authorization", format!("OAuth {}", token))
+        .headers(gql_headers(&token))
         .json(&body)
         .send()
         .await
@@ -429,39 +503,106 @@ async fn fetch_from_twitch_gql(
     Ok(messages)
 }
 
-/// Ask best-logs which justlog instance logs this channel+user and return that
-/// instance's base URL. Prefers an instance that logs the target user; falls
-/// back to one that logs the channel (the user may simply have no messages yet).
-/// Returns None if best-logs is unreachable or reports the channel isn't logged
-/// anywhere, in which case the caller uses logs.ivr.fi directly.
+/// Cached best-logs resolution for a channel: the ordered list of justlog
+/// instance base URLs that log it (best coverage first). An empty list means
+/// best-logs couldn't resolve any (we then fall back to ivr.fi); we cache that
+/// too, on a shorter TTL, so a hiccup doesn't make us re-hit best-logs on every
+/// card open.
+struct InstanceCacheEntry {
+    instances: Vec<String>,
+    at: std::time::Instant,
+}
+
+// A resolved instance is very stable (it's just which justlog server logs a
+// channel), so cache it for an hour. A miss is cached only 10 min so we recover
+// quickly once best-logs is reachable / the channel starts being logged.
+const INSTANCE_TTL_OK: std::time::Duration = std::time::Duration::from_secs(60 * 60);
+const INSTANCE_TTL_MISS: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+
+fn instance_cache() -> &'static std::sync::Mutex<std::collections::HashMap<String, InstanceCacheEntry>>
+{
+    static CACHE: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<String, InstanceCacheEntry>>,
+    > = std::sync::OnceLock::new();
+    CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+/// Ask best-logs which justlog instances hold THIS user's logs in THIS channel,
+/// in best-coverage order. Per-user, not per-channel: only some instances that
+/// log a channel actually have a given user, and the channel's top instance can
+/// be down while a lower one holds the user — so we ask per-user and try that
+/// exact ordered list. Cached per (channel, user). Empty when best-logs is
+/// unreachable or the user isn't logged anywhere.
 ///
 /// Uses best-logs' lightweight discovery endpoint (`/api/{channel}/{user}`), NOT
 /// its `/channel/...` proxy mirror: the mirror is Cloudflare rate-limited (it
 /// returns a 1015 page under even light load), the discovery endpoint is not.
-async fn resolve_justlog_instance(
+async fn resolve_justlog_instances(
     client: &reqwest::Client,
     channel: &str,
     username: &str,
-) -> Option<String> {
+) -> Vec<String> {
+    let key = format!("{}/{}", channel, username);
+    // Serve from cache while fresh — this is what keeps us from pelting best-logs
+    // on every single user-card open (repeat opens of the same user are free).
+    if let Ok(cache) = instance_cache().lock() {
+        if let Some(entry) = cache.get(&key) {
+            let ttl = if entry.instances.is_empty() {
+                INSTANCE_TTL_MISS
+            } else {
+                INSTANCE_TTL_OK
+            };
+            if entry.at.elapsed() < ttl {
+                return entry.instances.clone();
+            }
+        }
+    }
+
+    let instances = fetch_bestlogs_instances(client, channel, username).await;
+
+    if let Ok(mut cache) = instance_cache().lock() {
+        cache.insert(
+            key,
+            InstanceCacheEntry {
+                instances: instances.clone(),
+                at: std::time::Instant::now(),
+            },
+        );
+    }
+    instances
+}
+
+/// Uncached single best-logs discovery request: the ordered instance list that
+/// holds this user's logs in this channel.
+async fn fetch_bestlogs_instances(
+    client: &reqwest::Client,
+    channel: &str,
+    username: &str,
+) -> Vec<String> {
     let url = format!("{}/api/{}/{}", BESTLOGS_BASE, channel, username);
     // Short, dedicated timeout: discovery is just a routing hint. If best-logs
     // is slow or Cloudflare-challenges us, bail fast and let the caller fall
     // back to logs.ivr.fi rather than burning the justlog branch's whole budget.
-    let response = client
+    let response = match client
         .get(&url)
         .timeout(std::time::Duration::from_secs(3))
         .send()
         .await
-        .ok()?;
-    if !response.status().is_success() {
-        return None;
+    {
+        Ok(r) if r.status().is_success() => r,
+        _ => return Vec::new(),
+    };
+    let parsed: BestLogsResponse = match response.json().await {
+        Ok(p) => p,
+        Err(_) => return Vec::new(),
+    };
+    // Prefer instances that actually hold THIS user; fall back to channel-wide.
+    let mut list = parsed.user_logs.map(|l| l.instances).unwrap_or_default();
+    if list.is_empty() {
+        list = parsed.channel_logs.map(|l| l.instances).unwrap_or_default();
     }
-    let parsed: BestLogsResponse = response.json().await.ok()?;
-    parsed
-        .user_logs
-        .and_then(|l| l.instances.into_iter().next())
-        .or_else(|| parsed.channel_logs.and_then(|l| l.instances.into_iter().next()))
-        .filter(|base| base.starts_with("https://") || base.starts_with("http://"))
+    list.retain(|base| base.starts_with("https://") || base.starts_with("http://"));
+    list
 }
 
 async fn fetch_from_justlog(
@@ -469,32 +610,99 @@ async fn fetch_from_justlog(
     channel: &str,
     username: &str,
 ) -> Result<Vec<JustlogMessage>, String> {
-    // Route to whichever instance actually logs this channel; fall back to
-    // logs.ivr.fi directly when best-logs can't resolve one (unreachable, or the
-    // channel genuinely isn't logged anywhere — ivr.fi will then 404 cleanly).
-    let base = resolve_justlog_instance(client, channel, username)
-        .await
-        .unwrap_or_else(|| JUSTLOG_BASE.to_string());
+    // Instances that hold this user's logs (best coverage first), from best-logs
+    // and cached per (channel, user). Always append logs.ivr.fi as a final
+    // fallback so we still try something when best-logs is unreachable.
+    let mut candidates = resolve_justlog_instances(client, channel, username).await;
+    if !candidates.iter().any(|b| b == JUSTLOG_BASE) {
+        candidates.push(JUSTLOG_BASE.to_string());
+    }
 
+    // Try instances in order until one actually returns messages. The top one is
+    // usually right, but if it's down/slow the same logs live on another instance
+    // — don't let deep history silently vanish because one instance had a bad
+    // moment. `any_reachable` lets us tell "user genuinely not logged" (some
+    // instance answered, just empty) from "every instance unreachable" (surfaced
+    // as an error so the diagnostic shows exactly what failed).
+    let mut any_reachable = false;
+    let mut attempts: Vec<String> = Vec::new();
+    for base in candidates.into_iter().take(5) {
+        match fetch_justlog_at(client, &base, channel, username).await {
+            Ok(msgs) if !msgs.is_empty() => return Ok(msgs),
+            Ok(_) => {
+                any_reachable = true;
+                attempts.push(format!("{}=empty", base));
+            }
+            Err(e) => attempts.push(e),
+        }
+    }
+    if any_reachable {
+        // Some instance answered (just no messages for this user) — genuinely
+        // not logged. No need to hit the proxy.
+        return Ok(Vec::new());
+    }
+
+    // Every direct instance was unreachable. The common real-world cause is the
+    // user's own DNS (Pi-hole / AdGuard) NXDOMAIN-ing the `logs.*` justlog domains
+    // as "trackers" — the instances resolve fine on public DNS but not on theirs.
+    // best-logs' proxy fetches server-side over `logs.zonian.dev` (not on those
+    // blocklists), so it returns the same logs even when the direct domains are
+    // blocked. Last resort only, so normal users never touch it.
+    match fetch_justlog_at(client, BESTLOGS_BASE, channel, username).await {
+        Ok(msgs) => Ok(msgs),
+        Err(proxy_err) => Err(format!(
+            "justlog: all instances failed [{}] and proxy failed [{}]",
+            attempts.join(" | "),
+            proxy_err
+        )),
+    }
+}
+
+/// One justlog instance's per-user history. A 404 (this instance doesn't log the
+/// channel/user) is a normal empty, not an error, so the caller moves on to the
+/// next instance. Per-request timeout keeps a single slow instance from eating
+/// the whole justlog budget.
+async fn fetch_justlog_at(
+    client: &reqwest::Client,
+    base: &str,
+    channel: &str,
+    username: &str,
+) -> Result<Vec<JustlogMessage>, String> {
     let url = format!("{}/channel/{}/user/{}?json=1", base, channel, username);
 
     let response = client
         .get(&url)
+        // Room for a large payload (a heavy chatter's full history via the proxy
+        // can be >1000 messages) while still fitting inside the justlog cap. A
+        // DNS-blocked instance fails instantly (NXDOMAIN), so this only bounds
+        // genuinely-slow responses.
+        .timeout(std::time::Duration::from_secs(6))
         .send()
         .await
-        .map_err(|e| format!("Justlog request failed: {}", e))?;
+        .map_err(|e| {
+            // Classify the failure so an unreachable instance is obvious: is it a
+            // connection failure (DNS/refused/TLS) vs a slow instance (timeout)?
+            let kind = if e.is_timeout() {
+                "timeout"
+            } else if e.is_connect() {
+                "connect"
+            } else {
+                "other"
+            };
+            format!("Justlog request failed ({}, {}): {}", base, kind, e)
+        })?;
 
     if response.status() == reqwest::StatusCode::NOT_FOUND {
         return Ok(Vec::new());
     }
     if !response.status().is_success() {
-        return Err(format!("Justlog API error: {}", response.status()));
+        return Err(format!("Justlog API error ({}): {}", base, response.status()));
     }
 
     let parsed: JustlogResponse = response
         .json()
         .await
-        .map_err(|e| format!("Failed to parse Justlog response: {}", e))?;
+        .map_err(|e| format!("Failed to parse Justlog response ({}): {}", base, e))?;
 
     Ok(parsed
         .messages
