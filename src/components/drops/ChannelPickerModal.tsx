@@ -20,10 +20,11 @@ export interface PickableChannel {
   userId: string;
   viewerCount: number;
   isLive: boolean;
-  /** The category the channel is currently streaming (live only), shown for context.
-   *  Not an eligibility gate: ACL drops are earned on any allow-listed live channel
-   *  regardless of category (special events span many games). */
+  /** The category the channel is currently streaming (live only). This IS an
+   *  eligibility gate: an allow-listed channel only earns the drop while live
+   *  under the campaign's own category. */
   currentGame?: string;
+  currentGameId?: string;
   avatarUrl?: string;
   /** The live stream object (carries game_name etc.) so the caller can hand it
    *  straight to startStream — same as clicking a stream card, which is what makes
@@ -36,6 +37,10 @@ interface ChannelPickerModalProps {
   onClose: () => void;
   campaignName: string;
   gameName: string;
+  /** The campaign's category id. A drop only credits while the channel is live
+   *  under this category, so ACL picks are filtered on it (being allow-listed
+   *  isn't enough). */
+  gameId?: string;
   allowedChannels: AllowedChannel[];
   isAclBased: boolean;
   /** Verb for the action, e.g. "Watch" (core) or "Collect" (automation plugin). */
@@ -57,6 +62,7 @@ function streamToChannel(s: TwitchStream): PickableChannel {
     viewerCount: s.viewer_count || 0,
     isLive: true,
     currentGame: s.game_name,
+    currentGameId: s.game_id,
     avatarUrl: s.profile_image_url,
     stream: s,
   };
@@ -67,6 +73,7 @@ export default function ChannelPickerModal({
   onClose,
   campaignName,
   gameName,
+  gameId,
   allowedChannels,
   isAclBased,
   actionLabel = 'Watch',
@@ -135,14 +142,22 @@ export default function ChannelPickerModal({
 
   if (!isOpen) return null;
 
-  // Live channels that can earn this drop right now.
+  // Live channels that can earn this drop right now. A drop credits only while
+  // the channel is live UNDER THE CAMPAIGN'S CATEGORY:
   //  - Open campaigns already fetched only channels live in the campaign's game.
-  //  - ACL campaigns: the allow-list is what grants the drop, independent of the
-  //    category being streamed. Umbrella events (e.g. EWC, whose game is
-  //    "Special Events") list participating channels playing dozens of different
-  //    real games, so requiring the channel's current category to equal the
-  //    campaign game wrongly hid almost all of them. Membership + live is the gate.
-  const earnable = channels.filter(c => c.isLive);
+  //  - ACL campaigns: the allow-list is the FIRST gate; the channel must ALSO be
+  //    live under the campaign category. For an umbrella event (e.g. a "Special
+  //    Events" drop) most of the roster is live in some other category at any
+  //    given time and earns nothing for THIS drop — listing them made the picker
+  //    offer channels that can't credit (a live-but-Just-Chatting allow-listed
+  //    streamer would show, get picked, and never progress). Match by category id
+  //    when both sides have it, else fall back to the category name.
+  const inCampaignCategory = (c: PickableChannel): boolean => {
+    if (!isAclBased) return true; // open campaign list is already category-correct
+    if (gameId && c.currentGameId) return c.currentGameId === gameId;
+    return !!c.currentGame && !!gameName && c.currentGame.toLowerCase() === gameName.toLowerCase();
+  };
+  const earnable = channels.filter(c => c.isLive && inCampaignCategory(c));
 
   return (
     <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 sm:p-6">
