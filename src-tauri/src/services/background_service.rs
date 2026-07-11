@@ -206,7 +206,7 @@ impl BackgroundService {
                     .as_ref()
                     .map(|(id, _)| id.clone());
 
-                for (channel_id, login, balance) in &balances {
+                for (channel_id, login, display_name, balance) in &balances {
                     let prev = baseline.insert(channel_id.clone(), *balance);
 
                     // Skip the on-screen channel (claim_channel_points covers it)
@@ -236,7 +236,7 @@ impl BackgroundService {
                         serde_json::json!({
                             "channel_id": channel_id,
                             "channel_login": login,
-                            "channel_display_name": login,
+                            "channel_display_name": display_name,
                             "points": delta,
                             "reason": "automation",
                             "balance": balance,
@@ -251,9 +251,9 @@ impl BackgroundService {
 
     /// Read the channel-points balance of every followed channel via the same
     /// inline ChannelPointsContext GQL query the on-demand refresh uses, batched
-    /// 35 ops per request. Returns (channel_id, login, balance) for channels with
-    /// a positive balance, or None if the credential/list lookup fails.
-    async fn fetch_all_followed_balances() -> Option<Vec<(String, String, i32)>> {
+    /// 35 ops per request. Returns (channel_id, login, display_name, balance) for
+    /// channels with a positive balance, or None if the credential/list lookup fails.
+    async fn fetch_all_followed_balances() -> Option<Vec<(String, String, String, i32)>> {
         use crate::services::twitch_service::TwitchService;
         use serde_json::json;
 
@@ -275,15 +275,23 @@ impl BackgroundService {
         let token = DropsAuthService::get_token().await.ok()?;
         let client = crate::services::http::client();
 
-        // Drain the full followed list (live or offline): (login, channel_id).
-        let mut channels: Vec<(String, String)> = Vec::new();
+        // Drain the full followed list (live or offline): (login, channel_id, display_name).
+        let mut channels: Vec<(String, String, String)> = Vec::new();
         let mut cursor: Option<String> = None;
         loop {
             match TwitchService::get_all_followed_channels(100, cursor.clone()).await {
                 Ok((page, next)) => {
                     for s in page {
                         if !s.user_login.is_empty() && !s.user_id.is_empty() {
-                            channels.push((s.user_login, s.user_id));
+                            // Keep the properly-cased display name so the earned-points
+                            // notification matches the PubSub path (which uses it too).
+                            // Falls back to the login only when the name is missing.
+                            let display_name = if s.user_name.trim().is_empty() {
+                                s.user_login.clone()
+                            } else {
+                                s.user_name
+                            };
+                            channels.push((s.user_login, s.user_id, display_name));
                         }
                     }
                     match next {
@@ -298,11 +306,11 @@ impl BackgroundService {
             }
         }
 
-        let mut found: Vec<(String, String, i32)> = Vec::new();
+        let mut found: Vec<(String, String, String, i32)> = Vec::new();
         for chunk in channels.chunks(35) {
             let body: Vec<serde_json::Value> = chunk
                 .iter()
-                .map(|(login, _id)| {
+                .map(|(login, _id, _name)| {
                     json!({
                         "operationName": "ChannelPointsContext",
                         "query": QUERY,
@@ -336,7 +344,7 @@ impl BackgroundService {
 
             if let Some(arr) = parsed.as_array() {
                 for (idx, item) in arr.iter().enumerate() {
-                    let Some((login, channel_id)) = chunk.get(idx) else {
+                    let Some((login, channel_id, display_name)) = chunk.get(idx) else {
                         continue;
                     };
                     if let Some(bal) = item
@@ -344,7 +352,12 @@ impl BackgroundService {
                         .and_then(|v| v.as_i64())
                     {
                         if bal > 0 {
-                            found.push((channel_id.clone(), login.clone(), bal as i32));
+                            found.push((
+                                channel_id.clone(),
+                                login.clone(),
+                                display_name.clone(),
+                                bal as i32,
+                            ));
                         }
                     }
                 }
