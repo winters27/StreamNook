@@ -8,7 +8,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { RotateCcw, Link2, Plus, X, AlertTriangle, Play, Pause, UserX } from 'lucide-react';
+import { RotateCcw, Link2, Plus, X, AlertTriangle, Play, Pause } from 'lucide-react';
 import { Tooltip } from '../ui/Tooltip';
 import { Dropdown } from '../ui/Dropdown';
 import { SettingsSection, SettingsRow, SegmentedSelect } from './_primitives';
@@ -18,10 +18,13 @@ import { ProviderIcon } from '../overlay/ProviderIcon';
 import { SAMPLE_MESSAGES, randomSampleMessage, seedFlowMessages, type OverlayMessage } from '../overlay/sampleMessages';
 import {
   DEFAULT_OVERLAY_STYLE,
+  EMOJI_STYLES,
   EVENT_CATEGORIES,
   FONT_OPTIONS,
   OVERLAY_LIMITS,
   PROVIDER_EVENT_CATEGORIES,
+  THIRD_PARTY_BADGE_PROVIDERS,
+  sanitizeCommandFilters,
   type OverlayStyle,
 } from '../overlay/overlayConfig';
 import { CURRENCY_OPTIONS } from '../../services/currencyService';
@@ -99,7 +102,11 @@ const SOURCE_PLACEHOLDER: Record<ProviderId, string> = {
 const loadStyle = (): OverlayStyle => {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) return { ...DEFAULT_OVERLAY_STYLE, ...JSON.parse(raw) };
+    if (raw) {
+      const merged = { ...DEFAULT_OVERLAY_STYLE, ...JSON.parse(raw) } as OverlayStyle;
+      merged.commandFilters = sanitizeCommandFilters(merged.commandFilters);
+      return merged;
+    }
   } catch { /* ignore malformed */ }
   return { ...DEFAULT_OVERLAY_STYLE };
 };
@@ -159,13 +166,13 @@ const SCENE_STYLES: Record<SceneBg, CSSProperties> = {
   light: { background: 'linear-gradient(135deg, #dfe4ee, #c3ccdd)' },
 };
 
-type OverlayTab = 'layout' | 'text' | 'chat' | 'events' | 'sources';
+type OverlayTab = 'sources' | 'layout' | 'appearance' | 'filters' | 'events';
 const OVERLAY_TABS: { id: OverlayTab; label: string }[] = [
-  { id: 'layout', label: 'Layout' },
-  { id: 'text', label: 'Text' },
-  { id: 'chat', label: 'Chat' },
-  { id: 'events', label: 'Events' },
   { id: 'sources', label: 'Sources' },
+  { id: 'layout', label: 'Layout' },
+  { id: 'appearance', label: 'Appearance' },
+  { id: 'filters', label: 'Filters' },
+  { id: 'events', label: 'Events' },
 ];
 
 // Appends a random chatter's message on a jittered timer so the preview reads
@@ -186,70 +193,130 @@ const SampleFlowFeed = ({ style }: { style: OverlayStyle }) => {
   return <OverlayChat messages={msgs} style={style} superSample={2} />;
 };
 
-// A source row with an inline per-source username blocklist. Blocked names hide
-// that user's messages from the overlay — the reliable escape hatch for bots the
-// auto-hider doesn't catch (channel bots like Nightbot / StreamElements).
-const SourceRow = ({ source, blocked, onRemove, onAddBlocked, onRemoveBlocked }: {
+// A plain source row: platform + channel + remove. Blocking lives in the Filters
+// tab now (BlockRow), so this stays a clean list of where chat comes from.
+const SourceRow = ({ source, onRemove }: { source: OverlaySource; onRemove: () => void }) => (
+  <div className="flex items-center gap-2 rounded-lg bg-glass px-2.5 py-1.5">
+    <ProviderIcon provider={source.provider} size="14px" />
+    <span className="text-sm text-textPrimary truncate flex-1">{source.channel}</span>
+    <button onClick={onRemove} className="text-textSecondary hover:text-textPrimary flex-shrink-0">
+      <X size={14} />
+    </button>
+  </div>
+);
+
+// A per-source hidden-accounts editor (Filters tab). Renders as a flat SettingsRow
+// (channel as the row title, input + chips below) so it sits inline in the section
+// card instead of a nested box-in-box.
+const BlockRow = ({ source, blocked, onAddBlocked, onRemoveBlocked }: {
   source: OverlaySource;
   blocked: string[];
-  onRemove: () => void;
   onAddBlocked: (name: string) => void;
   onRemoveBlocked: (name: string) => void;
 }) => {
-  const [open, setOpen] = useState(blocked.length > 0);
   const [val, setVal] = useState('');
   const add = () => { const n = val.trim(); if (n) { onAddBlocked(n); setVal(''); } };
   return (
-    <div className="rounded-lg bg-glass px-2.5 py-1.5">
-      <div className="flex items-center gap-2">
-        <ProviderIcon provider={source.provider} size="14px" />
-        <span className="text-sm text-textPrimary truncate flex-1">{source.channel}</span>
-        <Tooltip content="Block usernames on this source">
-          <button
-            onClick={() => setOpen((o) => !o)}
-            className={`inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[12px] transition-colors flex-shrink-0 ${blocked.length > 0 || open ? 'text-accent' : 'text-textSecondary hover:text-textPrimary'}`}
-          >
-            <UserX size={14} />{blocked.length > 0 && <span className="tabular-nums">{blocked.length}</span>}
+    <SettingsRow
+      title={(
+        <span className="inline-flex items-center gap-1.5">
+          <ProviderIcon provider={source.provider} size="14px" /> {source.channel}
+        </span>
+      ) as unknown as string}
+    >
+      <div className="space-y-2">
+        <div className="flex items-center gap-2">
+          <input
+            value={val}
+            onChange={(e) => setVal(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); add(); } }}
+            placeholder="Username to hide"
+            className="flex-1 min-w-0 rounded-lg bg-glass border border-borderLight px-3 py-1.5 text-sm text-textPrimary placeholder:text-textMuted focus:outline-none focus:border-accent/60"
+          />
+          <button onClick={add} className="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium glass-input text-textPrimary flex-shrink-0">
+            <Plus size={14} /> Hide
           </button>
-        </Tooltip>
-        <button onClick={onRemove} className="text-textSecondary hover:text-textPrimary flex-shrink-0">
-          <X size={14} />
+        </div>
+        {blocked.length > 0 && (
+          <div className="flex flex-wrap gap-1.5">
+            {blocked.map((u) => (
+              <span key={u} className="inline-flex items-center gap-1.5 rounded-lg bg-glass px-3 py-1 text-[13px] text-textSecondary">
+                {u}
+                <button onClick={() => onRemoveBlocked(u)} className="hover:text-textPrimary"><X size={14} /></button>
+              </span>
+            ))}
+          </div>
+        )}
+      </div>
+    </SettingsRow>
+  );
+};
+
+type CommandMode = 'prefix' | 'exact';
+type CommandFilter = { value: string; mode: CommandMode };
+
+// The command-filter list editor (Filters tab): pick Prefix (hide every command
+// starting with a character) or Exact (hide one specific command), type it, and
+// it's added as a labeled, removable chip. No guessing — you choose the mode.
+const CommandFilterEditor = ({ filters, onAdd, onRemove }: {
+  filters: CommandFilter[];
+  onAdd: (value: string, mode: CommandMode) => void;
+  onRemove: (value: string, mode: CommandMode) => void;
+}) => {
+  const [val, setVal] = useState('');
+  const [mode, setMode] = useState<CommandMode>('prefix');
+  const add = () => { const t = val.trim(); if (t) { onAdd(t, mode); setVal(''); } };
+  return (
+    <div className="w-full space-y-2">
+      <SegmentedSelect
+        value={mode}
+        onChange={setMode}
+        options={[{ value: 'prefix', label: 'Prefix' }, { value: 'exact', label: 'Exact command' }]}
+      />
+      <div className="flex items-center gap-2">
+        <input
+          value={val}
+          onChange={(e) => setVal(e.target.value)}
+          onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); add(); } }}
+          placeholder={mode === 'prefix' ? '! or #' : '!title'}
+          className="flex-1 min-w-0 rounded-lg bg-glass border border-borderLight px-3 py-1.5 text-sm text-textPrimary placeholder:text-textMuted focus:outline-none focus:border-accent/60"
+        />
+        <button onClick={add} className="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium glass-input text-textPrimary flex-shrink-0">
+          <Plus size={14} /> Add
         </button>
       </div>
-      {open && (
-        <div className="mt-2 pl-6 space-y-1.5">
-          <div className="flex items-center gap-2">
-            <input
-              value={val}
-              onChange={(e) => setVal(e.target.value)}
-              onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); add(); } }}
-              placeholder="Bot or username to hide"
-              className="flex-1 min-w-0 rounded-lg bg-glass border border-borderLight px-2.5 py-1 text-[13px] text-textPrimary placeholder:text-textMuted focus:outline-none focus:border-accent/60"
-            />
-            <button onClick={add} className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[13px] font-medium glass-input text-textPrimary flex-shrink-0">
-              <Plus size={13} /> Block
-            </button>
-          </div>
-          {blocked.length > 0 && (
-            <div className="flex flex-wrap gap-1.5">
-              {blocked.map((u) => (
-                <span key={u} className="inline-flex items-center gap-1 rounded-md bg-glass px-2 py-0.5 text-[12px] text-textSecondary">
-                  {u}
-                  <button onClick={() => onRemoveBlocked(u)} className="hover:text-textPrimary"><X size={11} /></button>
-                </span>
-              ))}
-            </div>
-          )}
-          <p className="text-[11px] leading-relaxed text-textMuted">
-            Messages from these names never appear in the overlay (matched on username or display name, either case). Blocking a name here hides it across this platform.
-          </p>
+      {filters.length > 0 && (
+        <div className="flex flex-wrap gap-1.5">
+          {filters.filter((f) => f?.value).map((f, i) => (
+            <span key={`${f.mode}:${f.value}:${i}`} className="inline-flex items-center gap-1.5 rounded-lg bg-glass px-3 py-1 text-[13px]">
+              <span className="font-medium text-textPrimary">{f.value}</span>
+              <span className="text-textMuted">{f.mode === 'prefix' ? 'all commands' : 'exact'}</span>
+              <button onClick={() => onRemove(f.value, f.mode)} className="text-textSecondary hover:text-textPrimary"><X size={14} /></button>
+            </span>
+          ))}
         </div>
       )}
+      <p className="text-[12px] leading-relaxed text-textMuted">
+        <span className="text-textSecondary">Prefix</span> hides every command starting with the character (e.g. <span className="text-textSecondary">!</span> hides all). <span className="text-textSecondary">Exact command</span> hides only that one (e.g. <span className="text-textSecondary">!title</span>).
+      </p>
     </div>
   );
 };
 
 const sourceKey = (s: OverlaySource) => `${s.provider}:${s.channel.toLowerCase()}`;
+
+// Sentinel dropdown value + starter for the custom-font option, and a helper to
+// pull the bare family name out of a font-family string for the text input.
+const CUSTOM_FONT = '__custom__';
+const CUSTOM_FONT_STARTER = "'Poppins', sans-serif";
+const primaryFamilyName = (ff: string) => (ff || '').split(',')[0].trim().replace(/^["']|["']$/g, '');
+
+// A few sample emoji shown in the Emoji-style dropdown so users can compare vendor
+// styles at a glance. Built from codepoints (no literal emoji in source).
+const EMOJI_SAMPLES = [0x1f600, 0x1f602, 0x1f60d].map((cp) => ({
+  cp: cp.toString(16),
+  char: String.fromCodePoint(cp),
+}));
 
 const OverlaySettings = () => {
   const [style, setStyle] = useState<OverlayStyle>(loadStyle);
@@ -257,7 +324,7 @@ const OverlaySettings = () => {
   const [sources, setSources] = useState<OverlaySource[]>(loadSources);
   const [sceneBg, setSceneBg] = useState<SceneBg>('scene');
   const [previewMode, setPreviewMode] = useState<'sample' | 'live'>('sample');
-  const [activeTab, setActiveTab] = useState<OverlayTab>('layout');
+  const [activeTab, setActiveTab] = useState<OverlayTab>('sources');
   const [addProvider, setAddProvider] = useState<ProviderId>('twitch');
   const [addChannel, setAddChannel] = useState('');
   const [addError, setAddError] = useState<string | null>(null);
@@ -322,6 +389,12 @@ const OverlaySettings = () => {
       return { ...s, hiddenProviderEvents: hidden.includes(key) ? hidden.filter((c) => c !== key) : [...hidden, key] };
     });
 
+  const toggleBadgeProvider = (id: string) =>
+    setStyle((s) => {
+      const hidden = s.hiddenBadgeProviders ?? [];
+      return { ...s, hiddenBadgeProviders: hidden.includes(id) ? hidden.filter((k) => k !== id) : [...hidden, id] };
+    });
+
   const toggleSourceFilter = (id: ProviderId) =>
     setStyle((s) => {
       const has = s.sources.includes(id);
@@ -380,6 +453,16 @@ const OverlaySettings = () => {
       const cur = st.blockedUsers?.[key] ?? [];
       return { ...st, blockedUsers: { ...st.blockedUsers, [key]: cur.filter((x) => x !== name) } };
     });
+
+  const addCommandFilter = (value: string, mode: 'prefix' | 'exact') =>
+    setStyle((s) => {
+      const cur = s.commandFilters ?? [];
+      const v = value.trim();
+      if (!v || cur.some((x) => x.mode === mode && x.value.toLowerCase() === v.toLowerCase())) return s;
+      return { ...s, commandFilters: [...cur, { value: v, mode }] };
+    });
+  const removeCommandFilter = (value: string, mode: 'prefix' | 'exact') =>
+    setStyle((s) => ({ ...s, commandFilters: (s.commandFilters ?? []).filter((x) => !(x.value === value && x.mode === mode)) }));
 
   // Push the current config to streamnook.app. `copy` = the manual publish action
   // (copies the OBS link + shows state); auto-sync passes copy=false to SILENTLY
@@ -478,7 +561,19 @@ const OverlaySettings = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const fontOptions = useMemo(() => FONT_OPTIONS.map((f) => ({ value: f.value, label: f.label })), []);
+  const fontOptions = useMemo(
+    () => [
+      // Preview each font in its own typeface ("Ag") so the difference is visible.
+      ...FONT_OPTIONS.map((f) => ({
+        value: f.value,
+        label: f.label,
+        icon: <span style={{ fontFamily: f.value, fontSize: 15, lineHeight: 1, width: 24, display: 'inline-block', textAlign: 'center' }}>Ag</span>,
+      })),
+      { value: CUSTOM_FONT, label: 'Custom…' },
+    ],
+    [],
+  );
+  const isCustomFont = !FONT_OPTIONS.some((f) => f.value === style.fontFamily);
   // Distinct platforms currently added as sources — drives the per-platform event
   // toggles + shows the Super Chat currency picker only when YouTube is present.
   const sourceProviders = useMemo(
@@ -488,6 +583,33 @@ const OverlaySettings = () => {
   const catLabel = (id: string) => EVENT_CATEGORIES.find((c) => c.id === id)?.label ?? id;
   const currencyOptions = useMemo(
     () => [{ value: '', label: 'As sent' }, ...CURRENCY_OPTIONS.map((c) => ({ value: c, label: c }))],
+    [],
+  );
+  // Each emoji-style option previews a few sample emoji in that style (or the OS
+  // font for 'system') so the difference is visible before picking.
+  const emojiStyleOptions = useMemo(
+    () => EMOJI_STYLES.map((e) => ({
+      value: e.value,
+      label: e.label,
+      icon: (
+        <span className="inline-flex items-center gap-0.5">
+          {EMOJI_SAMPLES.map((s) => (e.value === 'system'
+            ? <span key={s.cp} style={{ fontSize: 18, lineHeight: 1 }}>{s.char}</span>
+            : <img
+                key={s.cp}
+                src={e.value === 'twitter'
+                  ? `https://cdn.jsdelivr.net/gh/jdecked/twemoji@15.1.0/assets/svg/${s.cp}.svg`
+                  : `https://cdn.jsdelivr.net/npm/emoji-datasource-${e.value}@15.1.2/img/${e.value}/64/${s.cp}.png`}
+                alt=""
+                width={18}
+                height={18}
+                loading="lazy"
+                style={{ display: 'inline-block' }}
+              />
+          ))}
+        </span>
+      ),
+    })),
     [],
   );
 
@@ -550,31 +672,28 @@ const OverlaySettings = () => {
             ) : (
               <div className="flex flex-col gap-1.5">
                 {sources.map((s) => (
-                  <SourceRow
-                    key={`${s.provider}:${s.channel}`}
-                    source={s}
-                    blocked={style.blockedUsers?.[sourceKey(s)] ?? []}
-                    onRemove={() => removeSource(s)}
-                    onAddBlocked={(n) => addBlockedUser(s, n)}
-                    onRemoveBlocked={(n) => removeBlockedUser(s, n)}
-                  />
+                  <SourceRow key={`${s.provider}:${s.channel}`} source={s} onRemove={() => removeSource(s)} />
                 ))}
               </div>
             )}
-            <p className="text-[11px] leading-relaxed text-textMuted">
+            <p className="text-[12px] leading-relaxed text-textMuted">
               All platforms connect live in this preview, just like MultiChat. On the published overlay, Kick, YouTube, and TikTok join once the overlay service ships.
             </p>
           </div>
           <SettingsRow title="Platform filter" description="Hide a platform's messages without removing its source.">
             <div className="flex flex-wrap gap-2">
               {SOURCE_PROVIDERS.map((id) => {
-                const active = style.sources.includes(id);
+                // Only a platform you've actually added as a source can be toggled;
+                // the rest gray out (nothing to show or hide for them).
+                const hasSource = sourceProviders.includes(id);
+                const active = hasSource && style.sources.includes(id);
                 return (
                   <button
                     key={id}
-                    onClick={() => toggleSourceFilter(id)}
+                    onClick={() => hasSource && toggleSourceFilter(id)}
+                    disabled={!hasSource}
                     style={{ borderRadius: 8 }}
-                    className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium transition-all ${active ? 'glass-input text-textPrimary' : 'glass-button text-textSecondary hover:text-textPrimary'}`}
+                    className={`inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium transition-all disabled:opacity-40 disabled:cursor-not-allowed ${active ? 'glass-input text-textPrimary' : 'glass-button text-textSecondary hover:text-textPrimary'}`}
                   >
                     <ProviderIcon provider={id} size="15px" />
                     {PROVIDERS[id].label}
@@ -609,7 +728,7 @@ const OverlaySettings = () => {
                     key={p.label}
                     onClick={() => setStyle((s) => ({ ...s, width: p.width, height: p.height }))}
                     style={{ borderRadius: 8 }}
-                    className={`px-3 py-1.5 text-sm font-medium transition-all ${active ? 'glass-input text-textPrimary' : 'glass-button text-textSecondary hover:text-textPrimary'}`}
+                    className={`px-3 py-2 text-sm font-medium transition-all ${active ? 'glass-input text-textPrimary' : 'glass-button text-textSecondary hover:text-textPrimary'}`}
                   >
                     {p.label}
                   </button>
@@ -643,9 +762,36 @@ const OverlaySettings = () => {
         </SettingsSection>
         )}
 
-        {activeTab === 'text' && (
+        {activeTab === 'appearance' && (
         <SettingsSection label="Text" description="Font, sizing, and legibility of the message text.">
-          <SettingsRow title="Font" control={<Dropdown value={style.fontFamily} options={fontOptions} onChange={(v) => set('fontFamily', v)} align="right" />} />
+          <SettingsRow title="Font" control={
+            <Dropdown
+              value={isCustomFont ? CUSTOM_FONT : style.fontFamily}
+              options={fontOptions}
+              onChange={(v) => set('fontFamily', v === CUSTOM_FONT ? CUSTOM_FONT_STARTER : v)}
+              align="right"
+            />
+          } />
+          {isCustomFont && (
+            <SettingsRow title="Custom font" description="Type a font name and it loads automatically, here and on your overlay.">
+              <div className="w-full space-y-2">
+                <input
+                  value={primaryFamilyName(style.fontFamily)}
+                  onChange={(e) => set('fontFamily', `'${e.target.value.replace(/['"]/g, '')}', sans-serif`)}
+                  placeholder="e.g. Poppins"
+                  style={{ fontFamily: style.fontFamily }}
+                  className="w-full min-w-0 rounded-lg bg-glass border border-borderLight px-3 py-1.5 text-sm text-textPrimary placeholder:text-textMuted focus:outline-none focus:border-accent/60"
+                />
+                <div className="rounded-lg bg-glass px-3 py-2.5 text-[12px] leading-relaxed text-textMuted space-y-1">
+                  <p className="font-medium text-textSecondary">Getting a custom font</p>
+                  <p>1. Browse free fonts at <span className="text-accent">fonts.google.com</span>.</p>
+                  <p>2. Type the font's exact name above (e.g. <span className="text-textSecondary">Poppins</span>, <span className="text-textSecondary">Bebas Neue</span>, <span className="text-textSecondary">Rubik</span>).</p>
+                  <p>3. It loads instantly, no download or install needed.</p>
+                  <p className="pt-0.5">Any font already installed on your streaming PC also works, just type its name.</p>
+                </div>
+              </div>
+            </SettingsRow>
+          )}
           <SettingsRow title="Font size">
             <Slider value={style.fontSize} min={OVERLAY_LIMITS.fontSize.min} max={OVERLAY_LIMITS.fontSize.max} onChange={(v) => set('fontSize', v)} format={(v) => `${v}px`} />
           </SettingsRow>
@@ -659,11 +805,12 @@ const OverlaySettings = () => {
             <input type="color" value={style.bodyTextColor} onChange={(e) => set('bodyTextColor', e.target.value)} className="h-7 w-10 rounded cursor-pointer bg-transparent border border-borderSubtle" />
           } />
           <SettingsRow title="Text shadow" description="Dark outline behind text so it stays readable over any scene." control={<Toggle enabled={style.textShadow} onChange={() => set('textShadow', !style.textShadow)} />} />
+          <SettingsRow title="Emoji style" description="Render every platform's emoji in one consistent style. System uses your machine's emoji font." control={<Dropdown value={style.emojiStyle} options={emojiStyleOptions} onChange={(v) => set('emojiStyle', v)} align="right" />} />
         </SettingsSection>
         )}
 
-        {activeTab === 'chat' && (
-        <SettingsSection label="Chat" description="How messages render and flow.">
+        {activeTab === 'appearance' && (
+        <SettingsSection label="Messages" description="How messages render and flow.">
           <SettingsRow title="Emote size">
             <Slider value={style.emoteScale} min={OVERLAY_LIMITS.emoteScale.min} max={OVERLAY_LIMITS.emoteScale.max} step={0.05} onChange={(v) => set('emoteScale', v)} format={(v) => `${v.toFixed(2)}x`} />
           </SettingsRow>
@@ -671,6 +818,27 @@ const OverlaySettings = () => {
           <SettingsRow title="Badge size" disabled={!style.showBadges}>
             <Slider value={style.badgeScale} min={OVERLAY_LIMITS.badgeScale.min} max={OVERLAY_LIMITS.badgeScale.max} step={0.05} onChange={(v) => set('badgeScale', v)} format={(v) => `${v.toFixed(2)}x`} />
           </SettingsRow>
+          <SettingsRow title="Third-party badges" description="7TV, FFZ, Chatterino, and more. Native platform badges use the toggle above." control={<Toggle enabled={style.showThirdPartyBadges} onChange={() => set('showThirdPartyBadges', !style.showThirdPartyBadges)} />} />
+          <SettingsRow title="Badge providers" description="Show or hide each third-party badge provider on its own.">
+            <div className="flex flex-wrap gap-2">
+              {THIRD_PARTY_BADGE_PROVIDERS.map((p) => {
+                const on = style.showThirdPartyBadges !== false && !(style.hiddenBadgeProviders ?? []).includes(p.id);
+                return (
+                  <button
+                    key={p.id}
+                    onClick={() => toggleBadgeProvider(p.id)}
+                    disabled={style.showThirdPartyBadges === false}
+                    style={{ borderRadius: 8 }}
+                    className={`px-3 py-2 text-sm font-medium transition-all disabled:opacity-40 disabled:cursor-not-allowed ${on ? 'glass-input text-textPrimary' : 'glass-button text-textSecondary hover:text-textPrimary'}`}
+                  >
+                    {p.label}
+                  </button>
+                );
+              })}
+            </div>
+          </SettingsRow>
+          <SettingsRow title="7TV paints" description="Colored and animated username gradients." control={<Toggle enabled={style.showPaints} onChange={() => set('showPaints', !style.showPaints)} />} />
+          <SettingsRow title="StreamNook atmospheres" description="A StreamNook member's equipped atmosphere: the animated wash behind their own message only. Separate from event styles and your overlay's background." control={<Toggle enabled={style.showAtmospheres} onChange={() => set('showAtmospheres', !style.showAtmospheres)} />} />
           <SettingsRow title="Show timestamps" control={<Toggle enabled={style.showTimestamps} onChange={() => set('showTimestamps', !style.showTimestamps)} />} />
           <SettingsRow title="New messages" description="Where incoming messages appear.">
             <SegmentedSelect
@@ -686,12 +854,39 @@ const OverlaySettings = () => {
               options={[{ value: 'none', label: 'None' }, { value: 'fade', label: 'Fade' }, { value: 'slide', label: 'Slide' }, { value: 'pop', label: 'Pop' }]}
             />
           </SettingsRow>
-          <SettingsRow title="Hide bot messages" description="Filter out known chat bots (Nightbot, StreamElements, and more) and users with a bot badge." control={<Toggle enabled={style.hideBots} onChange={() => set('hideBots', !style.hideBots)} />} />
-          <p className="px-1 pt-1 text-[11px] leading-relaxed text-textMuted">
-            Auto-hiding catches common bots, but channel bots vary and some slip through. To hide one for sure, add its name under its channel in{' '}
-            <button onClick={() => setActiveTab('sources')} className="text-accent hover:underline">Sources</button>.
-          </p>
         </SettingsSection>
+        )}
+
+        {activeTab === 'filters' && (
+        <>
+        <SettingsSection label="Filters" description="Keep bots and command spam out of the overlay.">
+          <SettingsRow title="Hide bot messages" description="Filter out known chat bots (Nightbot, StreamElements, and more) and users with a bot badge." control={<Toggle enabled={style.hideBots} onChange={() => set('hideBots', !style.hideBots)} />} />
+          <p className="px-1 pt-1 text-[12px] leading-relaxed text-textMuted">
+            Auto-hiding catches common bots, but channel bots vary and some slip through. For anyone it misses, hide them by name under Hidden accounts below.
+          </p>
+          <SettingsRow title="Hide command messages" description="Hide chat commands like !title. Pick which below." control={<Toggle enabled={style.hideCommands} onChange={() => set('hideCommands', !style.hideCommands)} />} />
+          {style.hideCommands && (
+            <SettingsRow title="Commands to hide">
+              <CommandFilterEditor filters={style.commandFilters ?? []} onAdd={addCommandFilter} onRemove={removeCommandFilter} />
+            </SettingsRow>
+          )}
+        </SettingsSection>
+        <SettingsSection label="Hidden accounts" description="Hide specific people per source, matched on username or display name (either case). Perfect for a bot the auto-filter misses, like PotatBotat.">
+          {sources.length === 0 ? (
+            <p className="py-3 text-[13px] text-textMuted">Add a source first, then hide accounts on it.</p>
+          ) : (
+            sources.map((s) => (
+              <BlockRow
+                key={sourceKey(s)}
+                source={s}
+                blocked={style.blockedUsers?.[sourceKey(s)] ?? []}
+                onAddBlocked={(n) => addBlockedUser(s, n)}
+                onRemoveBlocked={(n) => removeBlockedUser(s, n)}
+              />
+            ))
+          )}
+        </SettingsSection>
+        </>
         )}
 
         {activeTab === 'events' && (
@@ -712,7 +907,7 @@ const OverlaySettings = () => {
                     key={c.id}
                     onClick={() => toggleEvent(c.id)}
                     style={{ borderRadius: 8 }}
-                    className={`px-3 py-1.5 text-sm font-medium transition-all ${on ? 'glass-input text-textPrimary' : 'glass-button text-textSecondary hover:text-textPrimary'}`}
+                    className={`px-3 py-2 text-sm font-medium transition-all ${on ? 'glass-input text-textPrimary' : 'glass-button text-textSecondary hover:text-textPrimary'}`}
                   >
                     {c.label}
                   </button>
@@ -737,7 +932,7 @@ const OverlaySettings = () => {
                       onClick={() => toggleProviderEvent(key)}
                       disabled={globallyOff}
                       style={{ borderRadius: 8 }}
-                      className={`px-3 py-1.5 text-sm font-medium transition-all disabled:opacity-40 disabled:cursor-not-allowed ${on ? 'glass-input text-textPrimary' : 'glass-button text-textSecondary hover:text-textPrimary'}`}
+                      className={`px-3 py-2 text-sm font-medium transition-all disabled:opacity-40 disabled:cursor-not-allowed ${on ? 'glass-input text-textPrimary' : 'glass-button text-textSecondary hover:text-textPrimary'}`}
                     >
                       {catLabel(cat)}
                     </button>
@@ -868,7 +1063,7 @@ const OverlaySettings = () => {
           </div>
         </div>
 
-        <p className="px-1 text-[11px] leading-relaxed text-textMuted">
+        <p className="px-1 text-[12px] leading-relaxed text-textMuted">
           {previewMode === 'sample'
             ? 'Sample chat rendered through the real overlay code.'
             : 'Merged live chat through the real overlay renderer.'}{' '}
