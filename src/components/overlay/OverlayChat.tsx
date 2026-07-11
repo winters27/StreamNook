@@ -665,9 +665,12 @@ export const OverlayChat = ({ messages, style: rawStyle, superSample = 1 }: { me
   const padXpx = 10 * ss;
   const padYpx = 8 * ss;
   const sourcesKey = style.sources.join(',');
-  // Load the chosen font from Google Fonts when it isn't a generic/system family,
-  // so a custom font (or a preset that isn't installed locally) renders in OBS and
-  // on the hosted page. If the name isn't a real Google Font the request just
+  // Load the chosen font when it isn't a generic/system family, so a custom font
+  // (or a preset that isn't installed locally) renders in OBS and on the hosted
+  // page. Served via Bunny Fonts, a drop-in Google Fonts mirror with the same css2
+  // API and catalog: unlike fonts.googleapis.com it isn't on browser tracking-
+  // prevention lists, so it loads inside the app's WebView2 too (the in-app builder
+  // preview), not just in a plain browser. If the name isn't a real font the request
   // no-ops and the browser falls back to the family stack.
   useEffect(() => {
     if (typeof document === 'undefined') return;
@@ -678,7 +681,7 @@ export const OverlayChat = ({ messages, style: rawStyle, superSample = 1 }: { me
     const link = document.createElement('link');
     link.id = id;
     link.rel = 'stylesheet';
-    link.href = `https://fonts.googleapis.com/css2?family=${encodeURIComponent(fam).replace(/%20/g, '+')}:wght@400;600;700&display=swap`;
+    link.href = `https://fonts.bunny.net/css2?family=${encodeURIComponent(fam).replace(/%20/g, '+')}:wght@400;600;700&display=swap`;
     document.head.appendChild(link);
   }, [style.fontFamily]);
   const containerRef = useRef<HTMLDivElement>(null);
