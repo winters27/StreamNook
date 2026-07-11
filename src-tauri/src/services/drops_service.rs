@@ -18,6 +18,12 @@ use uuid::Uuid;
 const CLIENT_ID: &str = env!("TWITCH_ANDROID_CLIENT_ID");
 const CLIENT_URL: &str = "https://www.twitch.tv";
 
+// Persisted-query hash for the Inventory GQL operation (same one the Twitch
+// web client sends). Shared by the UI inventory fetch and the monitor's
+// progress overlay.
+const INVENTORY_QUERY_HASH: &str =
+    "d86775d0ef16a63a33ad52e80eaff963b2d5b72fada7c991504a57496e1d8e4b";
+
 // Your app's client ID (for reference - used for other Helix API calls)
 const APP_CLIENT_ID: &str = env!("TWITCH_APP_CLIENT_ID");
 
@@ -285,7 +291,7 @@ impl DropsService {
                 "extensions": {
                     "persistedQuery": {
                         "version": 1,
-                        "sha256Hash": "d86775d0ef16a63a33ad52e80eaff963b2d5b72fada7c991504a57496e1d8e4b"
+                        "sha256Hash": INVENTORY_QUERY_HASH
                     }
                 }
             }))
@@ -1053,6 +1059,73 @@ impl DropsService {
         map
     }
 
+    /// Per-drop progress from the Inventory query, keyed by drop id. The
+    /// campaign list's `self` progress lags while minutes are being earned;
+    /// the inventory is where live minutes, claim state, and the
+    /// dropInstanceIDs needed for claiming actually appear. The watched-channel
+    /// monitor overlays this on top of the campaign snapshot so its auto-claim
+    /// check can ever see a drop reach 100%.
+    async fn fetch_inventory_progress(
+        client: &Client,
+        device_id: &str,
+        session_id: &str,
+    ) -> Result<HashMap<String, DropProgress>> {
+        let token = DropsAuthService::get_token().await?;
+
+        let response = client
+            .post("https://gql.twitch.tv/gql")
+            .headers(Self::gql_headers(&token, device_id, session_id))
+            .json(&serde_json::json!({
+                "operationName": "Inventory",
+                "variables": { "fetchRewardCampaigns": false },
+                "extensions": {
+                    "persistedQuery": { "version": 1, "sha256Hash": INVENTORY_QUERY_HASH }
+                }
+            }))
+            .send()
+            .await?;
+
+        let body: serde_json::Value = response.json().await?;
+        let mut map = HashMap::new();
+        let Some(campaigns) =
+            body["data"]["currentUser"]["inventory"]["dropCampaignsInProgress"].as_array()
+        else {
+            return Ok(map);
+        };
+        for campaign in campaigns {
+            let campaign_id = campaign["id"].as_str().unwrap_or("").to_string();
+            let Some(drops) = campaign["timeBasedDrops"].as_array() else {
+                continue;
+            };
+            for drop in drops {
+                let Some(drop_id) = drop["id"].as_str() else { continue };
+                let self_data = &drop["self"];
+                if self_data.is_null() {
+                    continue;
+                }
+                map.insert(
+                    drop_id.to_string(),
+                    DropProgress {
+                        campaign_id: campaign_id.clone(),
+                        drop_id: drop_id.to_string(),
+                        current_minutes_watched: self_data["currentMinutesWatched"]
+                            .as_i64()
+                            .unwrap_or(0) as i32,
+                        required_minutes_watched: drop["requiredMinutesWatched"]
+                            .as_i64()
+                            .unwrap_or(0) as i32,
+                        is_claimed: self_data["isClaimed"].as_bool().unwrap_or(false),
+                        last_updated: Utc::now(),
+                        drop_instance_id: self_data["dropInstanceID"]
+                            .as_str()
+                            .map(String::from),
+                    },
+                );
+            }
+        }
+        Ok(map)
+    }
+
     /// Updates the service's internal state with fresh campaign data and calculates progress.
     pub async fn update_campaigns_and_progress(&self, campaigns: &[DropCampaign]) {
         {
@@ -1575,6 +1648,16 @@ impl DropsService {
             // Refreshed on its own cadence rather than every check tick.
             const PROGRESS_REFRESH_SECS: i64 = 120;
             let mut last_progress_refresh: Option<DateTime<Utc>> = None;
+            // Claim-failure backoff: drop_id -> (attempts, last attempt). A
+            // transient claim failure retries a few times instead of silently
+            // giving up for the whole session.
+            const CLAIM_MAX_ATTEMPTS: u32 = 3;
+            const CLAIM_RETRY_SECS: i64 = 600;
+            let mut failed_claims: HashMap<String, (u32, DateTime<Utc>)> = HashMap::new();
+            // Drops already announced as ready, so the drop-ready event fires
+            // once per drop instead of on every check tick.
+            let mut notified_ready: std::collections::HashSet<String> =
+                std::collections::HashSet::new();
 
             loop {
                 // Check if monitoring should continue
@@ -1609,20 +1692,44 @@ impl DropsService {
                         })
                         .unwrap_or(true);
                     if refresh_due {
-                        match Self::fetch_active_campaigns(&client, &device_id, &session_id).await {
-                            Ok(campaigns) => {
-                                let fresh = Self::progress_from_campaigns(&campaigns);
-                                *drop_progress.write().await = fresh;
-                                last_progress_refresh = Some(Utc::now());
+                        let campaign_snapshot =
+                            match Self::fetch_active_campaigns(&client, &device_id, &session_id)
+                                .await
+                            {
+                                Ok(campaigns) => Some(Self::progress_from_campaigns(&campaigns)),
+                                Err(e) => {
+                                    debug!("Watched-channel drop progress refresh failed: {}", e);
+                                    None
+                                }
+                            };
+                        // The campaign list lags earned minutes and never carries
+                        // dropInstanceIDs; the inventory is the live source. Overlay
+                        // it so the auto-claim check below actually sees completion.
+                        let inventory_overlay =
+                            match Self::fetch_inventory_progress(&client, &device_id, &session_id)
+                                .await
+                            {
+                                Ok(map) => Some(map),
+                                Err(e) => {
+                                    debug!("Inventory progress refresh failed: {}", e);
+                                    None
+                                }
+                            };
+                        if campaign_snapshot.is_some() || inventory_overlay.is_some() {
+                            let mut progress_map = drop_progress.write().await;
+                            if let Some(snapshot) = campaign_snapshot {
+                                *progress_map = snapshot;
                             }
-                            Err(e) => {
-                                debug!("Watched-channel drop progress refresh failed: {}", e);
+                            if let Some(overlay) = inventory_overlay {
+                                progress_map.extend(overlay);
                             }
+                            last_progress_refresh = Some(Utc::now());
                         }
                     }
 
                     // Check for claimable drops from the refreshed progress map.
-                    // Filter out drops we've already attempted to claim to prevent spam
+                    // attempted_claims holds SUCCESSFUL claims only; failures live
+                    // in failed_claims with a retry budget.
                     let claimable_drops: Vec<DropProgress> = {
                         let progress_map = drop_progress.read().await;
                         let attempted = attempted_claims.read().await;
@@ -1632,28 +1739,31 @@ impl DropsService {
                                 !p.is_claimed
                                     && p.current_minutes_watched >= p.required_minutes_watched
                                     && p.required_minutes_watched > 0 // Only collectible drops
-                                    && !attempted.contains(&p.drop_id) // Skip already-attempted
+                                    && !attempted.contains(&p.drop_id) // Skip already-claimed
                             })
                             .cloned()
                             .collect()
                     };
 
                     for progress in claimable_drops {
-                        // Drop is ready to claim
-                        if current_settings.notify_on_drop_available {
+                        // Announce a ready drop once, not on every check tick.
+                        if current_settings.notify_on_drop_available
+                            && notified_ready.insert(progress.drop_id.clone())
+                        {
                             let _ = app_handle.emit("drop-ready", &progress);
                         }
 
                         // Auto-claim if enabled
                         if current_settings.auto_claim_drops {
-                            // Mark as attempted BEFORE trying to claim (prevents retry on failure)
-                            {
-                                let mut attempted = attempted_claims.write().await;
-                                attempted.insert(progress.drop_id.clone());
-                                debug!(
-                                    "[Auto] Marking drop {} as attempted (won't retry)",
-                                    progress.drop_id
-                                );
+                            // Respect the failure backoff: retry a failed claim a few
+                            // times, spaced out, instead of giving up for the session.
+                            if let Some((attempts, last)) = failed_claims.get(&progress.drop_id) {
+                                if *attempts >= CLAIM_MAX_ATTEMPTS
+                                    || Utc::now().signed_duration_since(*last).num_seconds()
+                                        < CLAIM_RETRY_SECS
+                                {
+                                    continue;
+                                }
                             }
 
                             match Self::claim_drop_internal(
@@ -1665,6 +1775,11 @@ impl DropsService {
                             {
                                 Ok(_) => {
                                     debug!("Auto-claimed drop: {}", progress.drop_id);
+                                    failed_claims.remove(&progress.drop_id);
+                                    attempted_claims
+                                        .write()
+                                        .await
+                                        .insert(progress.drop_id.clone());
 
                                     // Create claimed drop record
                                     let claimed = ClaimedDrop {
@@ -1686,7 +1801,15 @@ impl DropsService {
                                     }
                                 }
                                 Err(e) => {
-                                    error!("Failed to auto-claim drop (won't retry): {}", e);
+                                    let entry = failed_claims
+                                        .entry(progress.drop_id.clone())
+                                        .or_insert((0, Utc::now()));
+                                    entry.0 += 1;
+                                    entry.1 = Utc::now();
+                                    error!(
+                                        "Failed to auto-claim drop (attempt {}/{}): {}",
+                                        entry.0, CLAIM_MAX_ATTEMPTS, e
+                                    );
                                 }
                             }
                         }
