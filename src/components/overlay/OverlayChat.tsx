@@ -387,15 +387,16 @@ const OverlayRow = ({ message, style }: { message: OverlayMessage; style: Overla
   );
 
   const badgeSize = `calc(1.35em * ${style.badgeScale})`;
-  // Native platform badges (+ StreamNook identity) obey showBadges. Third-party
-  // badges obey showThirdPartyBadges AND a per-provider allowlist — 7TV, FFZ,
-  // Chatterino, and the rest each toggle independently by the badge's `source`.
+  // Native platform badges obey showBadges. Everything else — StreamNook member
+  // badge, 7TV, FFZ, Chatterino, and the rest — obeys the showThirdPartyBadges
+  // master AND a per-provider allowlist, each toggling independently by the
+  // badge's `source` ('streamnook' for the member badge).
   const hiddenBadgeProviders = style.hiddenBadgeProviders ?? [];
   const badgeSourceHidden = (src?: string) => hiddenBadgeProviders.includes((src || '').toLowerCase());
   const nativeBadgesOn = style.showBadges;
   const thirdPartyOn = style.showThirdPartyBadges !== false;
   const showNativeBadges = nativeBadgesOn && (message.badges?.length ?? 0) > 0;
-  const showSnBadge = nativeBadgesOn && message.streamNookUserNumber != null;
+  const showSnBadge = thirdPartyOn && !badgeSourceHidden('streamnook') && message.streamNookUserNumber != null;
   const showSeventvBadge = thirdPartyOn && !!message.seventvBadgeUrl && !badgeSourceHidden('7tv');
   const visibleExtraBadges = thirdPartyOn ? (message.extraBadges ?? []).filter((b) => !badgeSourceHidden(b.source)) : [];
   const showExtraBadges = visibleExtraBadges.length > 0;

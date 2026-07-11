@@ -120,10 +120,12 @@ export const PROVIDER_EVENT_CATEGORIES: Partial<Record<ProviderId, EventCategory
   tiktok: ['gift', 'cheer', 'follow'],
 };
 
-// Third-party badge providers the overlay resolves, each independently toggleable.
-// The `id` matches the `source` tagged on each resolved badge (7TV is the separate
-// seventvBadge, everything else arrives in extraBadges with its provider).
+// Badge providers the overlay resolves, each independently toggleable under the
+// showThirdPartyBadges master. The `id` matches the `source` tagged on each
+// resolved badge (7TV is the separate seventvBadge, StreamNook is the separate
+// member-badge slot, everything else arrives in extraBadges with its provider).
 export const THIRD_PARTY_BADGE_PROVIDERS: { id: string; label: string }[] = [
+  { id: 'streamnook', label: 'StreamNook' },
   { id: '7tv', label: '7TV' },
   { id: 'ffz', label: 'FFZ' },
   { id: 'chatterino', label: 'Chatterino' },

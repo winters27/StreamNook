@@ -819,7 +819,7 @@ const OverlaySettings = () => {
             <Slider value={style.badgeScale} min={OVERLAY_LIMITS.badgeScale.min} max={OVERLAY_LIMITS.badgeScale.max} step={0.05} onChange={(v) => set('badgeScale', v)} format={(v) => `${v.toFixed(2)}x`} />
           </SettingsRow>
           <SettingsRow title="Third-party badges" description="7TV, FFZ, Chatterino, and more. Native platform badges use the toggle above." control={<Toggle enabled={style.showThirdPartyBadges} onChange={() => set('showThirdPartyBadges', !style.showThirdPartyBadges)} />} />
-          <SettingsRow title="Badge providers" description="Show or hide each third-party badge provider on its own.">
+          <SettingsRow title="Badge providers" description="Show or hide each badge provider on its own. StreamNook is the member badge; the rest are third-party.">
             <div className="flex flex-wrap gap-2">
               {THIRD_PARTY_BADGE_PROVIDERS.map((p) => {
                 const on = style.showThirdPartyBadges !== false && !(style.hiddenBadgeProviders ?? []).includes(p.id);
@@ -838,7 +838,7 @@ const OverlaySettings = () => {
             </div>
           </SettingsRow>
           <SettingsRow title="7TV paints" description="Colored and animated username gradients." control={<Toggle enabled={style.showPaints} onChange={() => set('showPaints', !style.showPaints)} />} />
-          <SettingsRow title="StreamNook atmospheres" description="A StreamNook member's equipped atmosphere: the animated wash behind their own message only. Separate from event styles and your overlay's background." control={<Toggle enabled={style.showAtmospheres} onChange={() => set('showAtmospheres', !style.showAtmospheres)} />} />
+          <SettingsRow title="StreamNook atmospheres" description="A member's equipped atmosphere: the animated wash behind their own message only. Separate from event styles and your overlay's background." control={<Toggle enabled={style.showAtmospheres} onChange={() => set('showAtmospheres', !style.showAtmospheres)} />} />
           <SettingsRow title="Show timestamps" control={<Toggle enabled={style.showTimestamps} onChange={() => set('showTimestamps', !style.showTimestamps)} />} />
           <SettingsRow title="New messages" description="Where incoming messages appear.">
             <SegmentedSelect
