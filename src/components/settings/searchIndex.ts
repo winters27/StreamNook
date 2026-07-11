@@ -815,7 +815,7 @@ export const SETTINGS_INDEX: SettingsIndexEntry[] = [
     tab: 'Overlay',
     section: 'Emotes & Badges',
     title: 'Emotes and Badges',
-    description: 'Emote size on the overlay and whether chatter badges are shown.'
+    description: 'Emote size on the overlay and whether chatter badges are shown: platform badges, third-party badges (7TV, FFZ, Chatterino), the StreamNook member badge, 7TV paints, and atmospheres.'
   },
   {
     tab: 'Overlay',

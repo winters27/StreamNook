@@ -809,7 +809,7 @@ const SETTINGS_CATALOG: SettingsEntry[] = [
   { tab: 'Overlay', keywords: 'stream overlay chat overlay obs streamelements streamlabs browser source on-stream chat box widget multi-platform merged chat emotes 7tv paints badges cosmetics stream chat on screen' },
   { tab: 'Overlay', section: 'Sources', keywords: 'overlay sources platforms twitch kick youtube tiktok merge source tag which platform label dot' },
   { tab: 'Overlay', section: 'Typography', keywords: 'overlay font family size line height message spacing typography text' },
-  { tab: 'Overlay', section: 'Emotes & Badges', keywords: 'overlay emote size badges show hide scale' },
+  { tab: 'Overlay', section: 'Emotes & Badges', keywords: 'overlay emote size badges show hide scale third-party 7tv ffz chatterino paints streamnook member badge atmosphere cosmetics disable' },
   { tab: 'Overlay', section: 'Appearance', keywords: 'overlay appearance text color shadow legibility timestamps transparent solid background opacity scene' },
   { tab: 'Overlay', section: 'Behavior', keywords: 'overlay behavior direction bottom top entrance animation fade slide max messages cap' },
 
