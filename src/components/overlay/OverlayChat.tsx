@@ -91,6 +91,39 @@ const badgeUrl = (b: OverlayMessage['badges'][number]): string | undefined =>
 // param so the avatar renders crisply. Leaves URLs without the param untouched.
 const hiResAvatar = (url: string): string => url.replace(/=s\d+(-|$)/, '=s160$1');
 
+// Kick puts emotes into the reply PARENT body as literal `[emote:id:name]` tokens
+// (the main message body is pre-tokenized into segments; the reply body is only a
+// raw string). Render those tokens as Kick emote images so a Kick reply doesn't
+// show raw `[emote:...]` markup. No-op for Twitch/YouTube/TikTok reply bodies,
+// which never contain the token.
+const KICK_EMOTE_TOKEN = /\[emote:(\d+):([^\]]*)\]/g;
+const renderReplyBody = (text: string): ReactNode => {
+  if (!text || !text.includes('[emote:')) return text;
+  const out: ReactNode[] = [];
+  let last = 0;
+  let key = 0;
+  let m: RegExpExecArray | null;
+  KICK_EMOTE_TOKEN.lastIndex = 0;
+  while ((m = KICK_EMOTE_TOKEN.exec(text)) !== null) {
+    if (m.index > last) out.push(text.slice(last, m.index));
+    const name = m[2] || 'emote';
+    out.push(
+      <FallbackImg
+        key={`re-${key++}`}
+        src={`https://files.kick.com/emotes/${m[1]}/fullsize`}
+        alt={name}
+        fallback={name}
+        referrerPolicy="no-referrer"
+        className="inline-block align-middle"
+        style={{ height: '1.4em', margin: '0 0.1em', verticalAlign: '-0.3em' }}
+      />,
+    );
+    last = m.index + m[0].length;
+  }
+  if (last < text.length) out.push(text.slice(last));
+  return out;
+};
+
 // Map each platform's msg-id/msg_type to its event category (EventCategory + the
 // filter list live in overlayConfig; the icon map + text helpers stay here with
 // the renderer). Mirrors the app's own split (ChatMessage isSubscription vs
@@ -147,23 +180,77 @@ const eventFallback = (category: EventCategory, name: string): string => {
   }
 };
 
-const OverlaySegment = ({ segment, emoteScale }: { segment: MessageSegment; emoteScale: number }) => {
+// ── Unicode emoji → one consistent style ────────────────────────────────────
+// Platforms disagree: some tokenize emoji into image segments, others leave them
+// as raw unicode (drawn by the streamer's OS font). To make a merged overlay
+// consistent, a chosen vendor style re-renders EVERY emoji as that style's image.
+// FE0F is KEPT in the codepoint (emoji-datasource filenames include it, e.g.
+// 2764-fe0f.png) for wider coverage. Portable copy of the app's emojiService idea.
+const EMOJI_REGEX = /\p{Regional_Indicator}{2}|(?:\p{Emoji_Presentation}|\p{Emoji}\uFE0F)(?:\p{Emoji_Modifier})?(?:\u200D(?:\p{Emoji_Presentation}|\p{Emoji}\uFE0F)(?:\p{Emoji_Modifier})?)*/gu;
+const EMOJI_CDN: Record<string, string> = {
+  apple: 'https://cdn.jsdelivr.net/npm/emoji-datasource-apple@15.1.2/img/apple/64',
+  google: 'https://cdn.jsdelivr.net/npm/emoji-datasource-google@15.1.2/img/google/64',
+  facebook: 'https://cdn.jsdelivr.net/npm/emoji-datasource-facebook@15.1.2/img/facebook/64',
+};
+const emojiImageUrl = (emoji: string, style: string): string | null => {
+  const cps = [...emoji].map((c) => c.codePointAt(0)!);
+  // Twitter renders from Twemoji SVG — vector, so it's sharp at any size (no 64px
+  // ceiling). Twemoji strips FE0F from filenames. The other vendors are proprietary
+  // raster; emoji-datasource's 64px (keeps FE0F) is the best the open CDNs offer.
+  if (style === 'twitter') {
+    const cp = cps.filter((c) => c !== 0xfe0f).map((c) => c.toString(16)).join('-');
+    return `https://cdn.jsdelivr.net/gh/jdecked/twemoji@15.1.0/assets/svg/${cp}.svg`;
+  }
+  const base = EMOJI_CDN[style];
+  if (!base) return null;
+  const cp = cps.map((c) => c.toString(16)).join('-');
+  return `${base}/${cp}.png`;
+};
+const isUnicodeEmoji = (s: string): boolean => { EMOJI_REGEX.lastIndex = 0; return EMOJI_REGEX.test(s); };
+const emojiImg = (emoji: string, url?: string, key?: string | number): ReactNode => (
+  <FallbackImg
+    key={key}
+    src={url}
+    alt={emoji}
+    loading="lazy"
+    className="inline-block align-middle"
+    style={{ height: '1.25em', margin: '0 0.05em', verticalAlign: '-0.2em' }}
+    fallback={<span>{emoji}</span>}
+  />
+);
+// Split a text run into text + emoji-image nodes for a non-system emoji style.
+const renderTextWithEmoji = (text: string, style: string): ReactNode => {
+  if (!text) return text;
+  EMOJI_REGEX.lastIndex = 0;
+  if (!EMOJI_REGEX.test(text)) return text;
+  EMOJI_REGEX.lastIndex = 0;
+  const out: ReactNode[] = [];
+  let last = 0;
+  let key = 0;
+  let m: RegExpExecArray | null;
+  while ((m = EMOJI_REGEX.exec(text)) !== null) {
+    if (m.index > last) out.push(text.slice(last, m.index));
+    const emoji = m[0];
+    const url = emojiImageUrl(emoji, style);
+    out.push(url ? emojiImg(emoji, url, `e-${key++}`) : emoji);
+    last = m.index + emoji.length;
+  }
+  if (last < text.length) out.push(text.slice(last));
+  return out;
+};
+
+const OverlaySegment = ({ segment, emoteScale, emojiStyle = 'apple' }: { segment: MessageSegment; emoteScale: number; emojiStyle?: string }) => {
   if (segment.type === 'emote') {
     return <EmoteImg segment={segment} emoteScale={emoteScale} />;
   }
   if (segment.type === 'emoji') {
-    // Fall back to the literal unicode character (the OS renders it) if the CDN
-    // image is missing.
-    return (
-      <FallbackImg
-        src={segment.emoji_url}
-        alt={segment.content}
-        loading="lazy"
-        className="inline-block align-middle"
-        style={{ height: '1.25em', margin: '0 0.05em', verticalAlign: '-0.2em' }}
-        fallback={<span>{segment.content}</span>}
-      />
-    );
+    const uni = isUnicodeEmoji(segment.content);
+    // A unicode emoji under System style renders as the OS glyph.
+    if (uni && emojiStyle === 'system') return <span>{segment.content}</span>;
+    // Unicode emoji in a vendor style → re-image it; a custom (non-unicode) emoji
+    // keeps its own platform image. Falls back to the literal char if the CDN 404s.
+    const url = (uni ? emojiImageUrl(segment.content, emojiStyle) : null) || segment.emoji_url;
+    return emojiImg(segment.content, url);
   }
   if (segment.type === 'cheermote') {
     return (
@@ -176,7 +263,8 @@ const OverlaySegment = ({ segment, emoteScale }: { segment: MessageSegment; emot
   if (segment.type === 'link') {
     return <span style={{ color: '#8ab4ff', textDecoration: 'underline' }}>{segment.content}</span>;
   }
-  return <span>{segment.content}</span>;
+  // Plain text: under a vendor style, image any unicode emoji sitting in the text.
+  return <span>{emojiStyle === 'system' ? segment.content : renderTextWithEmoji(segment.content, emojiStyle)}</span>;
 };
 
 const SourceTag = ({ provider, mode }: { provider: ProviderId; mode: OverlayStyle['sourceTag'] }) => {
@@ -291,21 +379,31 @@ const OverlayRow = ({ message, style }: { message: OverlayMessage; style: Overla
   const color = message.color || '#9147ff';
   // The overlay renders paints at full fidelity ('all' shadows) so the hosted page
   // and the builder preview always match, independent of any personal chat setting.
+  // 7TV paint on the name, unless the streamer turned paints off.
+  const paintOn = style.showPaints !== false && !!message.paint;
   const nameTextStyle = useMemo<CSSProperties>(
-    () => (message.paint ? computePaintStyle(message.paint, color, 'all') : { color }),
-    [message.paint, color],
+    () => (paintOn && message.paint ? computePaintStyle(message.paint, color, 'all') : { color }),
+    [paintOn, message.paint, color],
   );
 
   const badgeSize = `calc(1.35em * ${style.badgeScale})`;
-  const hasBadges =
-    (message.badges?.length ?? 0) > 0 ||
-    !!message.seventvBadgeUrl ||
-    (message.extraBadges?.length ?? 0) > 0 ||
-    message.streamNookUserNumber != null;
+  // Native platform badges (+ StreamNook identity) obey showBadges. Third-party
+  // badges obey showThirdPartyBadges AND a per-provider allowlist — 7TV, FFZ,
+  // Chatterino, and the rest each toggle independently by the badge's `source`.
+  const hiddenBadgeProviders = style.hiddenBadgeProviders ?? [];
+  const badgeSourceHidden = (src?: string) => hiddenBadgeProviders.includes((src || '').toLowerCase());
+  const nativeBadgesOn = style.showBadges;
+  const thirdPartyOn = style.showThirdPartyBadges !== false;
+  const showNativeBadges = nativeBadgesOn && (message.badges?.length ?? 0) > 0;
+  const showSnBadge = nativeBadgesOn && message.streamNookUserNumber != null;
+  const showSeventvBadge = thirdPartyOn && !!message.seventvBadgeUrl && !badgeSourceHidden('7tv');
+  const visibleExtraBadges = thirdPartyOn ? (message.extraBadges ?? []).filter((b) => !badgeSourceHidden(b.source)) : [];
+  const showExtraBadges = visibleExtraBadges.length > 0;
+  const anyBadge = showNativeBadges || showSnBadge || showSeventvBadge || showExtraBadges;
   const reply = message.metadata?.reply_info;
   const avatar = (provider === 'youtube' || provider === 'tiktok') ? message.tags?.avatar : undefined;
 
-  const atmosphere = message.atmosphere ?? null;
+  const atmosphere = style.showAtmospheres === false ? null : (message.atmosphere ?? null);
   const atmosphereFrost = !!atmosphere?.chatFrost;
 
   const rowStyle: CSSProperties = {
@@ -332,10 +430,10 @@ const OverlayRow = ({ message, style }: { message: OverlayMessage; style: Overla
 
   // Reusable pieces so events (decorated style) render the sender exactly like a
   // normal chat row: their badges + paint-decorated name.
-  const badgesNode = style.showBadges && hasBadges ? (
+  const badgesNode = anyBadge ? (
     <span className="inline-flex items-center" style={{ gap: '0.2em', marginRight: '0.4em', verticalAlign: '-0.18em' }}>
       {/* StreamNook identity badge leads the row, mirroring the real chat row. */}
-      {message.streamNookUserNumber != null && (
+      {showSnBadge && (
         <FallbackImg
           src={message.streamNookBadgeUrl || SN_DEFAULT_LOGO}
           alt="StreamNook"
@@ -344,17 +442,17 @@ const OverlayRow = ({ message, style }: { message: OverlayMessage; style: Overla
           style={{ height: badgeSize, width: badgeSize, objectFit: 'contain' }}
         />
       )}
-      {(message.badges ?? []).map((b, i) => {
+      {showNativeBadges && (message.badges ?? []).map((b, i) => {
         const url = badgeUrl(b);
         if (!url) return null;
         return (
           <FallbackImg key={`tw-${b.name}-${i}`} src={url} alt={b.title || b.name} className="inline-block align-middle" style={{ height: badgeSize, width: badgeSize }} />
         );
       })}
-      {message.seventvBadgeUrl && (
+      {showSeventvBadge && (
         <FallbackImg key="seventv" src={message.seventvBadgeUrl} alt={message.seventvBadgeTitle || '7TV badge'} className="inline-block align-middle" style={{ height: badgeSize, width: badgeSize }} />
       )}
-      {(message.extraBadges ?? []).map((b, i) => (
+      {showExtraBadges && visibleExtraBadges.map((b, i) => (
         <FallbackImg key={`tp-${i}`} src={b.url} alt={b.title || 'badge'} className="inline-block align-middle" style={{ height: badgeSize, width: badgeSize }} />
       ))}
     </span>
@@ -367,7 +465,7 @@ const OverlayRow = ({ message, style }: { message: OverlayMessage; style: Overla
   // Paint (or flat color) on a plain inline-block span so background-clip:text
   // clips to the glyphs, not the box (a flex display makes it clip to the box).
   const nameNode = (
-    <span style={{ ...nameTextStyle, fontWeight: 700, display: 'inline-block', verticalAlign: 'baseline', textShadow: message.paint ? 'none' : undefined }}>
+    <span style={{ ...nameTextStyle, fontWeight: 700, display: 'inline-block', verticalAlign: 'baseline', textShadow: paintOn ? 'none' : undefined }}>
       {message.display_name || message.username}
     </span>
   );
@@ -458,7 +556,7 @@ const OverlayRow = ({ message, style }: { message: OverlayMessage; style: Overla
               {nameNode}
               <span style={{ fontWeight: 400 }}> {shownAction}</span>
               {giftSegments.map((seg, i) => (
-                <OverlaySegment key={`gift-${i}`} segment={seg} emoteScale={Math.max(style.emoteScale, 1)} />
+                <OverlaySegment key={`gift-${i}`} segment={seg} emoteScale={Math.max(style.emoteScale, 1)} emojiStyle={style.emojiStyle} />
               ))}
             </div>
             {hasBody && (
@@ -470,7 +568,7 @@ const OverlayRow = ({ message, style }: { message: OverlayMessage; style: Overla
                 <span aria-hidden="true" style={{ flexShrink: 0, width: '2px', borderRadius: '1px', background: 'color-mix(in srgb, currentColor 45%, transparent)' }} />
                 <span style={{ minWidth: 0 }}>
                   {message.segments!.map((seg, i) => (
-                    <OverlaySegment key={i} segment={seg} emoteScale={style.emoteScale} />
+                    <OverlaySegment key={i} segment={seg} emoteScale={style.emoteScale} emojiStyle={style.emojiStyle} />
                   ))}
                 </span>
               </div>
@@ -499,7 +597,7 @@ const OverlayRow = ({ message, style }: { message: OverlayMessage; style: Overla
       {message.metadata?.is_action ? ' ' : <><span style={{ color, fontWeight: 700 }}>:</span>{' '}</>}
       <span style={{ fontWeight: 400, ...(message.metadata?.is_action ? { color, fontStyle: 'italic' } : null) }}>
         {(message.segments ?? [{ type: 'text', content: message.content }]).map((seg, i) => (
-          <OverlaySegment key={i} segment={seg} emoteScale={style.emoteScale} />
+          <OverlaySegment key={i} segment={seg} emoteScale={style.emoteScale} emojiStyle={style.emojiStyle} />
         ))}
       </span>
     </div>
@@ -512,7 +610,7 @@ const OverlayRow = ({ message, style }: { message: OverlayMessage; style: Overla
         {reply && (
           <div style={{ fontSize: '0.82em', opacity: 0.7, marginBottom: '0.1em' }}>
             <span aria-hidden="true" style={{ marginRight: '0.3em' }}>↳</span>
-            Replying to <span style={{ fontWeight: 700 }}>@{reply.parent_display_name}</span>: {reply.parent_msg_body}
+            Replying to <span style={{ fontWeight: 700 }}>@{reply.parent_display_name}</span>: {renderReplyBody(reply.parent_msg_body)}
           </div>
         )}
         {atmosphereFrost ? (
@@ -533,6 +631,16 @@ const CONTAINER_PAD_Y = 16;
 // Hard ceiling on mounted rows (raid safety). The fit calc keeps far fewer; this
 // only bounds a pathological burst before the measure pass narrows it.
 const MAX_ROWS = 200;
+
+// Generic CSS family keywords that never need a webfont load.
+const GENERIC_FAMILIES = new Set([
+  'system-ui', 'ui-sans-serif', 'ui-monospace', 'ui-serif', 'sans-serif', 'serif',
+  'monospace', 'cursive', 'fantasy', '-apple-system', 'blinkmacsystemfont',
+  'inherit', 'initial', 'unset',
+]);
+// First family in a font-family string, unquoted.
+const primaryFamily = (ff: string): string =>
+  (ff || '').split(',')[0].trim().replace(/^["']|["']$/g, '');
 
 /**
  * Renders the overlay chat. Filters by selected sources, orders by direction, and
@@ -557,6 +665,22 @@ export const OverlayChat = ({ messages, style: rawStyle, superSample = 1 }: { me
   const padXpx = 10 * ss;
   const padYpx = 8 * ss;
   const sourcesKey = style.sources.join(',');
+  // Load the chosen font from Google Fonts when it isn't a generic/system family,
+  // so a custom font (or a preset that isn't installed locally) renders in OBS and
+  // on the hosted page. If the name isn't a real Google Font the request just
+  // no-ops and the browser falls back to the family stack.
+  useEffect(() => {
+    if (typeof document === 'undefined') return;
+    const fam = primaryFamily(style.fontFamily);
+    if (!fam || GENERIC_FAMILIES.has(fam.toLowerCase())) return;
+    const id = 'sn-ov-font-' + fam.toLowerCase().replace(/[^a-z0-9]+/g, '-');
+    if (document.getElementById(id)) return;
+    const link = document.createElement('link');
+    link.id = id;
+    link.rel = 'stylesheet';
+    link.href = `https://fonts.googleapis.com/css2?family=${encodeURIComponent(fam).replace(/%20/g, '+')}:wght@400;600;700&display=swap`;
+    document.head.appendChild(link);
+  }, [style.fontFamily]);
   const containerRef = useRef<HTMLDivElement>(null);
   // How many of the newest messages to mount. Driven by measurement below, not a
   // fixed cap: it grows to fill the canvas and shrinks so nothing off-screen stays
@@ -614,6 +738,20 @@ export const OverlayChat = ({ messages, style: rawStyle, superSample = 1 }: { me
   // (not by an OverlayRow returning null) so every mounted message is exactly one
   // DOM row — the measure pass below relies on that 1:1 mapping to stay stable. No
   // cap here; the measure pass decides how many actually render.
+  // Command filters. Each entry is either a PREFIX (all-symbol, e.g. '!' / '#' →
+  // matches the message start) or a SPECIFIC command (has letters/digits, e.g.
+  // '!title' → matches the first word exactly), so a streamer can nuke all commands
+  // or hide just a few.
+  const cmdFilterKey = (style.commandFilters ?? []).map((f) => `${f.mode}:${f.value}`).join('|');
+  const cmdFilters = useMemo(
+    () =>
+      (style.commandFilters ?? [])
+        .map((f) => ({ value: (f.value ?? '').trim().toLowerCase(), mode: f.mode }))
+        .filter((f) => f.value),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [cmdFilterKey],
+  );
+
   const ordered = useMemo(() => {
     const allowed = new Set(style.sources);
     return collapseGiftBombs(messages).filter((m) => {
@@ -622,6 +760,17 @@ export const OverlayChat = ({ messages, style: rawStyle, superSample = 1 }: { me
       if (isBlockedUser(m)) return false;
       const mt = m.metadata?.msg_type || m.tags?.['msg-id'];
       const isEvent = !!(m.metadata?.system_message || m.tags?.['system-msg']) || (mt ? !!CATEGORY_OF[mt] : false);
+      // Hide command messages (never events): prefix entries match the message
+      // start; specific entries match the first word exactly.
+      if (!isEvent && style.hideCommands && cmdFilters.length) {
+        const body = (m.content ?? '').replace(/^\s+/, '').toLowerCase();
+        if (body) {
+          const firstWord = body.split(/\s+/)[0];
+          for (const f of cmdFilters) {
+            if (f.mode === 'prefix' ? body.startsWith(f.value) : firstWord === f.value) return false;
+          }
+        }
+      }
       if (isEvent) {
         const cat = categoryOf(mt);
         if (style.hiddenEvents?.includes(cat)) return false;
@@ -632,7 +781,7 @@ export const OverlayChat = ({ messages, style: rawStyle, superSample = 1 }: { me
       return true;
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [messages, sourcesKey, style.hideBots, hiddenKey, hiddenProviderKey, blockedKey]);
+  }, [messages, sourcesKey, style.hideBots, hiddenKey, hiddenProviderKey, blockedKey, style.hideCommands, cmdFilterKey]);
 
   const windowMsgs = ordered.slice(-count);
   const rendered = style.direction === 'newTop' ? windowMsgs.slice().reverse() : windowMsgs;

@@ -24,6 +24,7 @@ export type SourceTagMode = 'none' | 'dot' | 'label' | 'icon';
 export type OverlayBackground = 'transparent' | 'solid';
 export type OverlayDirection = 'newBottom' | 'newTop';
 export type OverlayEntrance = 'none' | 'fade' | 'slide' | 'pop';
+export type EmojiStyle = 'system' | 'apple' | 'google' | 'twitter' | 'facebook';
 
 export interface OverlayStyle {
   /** Overlay canvas size in px (the Browser Source dimensions in OBS). Taller =
@@ -81,6 +82,28 @@ export interface OverlayStyle {
    *  auto-hider misses. Matching is effectively per-platform (a name blocked on any
    *  source of a platform is hidden for that platform). */
   blockedUsers: Record<string, string[]>;
+  /** Hide chat messages whose body starts with a command prefix (e.g. "!title").
+   *  Only applies to normal messages, never to events. */
+  hideCommands: boolean;
+  /** Command filters applied when hideCommands is on. Each entry has an explicit
+   *  mode: 'prefix' hides every message starting with `value` (e.g. '!' or '#'),
+   *  'exact' hides only messages whose first word equals `value` (e.g. '!title'). */
+  commandFilters: { value: string; mode: 'prefix' | 'exact' }[];
+  /** Show 7TV paints on usernames. */
+  showPaints: boolean;
+  /** Show third-party badges (7TV, FFZ, Chatterino, and similar). Native platform
+   *  badges are controlled separately by showBadges. */
+  showThirdPartyBadges: boolean;
+  /** Show StreamNook atmosphere backgrounds behind a member's chat row. */
+  showAtmospheres: boolean;
+  /** Third-party badge providers to hide, by id (e.g. 'ffz', 'chatterino', 'bttv',
+   *  '7tv'). Each provider toggles independently, on top of the global
+   *  showThirdPartyBadges master. See THIRD_PARTY_BADGE_PROVIDERS. */
+  hiddenBadgeProviders: string[];
+  /** How unicode emoji render. 'system' uses the OS/font emoji (varies by machine);
+   *  the vendor styles re-render EVERY emoji from every platform as that one style's
+   *  images, so a merged overlay looks consistent regardless of platform or OS. */
+  emojiStyle: EmojiStyle;
   /** Whether new messages appear at the bottom (chat-style) or the top. */
   direction: OverlayDirection;
   /** Entrance animation for incoming messages. */
@@ -97,8 +120,33 @@ export const PROVIDER_EVENT_CATEGORIES: Partial<Record<ProviderId, EventCategory
   tiktok: ['gift', 'cheer', 'follow'],
 };
 
+// Third-party badge providers the overlay resolves, each independently toggleable.
+// The `id` matches the `source` tagged on each resolved badge (7TV is the separate
+// seventvBadge, everything else arrives in extraBadges with its provider).
+export const THIRD_PARTY_BADGE_PROVIDERS: { id: string; label: string }[] = [
+  { id: '7tv', label: '7TV' },
+  { id: 'ffz', label: 'FFZ' },
+  { id: 'chatterino', label: 'Chatterino' },
+  { id: 'homies', label: 'Homies' },
+  { id: 'bttv', label: 'BTTV' },
+  { id: 'chatsen', label: 'Chatsen' },
+  { id: 'chatty', label: 'Chatty' },
+  { id: 'dankchat', label: 'DankChat' },
+];
+
 // Font choices mirror the app's Theme › Font list so an overlay can match the
 // streamer's in-app look. Values are CSS font-family strings.
+// Unicode emoji rendering styles. 'system' = the OS/font emoji; the rest are image
+// sets served from jsDelivr (emoji-datasource-<style>), sharing one codepoint
+// filename convention so every emoji renders in the chosen style.
+export const EMOJI_STYLES: { value: EmojiStyle; label: string }[] = [
+  { value: 'system', label: 'System' },
+  { value: 'apple', label: 'Apple' },
+  { value: 'google', label: 'Google' },
+  { value: 'twitter', label: 'Twitter' },
+  { value: 'facebook', label: 'Facebook' },
+];
+
 export const FONT_OPTIONS: { label: string; value: string }[] = [
   { label: 'Inter', value: "'Inter', system-ui, sans-serif" },
   { label: 'Satoshi', value: "'Satoshi', system-ui, sans-serif" },
@@ -133,6 +181,13 @@ export const DEFAULT_OVERLAY_STYLE: OverlayStyle = {
   hiddenProviderEvents: [],
   superchatCurrency: '',
   blockedUsers: {},
+  hideCommands: false,
+  commandFilters: [{ value: '!', mode: 'prefix' }],
+  showPaints: true,
+  showThirdPartyBadges: true,
+  showAtmospheres: true,
+  hiddenBadgeProviders: [],
+  emojiStyle: 'apple',
   direction: 'newBottom',
   entrance: 'fade',
 };
@@ -150,11 +205,39 @@ export const OVERLAY_LIMITS = {
   backgroundOpacity: { min: 0, max: 1 },
 } as const;
 
+// Coerce commandFilters into valid { value, mode } entries. Repairs legacy shapes
+// (a plain string from an earlier version → inferred mode) and drops empties, so a
+// stale saved config can never render blank/garbage chips or filter on nothing.
+export function sanitizeCommandFilters(raw: unknown): { value: string; mode: 'prefix' | 'exact' }[] {
+  if (!Array.isArray(raw)) return [];
+  const out: { value: string; mode: 'prefix' | 'exact' }[] = [];
+  const seen = new Set<string>();
+  for (const item of raw) {
+    let value = '';
+    let mode: 'prefix' | 'exact' = 'prefix';
+    if (typeof item === 'string') {
+      value = item.trim();
+      mode = /[a-z0-9]/i.test(value) ? 'exact' : 'prefix';
+    } else if (item && typeof item === 'object') {
+      const rec = item as { value?: unknown; mode?: unknown };
+      value = String(rec.value ?? '').trim();
+      mode = rec.mode === 'exact' ? 'exact' : 'prefix';
+    }
+    if (!value) continue;
+    const key = `${mode}:${value.toLowerCase()}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({ value, mode });
+  }
+  return out;
+}
+
 export const clampOverlayStyle = (s: OverlayStyle): OverlayStyle => {
   const clamp = (v: number, lo: number, hi: number) =>
     Math.min(hi, Math.max(lo, v));
   return {
     ...s,
+    commandFilters: sanitizeCommandFilters(s.commandFilters),
     width: Math.round(clamp(s.width, OVERLAY_LIMITS.width.min, OVERLAY_LIMITS.width.max)),
     height: Math.round(clamp(s.height, OVERLAY_LIMITS.height.min, OVERLAY_LIMITS.height.max)),
     fontSize: clamp(s.fontSize, OVERLAY_LIMITS.fontSize.min, OVERLAY_LIMITS.fontSize.max),

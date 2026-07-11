@@ -111,7 +111,7 @@ function adapt(m: BackendChatMessage, users: UsersMap): OverlayMessage {
   const seventvBadge = user?.seventvBadge;
   const extraBadges = (user?.thirdPartyBadges ?? [])
     .filter((b) => b && b.imageUrl)
-    .map((b) => ({ url: b.imageUrl as string, title: b.title }));
+    .map((b) => ({ url: b.imageUrl as string, title: b.title, source: b.provider }));
   const streamNookUserNumber =
     m.user_id && isStreamNookUser(m.user_id) ? (getStreamNookUserNumber(m.user_id) ?? null) : null;
   // The member's equipped StreamNook cosmetic badge (bundled asset URL); the twin
