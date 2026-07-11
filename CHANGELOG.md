@@ -1,3 +1,9 @@
+## [8.3.3] - 2026-07-10
+
+### 🐛 Bug Fixes
+- **The StreamNook member badge can now be hidden on your overlay.** It appears in the badge providers list alongside 7TV, FFZ, and the rest, and it follows the third-party badges toggle, so switching that off hides every extra badge at once.
+- **Your overlay no longer starts from a blank screen after a reload.** It remembers the last messages it showed, so restarting OBS or refreshing the browser source brings recent chat right back.
+
 ## [8.3.2] - 2026-07-10
 
 ### ✨ Features
