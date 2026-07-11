@@ -415,10 +415,9 @@ jobs:
           # --- Custom server emote substitution ---
           # Format: '<:name:snowflake_id>' for static, '<a:name:id>' for animated.
           # Get IDs by typing \:emote_name: in any Discord channel (Discord echoes the raw form).
-          # IMPORTANT: custom emotes render in `content`, embed `description`, and embed
-          # `fields[].name/value`. They do NOT render in embed `title`, `author.name`, or
-          # `footer.text` (those fields show literal text). Leave a value empty to keep
-          # the unicode fallback.
+          # With Components v2 every visible line is a Text Display, and custom emotes render in
+          # any Text Display (including the title block), so all of them show. Leave a value
+          # empty to keep the unicode fallback.
           $emoteMap = @{
             feature     = '<a:alert:1380653449305391104>'    # animated red exclamation
             bugfix      = '<a:check:1380653692000407572>'    # animated checkmark
@@ -430,18 +429,35 @@ jobs:
           # Use the changelog body produced earlier (without the appended Bundle Components / Installation block)
           $body = Get-Content ./changelog_section.md -Raw
 
-          # Strip the leading "## [version] - date" header — version is already the embed title
+          # Strip the leading "## [version] - date" header — the version is shown in the title block
           $body = $body -replace '(?ms)^\s*##\s*\[?\d[\d\.]*\]?.*?\r?\n', ''
           $body = $body.Trim()
 
-          # Promote section headers from H3 (### Features) to H2 (## Features). H2 renders
-          # noticeably bigger and bolder in Discord, giving stronger visual hierarchy than
-          # GitHub's default H3 style. Only matches lines that start with exactly three #.
-          $body = $body -replace '(?m)^###\s+', '## '
+          # Compact the changelog for Discord. Changelog bullets are written as
+          # "- **Bold lead.** explanation prose"; keep only the bold lead so the
+          # post is a short scannable list. Section headers survive, everything
+          # else (prose paragraphs, blockquotes, code fences, dividers) is dropped.
+          # Full notes remain on the GitHub release, linked below.
+          $compactLines = New-Object System.Collections.Generic.List[string]
+          foreach ($line in ($body -split "`r?`n")) {
+            if ($line -match '^#{2,3}\s') {
+              if ($compactLines.Count -gt 0) { $compactLines.Add('') }
+              $compactLines.Add($line)
+            }
+            elseif ($line -match '^\s*-\s+\*\*(.+?)\*\*') {
+              $compactLines.Add('- ' + $Matches[1].TrimEnd('.', ',', ';', ':'))
+            }
+            elseif ($line -match '^\s*-\s+(\S.*)$') {
+              # Bullet without a bold lead: keep just its first sentence.
+              $first = ($Matches[1] -split '(?<=[.!?])\s+')[0]
+              $compactLines.Add('- ' + $first.TrimEnd('.'))
+            }
+          }
+          $body = ($compactLines -join "`n").Trim()
 
-          # Add a thin separator + GitHub link at the bottom of the description using subtext
-          # styling (-# prefix renders smaller and dimmer in Discord, perfect for metadata).
-          $body = $body.TrimEnd() + "`n`n-# [View release on GitHub →]($releaseUrl)"
+          # Promote section headers from H3 (### Features) to H2 (## Features) so every
+          # section title renders at the same larger size. Only matches exactly three #.
+          $body = $body -replace '(?m)^###\s+', '## '
 
           # Replace the changelog section-marker emojis with custom server emotes when configured.
           # release_manager.ps1 generates sections using ✨ / 🐛 / 🔧 (see Brain/projects/StreamNook.md).
@@ -453,40 +469,77 @@ jobs:
           if ($emoteMap.bugfix)      { $body = $body.Replace($bugfixMarker, $emoteMap.bugfix) }
           if ($emoteMap.maintenance) { $body = $body.Replace($maintenanceMarker, $emoteMap.maintenance) }
 
-          # Discord embed description cap is 4096 chars. Leave headroom for the "read more" link.
-          # Custom emote strings are ~24 chars each vs ~4 for the unicode equivalent, so the
-          # post-substitution body can grow noticeably on changelogs with many bullets.
+          # Components v2 caps total text at 4000 chars across all text displays. The compacted
+          # changelog is normally well under this; guard anyway and link out if it overflows.
           $maxLen = 3800
           if ($body.Length -gt $maxLen) {
             $body = $body.Substring(0, $maxLen).TrimEnd() + "`n`n[Read the full changelog on GitHub]($releaseUrl)"
           }
 
-          # Optional content line above the embed — this is the one place custom emotes
-          # render alongside large bold text. Stays empty (and the field is omitted) until
-          # at least one of the logo/rocket emotes is configured.
-          $contentParts = @()
-          if ($emoteMap.logo)   { $contentParts += $emoteMap.logo }
-          if ($emoteMap.rocket) { $contentParts += $emoteMap.rocket }
-          $contentLine = if ($contentParts.Count -gt 0) {
-            ($contentParts -join ' ') + " **StreamNook v$version is live!**"
-          } else { $null }
+          # Split the compacted body into one block per changelog section (Features, Bug Fixes,
+          # ...) so each gets its own Text Display with a real Separator between them, instead
+          # of leaning on markdown whitespace for the visual break.
+          $sections = New-Object System.Collections.Generic.List[string]
+          $sb = New-Object System.Text.StringBuilder
+          foreach ($line in ($body -split "`r?`n")) {
+            if ($line -match '^#{2,3}\s' -and $sb.Length -gt 0) {
+              $sections.Add($sb.ToString().Trim())
+              $sb = New-Object System.Text.StringBuilder
+            }
+            [void]$sb.AppendLine($line)
+          }
+          if ($sb.Length -gt 0) { $sections.Add($sb.ToString().Trim()) }
+
+          # --- Build the Discord Components v2 payload ---
+          # Component types: 17 Container, 9 Section, 10 Text Display, 11 Thumbnail (accessory),
+          # 14 Separator, 1 Action Row, 2 Button (style 5 = link). The IS_COMPONENTS_V2 message
+          # flag (1<<15 = 32768) is required and disallows content/embeds, so the whole message
+          # is components. Custom server emotes render inside any Text Display.
+          $titleParts = @()
+          if ($emoteMap.rocket) { $titleParts += $emoteMap.rocket }
+          $titleText = "## StreamNook v$version is out"
+          $liveLine = (($titleParts + "**It's live now.**") -join ' ')
+
+          $children = New-Object System.Collections.Generic.List[object]
+
+          # Header block: title + "live" line, with the app icon as a thumbnail accessory.
+          $children.Add(@{
+            type = 9
+            components = @(@{ type = 10; content = "$titleText`n$liveLine" })
+            accessory = @{ type = 11; media = @{ url = "https://raw.githubusercontent.com/winters27/StreamNook/main/src-tauri/icons/icon.png" } }
+          })
+          $children.Add(@{ type = 14; divider = $true; spacing = 2 })
+
+          # One Text Display per changelog section, thin divider between each.
+          for ($i = 0; $i -lt $sections.Count; $i++) {
+            $children.Add(@{ type = 10; content = $sections[$i] })
+            if ($i -lt $sections.Count - 1) {
+              $children.Add(@{ type = 14; divider = $true; spacing = 1 })
+            }
+          }
+
+          $children.Add(@{ type = 14; divider = $true; spacing = 2 })
+          # Link button to the release, plus a small footer line (v2 has no embed footer).
+          $children.Add(@{
+            type = 1
+            components = @(@{ type = 2; style = 5; label = 'View release on GitHub'; url = $releaseUrl })
+          })
+          $children.Add(@{ type = 10; content = "-# Download $bundleName from the release page" })
 
           $payloadObj = @{
-            embeds = @(@{
-              title = "StreamNook v$version is out"
-              url = $releaseUrl
-              description = $body
-              color = 9941177  # #97B1B9 StreamNook accent
-              thumbnail = @{ url = "https://raw.githubusercontent.com/winters27/StreamNook/main/src-tauri/icons/icon.png" }
-              footer = @{ text = "Download $bundleName from the release page" }
-              timestamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+            flags = 32768  # IS_COMPONENTS_V2
+            components = @(@{
+              type = 17
+              accent_color = 9941177  # #97B1B9 StreamNook accent
+              components = $children
             })
           }
-          if ($contentLine) { $payloadObj.content = $contentLine }
-          $payload = $payloadObj | ConvertTo-Json -Depth 10 -Compress
+          $payload = $payloadObj | ConvertTo-Json -Depth 20 -Compress
 
+          # ?with_components=true is required for a webhook to process a Components v2 payload.
+          $uri = $env:DISCORD_RELEASE_WEBHOOK_URL + '?with_components=true'
           try {
-            Invoke-RestMethod -Uri $env:DISCORD_RELEASE_WEBHOOK_URL -Method Post -ContentType 'application/json' -Body $payload | Out-Null
+            Invoke-RestMethod -Uri $uri -Method Post -ContentType 'application/json' -Body $payload | Out-Null
             echo "Discord notification sent for v$version"
           } catch {
             # Don't fail the workflow if Discord is down — release is already on GitHub.
