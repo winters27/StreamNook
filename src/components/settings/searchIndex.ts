@@ -825,9 +825,105 @@ export const SETTINGS_INDEX: SettingsIndexEntry[] = [
   },
   {
     tab: 'Overlay',
+    section: 'Chatters',
+    title: 'Profile pictures',
+    description: 'Show or hide chatter avatars (profile pictures) on the overlay. YouTube and TikTok send them. Pfp, user photo, author image.'
+  },
+  {
+    tab: 'Overlay',
+    section: 'Chatters',
+    title: '@ before usernames',
+    description: 'Show or strip the leading @ on usernames on the overlay. YouTube handles arrive as @name; turn off to remove the at sign.'
+  },
+  {
+    tab: 'Overlay',
+    section: 'Messages',
+    title: 'Reply context',
+    description: 'Show or hide the small "Replying to" line above reply messages on the overlay. Reply thread, reply preview.'
+  },
+  {
+    tab: 'Overlay',
+    section: 'Chatters',
+    title: 'First-time chatters',
+    description: 'Mark the first message someone ever sends in the channel on the overlay: Twitch style (pink outline like Twitch chat) or StreamNook style (purple highlight like the app chat). First message highlight, new chatter, first time chat border.'
+  },
+  {
+    tab: 'Overlay',
+    section: 'Chatters',
+    title: 'Fill the highlight',
+    description: 'Nearly transparent color-matched tint inside the first-time chatter outline on the overlay. Fill, background tint, highlight.'
+  },
+  {
+    tab: 'Overlay',
+    section: 'Chatters',
+    title: 'First-time highlight animation',
+    description: 'Border accent when a first-time chatter\'s message lands on the overlay: Sheen (glint sweep), Pulse (border breathes), or Chase (spark orbits the ring). Plays once, or repeats every 5 seconds with the repeat toggle. Animation, sweep, shimmer, border flash, loop.'
+  },
+  {
+    tab: 'Overlay',
+    section: 'Events',
+    title: 'Event style',
+    description: 'How subs, gifts, raids, and other events look on the overlay: Plain per-platform tint, Outline thin ring in the platform color, or the StreamNook signature gradient wash.'
+  },
+  {
+    tab: 'Overlay',
+    section: 'Events',
+    title: 'Show events',
+    description: 'Per-source event filter: choose which event types each platform shows on the overlay, separately for Twitch, YouTube, TikTok, and Kick. Hide subs, gifts, raids, bits, follows, milestones, or announcements per platform.'
+  },
+  {
+    tab: 'Overlay',
+    section: 'Events',
+    title: 'Fill the outline',
+    description: 'Nearly transparent color-matched tint inside the Outline event ring on the overlay. Fill, background tint.'
+  },
+  {
+    tab: 'Overlay',
+    section: 'Chatters',
+    title: 'Highlight color',
+    description: 'Custom accent color for the first-time chatter highlight on the overlay (outline, fill, bar, and label together). Default is Twitch pink or StreamNook purple.'
+  },
+  {
+    tab: 'Overlay',
+    section: 'Messages',
+    title: 'Message bubbles',
+    description: 'Each overlay chat message sits in its own bubble with adjustable shape (rounded, pill, speech), corner radius, color, and opacity. Chat bubble, pill, messenger style, message background.'
+  },
+  {
+    tab: 'Overlay',
+    section: 'Messages',
+    title: 'Max lines per message',
+    description: 'Clamp long overlay messages to a number of lines with an ellipsis so walls of text and copypasta can\'t fill the canvas. Truncate, line limit.'
+  },
+  {
+    tab: 'Overlay',
+    section: 'Messages',
+    title: 'Remove messages after',
+    description: 'Auto-remove overlay messages a number of seconds after they appear, so a quiet stream doesn\'t show stale chat forever. Expire, auto clear, hide after inactivity, message lifetime.'
+  },
+  {
+    tab: 'Overlay',
+    section: 'Filters',
+    title: 'Hide messages containing',
+    description: 'Hide overlay messages containing chosen words or phrases, case-insensitive. Profanity filter, banned words, phrase blocklist, spoiler shield.'
+  },
+  {
+    tab: 'Overlay',
+    section: 'Events',
+    title: 'Outline color',
+    description: 'One fixed ring color for Outline-style events on the overlay, or the default where each event uses its platform\'s color.'
+  },
+  {
+    tab: 'Overlay',
+    section: 'Events',
+    title: 'Event outline animation',
+    description: 'Border accent when an Outline-style event lands on the overlay: Sheen (glint sweep), Pulse (border breathes), or Chase (spark orbits the ring). Plays once, or repeats every 5 seconds with the repeat toggle. Animation, sweep, shimmer, border flash, loop.'
+  },
+  {
+    tab: 'Overlay',
     section: 'Behavior',
     title: 'Behavior',
-    description: 'Whether new messages appear at the bottom or top, message entrance animation, and the maximum messages kept on screen.'
+    description: 'Whether new messages appear at the bottom or top, message entrance animation (fade, slide, drift, rise, pop, stamp), and the maximum messages kept on screen.'
   },
 
   // === Interface ===
