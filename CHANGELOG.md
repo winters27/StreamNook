@@ -1,3 +1,23 @@
+## [8.3.4] - 2026-07-12
+
+## Overlay update
+
+This release focuses on the stream chat overlay: new ways to highlight chatters and events, message bubbles, per-source event filters, and more control over what shows and how messages come in.
+
+---
+
+### ✨ Features
+- **First-time chatter highlights.** Mark someone's first-ever message in your channel with a Twitch-style pink outline or StreamNook's purple highlight. Pick a custom accent color, add a subtle fill, and give the border an animated accent (Sheen, Pulse, or Chase) that plays as the message lands.
+- **Outline event style.** A new look for subs, gifts, and raids: a thin ring in each platform's color, or one fixed color you choose, with an optional fill and the same border animations.
+- **Message bubbles.** Each chat message can sit in its own bubble that hugs the text, with rounded, pill, or speech shapes plus adjustable corner radius, color, and opacity. Reads far better over busy gameplay than bare text.
+- **Per-source event filters.** Choose which events each platform shows on its own, so you can keep Twitch raids while hiding TikTok gifts without one affecting the other.
+- **More entrance animations, each with its own feel.** Drift, Rise, and Stamp join Fade, Slide, and Pop, and every entrance now moves distinctly instead of reading like a plain fade.
+- **Chatter display controls.** Show or hide profile pictures (YouTube and TikTok send them), strip the leading @ from handles, and hide the "Replying to" context line. Settings that only affect certain platforms now show which ones at a glance.
+- **Overlay housekeeping.** Hide messages containing chosen words or phrases, clamp long messages to a set number of lines so one copypasta can't fill the screen, and auto-remove messages after a set time so a quiet stream doesn't show stale chat.
+
+### 🔧 Maintenance
+- Every new overlay setting is searchable from Settings search and the command palette.
+
 ## [8.3.3] - 2026-07-10
 
 ### 🐛 Bug Fixes
