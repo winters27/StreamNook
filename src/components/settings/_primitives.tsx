@@ -36,6 +36,8 @@ export const SettingsSection = ({
 
 interface SettingsRowProps {
   title: string;
+  /** Small inline element after the title (e.g. a source-scope indicator). */
+  titleBadge?: ReactNode;
   description?: string;
   control?: ReactNode;
   children?: ReactNode;
@@ -44,6 +46,7 @@ interface SettingsRowProps {
 
 export const SettingsRow = ({
   title,
+  titleBadge,
   description,
   control,
   children,
@@ -56,7 +59,10 @@ export const SettingsRow = ({
   >
     <div className="flex items-start justify-between gap-4">
       <div className="min-w-0 flex-1">
-        <div className="text-[13px] font-medium text-textPrimary">{title}</div>
+        <div className="text-[13px] font-medium text-textPrimary">
+          {title}
+          {titleBadge && <span className="ml-1.5 align-middle">{titleBadge}</span>}
+        </div>
         {description && (
           <p className="mt-0.5 text-[12px] leading-relaxed text-textSecondary">
             {description}

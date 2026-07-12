@@ -17,14 +17,17 @@ import { LiveOverlayFeed } from '../overlay/LiveOverlayFeed';
 import { ProviderIcon } from '../overlay/ProviderIcon';
 import { SAMPLE_MESSAGES, randomSampleMessage, seedFlowMessages, type OverlayMessage } from '../overlay/sampleMessages';
 import {
+  BUBBLE_SHAPES,
   DEFAULT_OVERLAY_STYLE,
   EMOJI_STYLES,
   EVENT_CATEGORIES,
   FONT_OPTIONS,
+  OVERLAY_ANIMATIONS,
+  OVERLAY_ENTRANCES,
   OVERLAY_LIMITS,
   PROVIDER_EVENT_CATEGORIES,
   THIRD_PARTY_BADGE_PROVIDERS,
-  sanitizeCommandFilters,
+  clampOverlayStyle,
   type OverlayStyle,
 } from '../overlay/overlayConfig';
 import { CURRENCY_OPTIONS } from '../../services/currencyService';
@@ -44,6 +47,23 @@ function loadOverlayId(): string | null {
 }
 
 interface OverlaySource { provider: ProviderId; channel: string; }
+
+const PROVIDER_LABEL: Partial<Record<ProviderId, string>> = {
+  twitch: 'Twitch', kick: 'Kick', youtube: 'YouTube', tiktok: 'TikTok',
+};
+const providerLabel = (p: ProviderId): string => PROVIDER_LABEL[p] ?? p;
+
+// Marks a setting that only takes effect on certain platforms (avatars are a
+// YouTube/TikTok thing, first-time chatter signals are Twitch-only, and so on).
+// The source logos read at a glance and the tooltip spells it out, so a streamer
+// isn't left wondering why a toggle did nothing for their platform.
+const SourceScope = ({ sources }: { sources: ProviderId[] }) => (
+  <Tooltip content={`Only affects ${sources.map(providerLabel).join(' & ')}`}>
+    <span className="inline-flex items-center gap-1 opacity-60" aria-label={`Only affects ${sources.map(providerLabel).join(' and ')}`}>
+      {sources.map((p) => <ProviderIcon key={p} provider={p} size="0.95em" />)}
+    </span>
+  </Tooltip>
+);
 
 const SIZE_PRESETS: { label: string; width: number; height: number }[] = [
   { label: 'Standard', width: 400, height: 640 },
@@ -103,9 +123,9 @@ const loadStyle = (): OverlayStyle => {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (raw) {
-      const merged = { ...DEFAULT_OVERLAY_STYLE, ...JSON.parse(raw) } as OverlayStyle;
-      merged.commandFilters = sanitizeCommandFilters(merged.commandFilters);
-      return merged;
+      // clampOverlayStyle also migrates legacy global event hides into the
+      // per-source hiddenProviderEvents, so the state matches what renders.
+      return clampOverlayStyle({ ...DEFAULT_OVERLAY_STYLE, ...JSON.parse(raw) } as OverlayStyle);
     }
   } catch { /* ignore malformed */ }
   return { ...DEFAULT_OVERLAY_STYLE };
@@ -303,6 +323,43 @@ const CommandFilterEditor = ({ filters, onAdd, onRemove }: {
   );
 };
 
+// Word/phrase blocklist editor (Filters tab): type a phrase, it's added as a
+// removable chip. Matching is case-insensitive substring, done in the renderer.
+const PhraseEditor = ({ phrases, onAdd, onRemove }: {
+  phrases: string[];
+  onAdd: (value: string) => void;
+  onRemove: (value: string) => void;
+}) => {
+  const [val, setVal] = useState('');
+  const add = () => { const t = val.trim(); if (t) { onAdd(t); setVal(''); } };
+  return (
+    <div className="w-full space-y-2">
+      <div className="flex items-center gap-2">
+        <input
+          value={val}
+          onChange={(e) => setVal(e.target.value)}
+          onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); add(); } }}
+          placeholder="Word or phrase to hide"
+          className="flex-1 min-w-0 rounded-lg bg-glass border border-borderLight px-3 py-1.5 text-sm text-textPrimary placeholder:text-textMuted focus:outline-none focus:border-accent/60"
+        />
+        <button onClick={add} className="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium glass-input text-textPrimary flex-shrink-0">
+          <Plus size={14} /> Add
+        </button>
+      </div>
+      {phrases.length > 0 && (
+        <div className="flex flex-wrap gap-1.5">
+          {phrases.map((p) => (
+            <span key={p} className="inline-flex items-center gap-1.5 rounded-lg bg-glass px-3 py-1 text-[13px] text-textSecondary">
+              {p}
+              <button onClick={() => onRemove(p)} className="hover:text-textPrimary"><X size={14} /></button>
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+};
+
 const sourceKey = (s: OverlaySource) => `${s.provider}:${s.channel.toLowerCase()}`;
 
 // Sentinel dropdown value + starter for the custom-font option, and a helper to
@@ -376,13 +433,7 @@ const OverlaySettings = () => {
   const set = <K extends keyof OverlayStyle>(key: K, val: OverlayStyle[K]) =>
     setStyle((s) => ({ ...s, [key]: val }));
 
-  const toggleEvent = (cat: string) =>
-    setStyle((s) => {
-      const hidden = s.hiddenEvents ?? [];
-      return { ...s, hiddenEvents: hidden.includes(cat) ? hidden.filter((c) => c !== cat) : [...hidden, cat] };
-    });
-
-  // Per-platform event hide, keyed `provider:category`.
+  // Per-source event hide, keyed `provider:category`.
   const toggleProviderEvent = (key: string) =>
     setStyle((s) => {
       const hidden = s.hiddenProviderEvents ?? [];
@@ -453,6 +504,16 @@ const OverlaySettings = () => {
       const cur = st.blockedUsers?.[key] ?? [];
       return { ...st, blockedUsers: { ...st.blockedUsers, [key]: cur.filter((x) => x !== name) } };
     });
+
+  const addPhrase = (value: string) =>
+    setStyle((s) => {
+      const cur = s.hidePhrases ?? [];
+      const v = value.trim();
+      if (!v || cur.some((x) => x.toLowerCase() === v.toLowerCase())) return s;
+      return { ...s, hidePhrases: [...cur, v] };
+    });
+  const removePhrase = (value: string) =>
+    setStyle((s) => ({ ...s, hidePhrases: (s.hidePhrases ?? []).filter((x) => x !== value) }));
 
   const addCommandFilter = (value: string, mode: 'prefix' | 'exact') =>
     setStyle((s) => {
@@ -579,6 +640,13 @@ const OverlaySettings = () => {
   const sourceProviders = useMemo(
     () => Array.from(new Set(sources.map((s) => s.provider))),
     [sources],
+  );
+  // Which platforms get their own event-filter group: the added sources, or all
+  // four when nothing's added yet so the panel isn't empty while designing.
+  const eventProviders = useMemo(
+    () => (sourceProviders.length ? sourceProviders : SOURCE_PROVIDERS)
+      .filter((p) => (PROVIDER_EVENT_CATEGORIES[p] ?? []).length > 0),
+    [sourceProviders],
   );
   const catLabel = (id: string) => EVENT_CATEGORIES.find((c) => c.id === id)?.label ?? id;
   const currencyOptions = useMemo(
@@ -810,7 +878,8 @@ const OverlaySettings = () => {
         )}
 
         {activeTab === 'appearance' && (
-        <SettingsSection label="Messages" description="How messages render and flow.">
+        <>
+        <SettingsSection label="Emotes & badges" description="Emote sizing and every badge type.">
           <SettingsRow title="Emote size">
             <Slider value={style.emoteScale} min={OVERLAY_LIMITS.emoteScale.min} max={OVERLAY_LIMITS.emoteScale.max} step={0.05} onChange={(v) => set('emoteScale', v)} format={(v) => `${v.toFixed(2)}x`} />
           </SettingsRow>
@@ -837,9 +906,80 @@ const OverlaySettings = () => {
               })}
             </div>
           </SettingsRow>
+        </SettingsSection>
+        <SettingsSection label="Chatters" description="How the person behind each message shows up: picture, name, and their cosmetics.">
+          <SettingsRow title="Profile pictures" titleBadge={<SourceScope sources={['youtube', 'tiktok']} />} description="Chatter avatars next to their names. YouTube and TikTok send them; Twitch and Kick don't have them." control={<Toggle enabled={style.showAvatars} onChange={() => set('showAvatars', !style.showAvatars)} />} />
+          <SettingsRow title="@ before usernames" titleBadge={<SourceScope sources={['youtube']} />} description="YouTube names arrive as @handles. Turn off to show every name without the leading @." control={<Toggle enabled={style.showAtSign} onChange={() => set('showAtSign', !style.showAtSign)} />} />
           <SettingsRow title="7TV paints" description="Colored and animated username gradients." control={<Toggle enabled={style.showPaints} onChange={() => set('showPaints', !style.showPaints)} />} />
           <SettingsRow title="StreamNook atmospheres" description="A member's equipped atmosphere: the animated wash behind their own message only. Separate from event styles and your overlay's background." control={<Toggle enabled={style.showAtmospheres} onChange={() => set('showAtmospheres', !style.showAtmospheres)} />} />
+          <SettingsRow title="First-time chatters" titleBadge={<SourceScope sources={['twitch']} />} description="Mark someone's first-ever message in the channel. Twitch draws the outline and label Twitch chat uses; StreamNook uses the app chat's purple highlight. Only Twitch sends the signal, so it never fires on other platforms.">
+            <SegmentedSelect
+              value={style.firstTimeStyle}
+              onChange={(v) => set('firstTimeStyle', v)}
+              options={[{ value: 'off', label: 'Off' }, { value: 'twitch', label: 'Twitch' }, { value: 'streamnook', label: 'StreamNook' }]}
+            />
+          </SettingsRow>
+          <SettingsRow
+            title="Highlight color"
+            description="One accent drives the outline, fill, bar, and label together. Default matches the style: Twitch pink or StreamNook purple."
+            disabled={style.firstTimeStyle === 'off'}
+            control={
+              <div className="flex items-center gap-2">
+                {!!style.firstTimeColor && (
+                  <button onClick={() => set('firstTimeColor', '')} className="text-[12px] text-textSecondary hover:text-textPrimary">
+                    Default
+                  </button>
+                )}
+                <input
+                  type="color"
+                  value={style.firstTimeColor || (style.firstTimeStyle === 'streamnook' ? '#a855f7' : '#ff38db')}
+                  onChange={(e) => set('firstTimeColor', e.target.value)}
+                  disabled={style.firstTimeStyle === 'off'}
+                  className="h-7 w-10 rounded cursor-pointer bg-transparent border border-borderSubtle disabled:cursor-not-allowed"
+                />
+              </div>
+            }
+          />
+          <SettingsRow title="Fill the highlight" description="A nearly transparent color-matched tint inside the outline, so the message reads highlighted instead of just bordered. The StreamNook style has its own wash." disabled={style.firstTimeStyle !== 'twitch'} control={<Toggle enabled={style.firstTimeFill} onChange={() => set('firstTimeFill', !style.firstTimeFill)} />} />
+          <SettingsRow title="Animation" description="An accent on the highlight's border when the message lands. Sheen sweeps a glint across it, Pulse breathes it brighter, Chase sends a spark around it." disabled={style.firstTimeStyle === 'off'}>
+            <SegmentedSelect
+              value={style.firstTimeAnimation}
+              onChange={(v) => set('firstTimeAnimation', v)}
+              options={OVERLAY_ANIMATIONS.map((a) => ({ value: a.value, label: a.label }))}
+            />
+          </SettingsRow>
+          <SettingsRow title="Repeat the animation" description="Keep it going while the message is on screen, instead of once when it lands. Sheen and Pulse replay every 5 seconds; Chase spins continuously." disabled={style.firstTimeStyle === 'off' || style.firstTimeAnimation === 'none'} control={<Toggle enabled={style.firstTimeAnimateRepeat} onChange={() => set('firstTimeAnimateRepeat', !style.firstTimeAnimateRepeat)} />} />
+        </SettingsSection>
+        <SettingsSection label="Messages" description="How messages render and flow.">
+          <SettingsRow title="Reply context" description={'The small "Replying to" line above a reply.'} control={<Toggle enabled={style.showReplies} onChange={() => set('showReplies', !style.showReplies)} />} />
           <SettingsRow title="Show timestamps" control={<Toggle enabled={style.showTimestamps} onChange={() => set('showTimestamps', !style.showTimestamps)} />} />
+          <SettingsRow title="Message bubbles" description="Each message sits in its own rounded bubble that hugs the text. Reads better over busy gameplay than bare text. A member's atmosphere replaces the bubble on their rows." control={<Toggle enabled={style.bubble} onChange={() => set('bubble', !style.bubble)} />} />
+          {style.bubble && (
+            <>
+              <SettingsRow title="Bubble shape" description="Rounded uses the corner radius below, Pill fully rounds the ends, Speech tucks in the bottom-left corner like a messenger bubble.">
+                <SegmentedSelect
+                  value={style.bubbleShape}
+                  onChange={(v) => set('bubbleShape', v)}
+                  options={BUBBLE_SHAPES.map((b) => ({ value: b.value, label: b.label }))}
+                />
+              </SettingsRow>
+              <SettingsRow title="Corner radius" disabled={style.bubbleShape === 'pill'}>
+                <Slider value={style.bubbleRadius} min={OVERLAY_LIMITS.bubbleRadius.min} max={OVERLAY_LIMITS.bubbleRadius.max} step={1} onChange={(v) => set('bubbleRadius', Math.round(v))} format={(v) => `${v}px`} />
+              </SettingsRow>
+              <SettingsRow title="Bubble color" control={
+                <input type="color" value={style.bubbleColor} onChange={(e) => set('bubbleColor', e.target.value)} className="h-7 w-10 rounded cursor-pointer bg-transparent border border-borderSubtle" />
+              } />
+              <SettingsRow title="Bubble opacity">
+                <Slider value={style.bubbleOpacity} min={OVERLAY_LIMITS.bubbleOpacity.min} max={OVERLAY_LIMITS.bubbleOpacity.max} step={0.05} onChange={(v) => set('bubbleOpacity', v)} format={(v) => `${Math.round(v * 100)}%`} />
+              </SettingsRow>
+            </>
+          )}
+          <SettingsRow title="Max lines per message" description="Cut a long message off with an ellipsis so one wall of text can't eat the canvas.">
+            <Slider value={style.maxMessageLines} min={OVERLAY_LIMITS.maxMessageLines.min} max={OVERLAY_LIMITS.maxMessageLines.max} step={1} onChange={(v) => set('maxMessageLines', Math.round(v))} format={(v) => (v === 0 ? 'No limit' : `${v}`)} />
+          </SettingsRow>
+          <SettingsRow title="Remove messages after" description="Take a message off the overlay this long after it appeared, so a quiet stream doesn't show stale chat forever.">
+            <Slider value={style.maxMessageAgeSec} min={OVERLAY_LIMITS.maxMessageAgeSec.min} max={OVERLAY_LIMITS.maxMessageAgeSec.max} step={5} onChange={(v) => set('maxMessageAgeSec', Math.round(v))} format={(v) => (v === 0 ? 'Never' : `${v}s`)} />
+          </SettingsRow>
           <SettingsRow title="New messages" description="Where incoming messages appear.">
             <SegmentedSelect
               value={style.direction}
@@ -847,14 +987,15 @@ const OverlaySettings = () => {
               options={[{ value: 'newBottom', label: 'Bottom' }, { value: 'newTop', label: 'Top' }]}
             />
           </SettingsRow>
-          <SettingsRow title="Entrance" description="Animation for each incoming message.">
+          <SettingsRow title="Entrance" description="Animation for each incoming message. Slide snaps in from the left, Drift floats in diagonally, Rise springs up, Pop scales up, Stamp slams down and settles.">
             <SegmentedSelect
               value={style.entrance}
               onChange={(v) => set('entrance', v)}
-              options={[{ value: 'none', label: 'None' }, { value: 'fade', label: 'Fade' }, { value: 'slide', label: 'Slide' }, { value: 'pop', label: 'Pop' }]}
+              options={OVERLAY_ENTRANCES.map((e) => ({ value: e.value, label: e.label }))}
             />
           </SettingsRow>
         </SettingsSection>
+        </>
         )}
 
         {activeTab === 'filters' && (
@@ -870,6 +1011,9 @@ const OverlaySettings = () => {
               <CommandFilterEditor filters={style.commandFilters ?? []} onAdd={addCommandFilter} onRemove={removeCommandFilter} />
             </SettingsRow>
           )}
+          <SettingsRow title="Hide messages containing" description="A message containing any of these words or phrases never shows, whatever channel moderation does. Case doesn't matter. Events are unaffected.">
+            <PhraseEditor phrases={style.hidePhrases ?? []} onAdd={addPhrase} onRemove={removePhrase} />
+          </SettingsRow>
         </SettingsSection>
         <SettingsSection label="Hidden accounts" description="Hide specific people per source, matched on username or display name (either case). Perfect for a bot the auto-filter misses, like PotatBotat.">
           {sources.length === 0 ? (
@@ -890,49 +1034,65 @@ const OverlaySettings = () => {
         )}
 
         {activeTab === 'events' && (
-        <SettingsSection label="Events" description="Subs, gifts, raids, and more. How they look and which ones show.">
-          <SettingsRow title="Event style" description="Both show the sender's badges and paint name. StreamNook adds our signature multi-color gradient wash; Plain keeps a subtle per-platform tint.">
+        <SettingsSection label="Events" description="Subs, gifts, raids, and more. How they look, and which ones each source shows.">
+          <SettingsRow title="Event style" description="Every style shows the sender's badges and paint name. Plain keeps a subtle per-platform tint, Outline draws a thin ring in the platform's color, StreamNook adds our signature multi-color gradient wash.">
             <SegmentedSelect
               value={style.eventStyle}
               onChange={(v) => set('eventStyle', v)}
-              options={[{ value: 'plain', label: 'Plain' }, { value: 'streamnook', label: 'StreamNook' }]}
+              options={[{ value: 'plain', label: 'Plain' }, { value: 'outline', label: 'Outline' }, { value: 'streamnook', label: 'StreamNook' }]}
             />
           </SettingsRow>
-          <SettingsRow title="Show events" description="Hide an event type across every platform.">
-            <div className="flex flex-wrap gap-2">
-              {EVENT_CATEGORIES.map((c) => {
-                const on = !(style.hiddenEvents ?? []).includes(c.id);
-                return (
-                  <button
-                    key={c.id}
-                    onClick={() => toggleEvent(c.id)}
-                    style={{ borderRadius: 8 }}
-                    className={`px-3 py-2 text-sm font-medium transition-all ${on ? 'glass-input text-textPrimary' : 'glass-button text-textSecondary hover:text-textPrimary'}`}
-                  >
-                    {c.label}
+          <SettingsRow
+            title="Outline color"
+            description="One fixed ring color for every event. Default gives each event its own platform's color."
+            disabled={style.eventStyle !== 'outline'}
+            control={
+              <div className="flex items-center gap-2">
+                {!!style.eventOutlineColor && (
+                  <button onClick={() => set('eventOutlineColor', '')} className="text-[12px] text-textSecondary hover:text-textPrimary">
+                    Default
                   </button>
-                );
-              })}
-            </div>
+                )}
+                <input
+                  type="color"
+                  value={style.eventOutlineColor || '#9147ff'}
+                  onChange={(e) => set('eventOutlineColor', e.target.value)}
+                  disabled={style.eventStyle !== 'outline'}
+                  className="h-7 w-10 rounded cursor-pointer bg-transparent border border-borderSubtle disabled:cursor-not-allowed"
+                />
+              </div>
+            }
+          />
+          <SettingsRow title="Fill the outline" description="A nearly transparent tint inside the ring, matched to the outline's color." disabled={style.eventStyle !== 'outline'} control={<Toggle enabled={style.eventFill} onChange={() => set('eventFill', !style.eventFill)} />} />
+          <SettingsRow title="Animation" description="An accent on the ring when an event lands. Sheen sweeps a glint across it, Pulse breathes it brighter, Chase sends a spark around it." disabled={style.eventStyle !== 'outline'}>
+            <SegmentedSelect
+              value={style.eventAnimation}
+              onChange={(v) => set('eventAnimation', v)}
+              options={OVERLAY_ANIMATIONS.map((a) => ({ value: a.value, label: a.label }))}
+            />
           </SettingsRow>
-          {sourceProviders.filter((p) => (PROVIDER_EVENT_CATEGORIES[p] ?? []).length > 0).map((provider) => (
+          <SettingsRow title="Repeat the animation" description="Keep it going while the event is on screen, instead of once when it lands. Sheen and Pulse replay every 5 seconds; Chase spins continuously." disabled={style.eventStyle !== 'outline' || style.eventAnimation === 'none'} control={<Toggle enabled={style.eventAnimateRepeat} onChange={() => set('eventAnimateRepeat', !style.eventAnimateRepeat)} />} />
+          <SettingsRow
+            title="Show events"
+            description={sourceProviders.length
+              ? "Each source filters on its own. Turn a type off here and that platform's version of it never reaches the overlay; the other platforms are untouched."
+              : "Each source filters on its own. Add sources above and this narrows to just those platforms. Turning a type off hides only that platform's version of it."}
+          />
+          {eventProviders.map((provider) => (
             <SettingsRow
               key={`pe-${provider}`}
-              title={<span className="inline-flex items-center gap-1.5"><ProviderIcon provider={provider} size="14px" /> {PROVIDERS[provider].label} events</span> as unknown as string}
-              description={`Turn off specific ${PROVIDERS[provider].label} events without affecting other platforms.`}
+              title={<span className="inline-flex items-center gap-1.5"><ProviderIcon provider={provider} size="14px" /> {PROVIDERS[provider].label}</span> as unknown as string}
             >
               <div className="flex flex-wrap gap-2">
                 {(PROVIDER_EVENT_CATEGORIES[provider] ?? []).map((cat) => {
                   const key = `${provider}:${cat}`;
-                  const on = !(style.hiddenProviderEvents ?? []).includes(key) && !(style.hiddenEvents ?? []).includes(cat);
-                  const globallyOff = (style.hiddenEvents ?? []).includes(cat);
+                  const on = !(style.hiddenProviderEvents ?? []).includes(key);
                   return (
                     <button
                       key={key}
                       onClick={() => toggleProviderEvent(key)}
-                      disabled={globallyOff}
                       style={{ borderRadius: 8 }}
-                      className={`px-3 py-2 text-sm font-medium transition-all disabled:opacity-40 disabled:cursor-not-allowed ${on ? 'glass-input text-textPrimary' : 'glass-button text-textSecondary hover:text-textPrimary'}`}
+                      className={`px-3 py-2 text-sm font-medium transition-all ${on ? 'glass-input text-textPrimary' : 'glass-button text-textSecondary hover:text-textPrimary'}`}
                     >
                       {catLabel(cat)}
                     </button>
