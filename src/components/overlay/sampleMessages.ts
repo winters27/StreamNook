@@ -67,6 +67,9 @@ export type OverlayMessage = BackendChatMessage & {
   /** Resolved StreamNook Atmosphere → renders the member's animated wash behind
    *  the row. Absent/null means none. */
   atmosphere?: OverlayAtmosphere | null;
+  /** Set by the feed when moderation deletes this message: the renderer fades
+   *  the row out, then the feed removes it for real a beat later. */
+  retracted?: boolean;
 };
 
 const hex = (h: string) => {
@@ -187,7 +190,9 @@ export const SAMPLE_MESSAGES: OverlayMessage[] = [
   base('m3', 'kick', 'trainwreckstv', 'Trainwreckstv', '#53fc18',
     [t('kick chat single-handedly lowering the average IQ'), e('LUL', '425618')],
   ),
-  base('m4', 'youtube', 'ludwig', 'Ludwig', '#ff5c5c',
+  // YouTube names arrive as @handles, so this one previews the "@ before
+  // usernames" toggle (and the avatar previews "Profile pictures").
+  base('m4', 'youtube', '@ludwig', '@Ludwig', '#ff5c5c',
     [t('youtube gang showing up 4 hours late as usual')],
     { tags: { avatar: 'https://static-cdn.jtvnw.net/jtv_user_pictures/xarth/404_user_70x70.png' } },
   ),
@@ -364,6 +369,14 @@ export const SAMPLE_MESSAGES: OverlayMessage[] = [
         msg_type: 'subgift',
         system_message: 'Vax1 gifted a Tier 1 sub to SylentVox!',
       },
+    },
+  ),
+  // A first-time chatter, so the "First-time chatters" outline previews.
+  base('m27', 'twitch', 'freshlurker', 'FreshLurker', '#5cc8ff',
+    [t('first message ever, no pressure')],
+    {
+      tags: { 'first-msg': '1' },
+      metadata: { is_action: false, is_mentioned: false, is_first_message: true, is_from_shared_chat: false, formatted_timestamp: '9:49 PM' },
     },
   ),
   // A few more normal chats so a tall overlay preview fills instead of looking sparse.

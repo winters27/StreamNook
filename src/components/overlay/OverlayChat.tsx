@@ -365,6 +365,24 @@ const collapseGiftBombs = (messages: OverlayMessage[]): OverlayMessage[] => {
   });
 };
 
+// Leading @ on a username (YouTube handles arrive as "@name"), stripped when the
+// streamer turns the @ off.
+const stripAt = (name: string): string => name.replace(/^@+/, '');
+
+// A chatter's first-ever message in the channel. Twitch sends the signal (the
+// first-msg IRC tag in the hosted client, is_first_message from the app pipeline);
+// other platforms have no equivalent, so this never fires for them.
+const isFirstTimeChat = (m: OverlayMessage): boolean =>
+  m.tags?.['first-msg'] === '1' || m.metadata?.is_first_message === true;
+
+// First-time chatter accents. 'twitch' mirrors Twitch base chat (pink outline +
+// label, a 1px inset ring, no glow). 'streamnook' mirrors the app chat's default
+// first-time highlight: a purple gradient wash fading to the right, a 4px left
+// border, and a right-aligned "First message in chat" label at 60% opacity
+// (ChatMessage's builtInEventColor path with its #a855f7 default at 20% tint).
+const FIRST_TIME_PINK = '#ff38db';
+const FIRST_TIME_PURPLE = '#a855f7';
+
 // Drop a leading "<name> " from an event's system message so the decorated style
 // can show the paint-decorated name itself without duplicating it.
 const stripLeadingName = (text: string, names: (string | undefined)[]): string => {
@@ -374,7 +392,7 @@ const stripLeadingName = (text: string, names: (string | undefined)[]): string =
   return text;
 };
 
-const OverlayRow = ({ message, style }: { message: OverlayMessage; style: OverlayStyle }) => {
+const OverlayRow = ({ message, style, expiring }: { message: OverlayMessage; style: OverlayStyle; expiring?: boolean }) => {
   const provider = (message.provider ?? 'twitch') as ProviderId;
   const color = message.color || '#9147ff';
   // The overlay renders paints at full fidelity ('all' shadows) so the hosted page
@@ -401,11 +419,26 @@ const OverlayRow = ({ message, style }: { message: OverlayMessage; style: Overla
   const visibleExtraBadges = thirdPartyOn ? (message.extraBadges ?? []).filter((b) => !badgeSourceHidden(b.source)) : [];
   const showExtraBadges = visibleExtraBadges.length > 0;
   const anyBadge = showNativeBadges || showSnBadge || showSeventvBadge || showExtraBadges;
-  const reply = message.metadata?.reply_info;
-  const avatar = (provider === 'youtube' || provider === 'tiktok') ? message.tags?.avatar : undefined;
+  const reply = style.showReplies === false ? undefined : message.metadata?.reply_info;
+  const avatar = style.showAvatars !== false && (provider === 'youtube' || provider === 'tiktok')
+    ? message.tags?.avatar
+    : undefined;
+  const showAt = style.showAtSign !== false;
+  const ftStyle = style.firstTimeStyle === 'twitch' || style.firstTimeStyle === 'streamnook' ? style.firstTimeStyle : 'off';
+  const firstTime = ftStyle !== 'off' && isFirstTimeChat(message) ? ftStyle : null;
+  // The highlight's accent: the streamer's custom color, else the style's own
+  // default (Twitch pink / StreamNook purple). Drives outline, fill, bar, wash,
+  // and label together so a re-color never looks half-applied.
+  const ftAccent = (style.firstTimeColor || '').trim() || (firstTime === 'streamnook' ? FIRST_TIME_PURPLE : FIRST_TIME_PINK);
 
   const atmosphere = style.showAtmospheres === false ? null : (message.atmosphere ?? null);
   const atmosphereFrost = !!atmosphere?.chatFrost;
+  // A member's atmosphere wash is its own background, so it replaces the bubble
+  // on their rows (a bubble over a wash reads as a smudge). Computed here (not
+  // with the rest of the bubble geometry below) because rowStyle needs it to
+  // know whether to skip the full-width first-time band — in bubble mode the
+  // highlight rides the bubble instead.
+  const bubbleOn = style.bubble === true && !atmosphere;
 
   const rowStyle: CSSProperties = {
     position: 'relative',
@@ -422,12 +455,50 @@ const OverlayRow = ({ message, style }: { message: OverlayMessage; style: Overla
     lineHeight: style.lineHeight,
     textShadow: style.textShadow ? '0 1px 2px rgba(0,0,0,0.85), 0 0 2px rgba(0,0,0,0.55)' : undefined,
     ...(atmosphere ? { padding: '2px 6px', borderRadius: 6 } : null),
+    // Ring/bar thickness is in EM, not px: the overlay renders supersampled
+    // (2x, scaled back down) and the builder preview scales tall canvases down
+    // further, so a hardcoded 1px stroke lands sub-pixel and fades out. Em
+    // rides the (supersample-compensated) font size, so the stroke stays a
+    // consistent visible weight at every canvas size and scale.
+    ...(firstTime === 'twitch' && !bubbleOn
+      ? {
+          padding: '3px 8px',
+          borderRadius: 8,
+          border: `0.09em solid color-mix(in srgb, ${ftAccent} 62%, transparent)`,
+          // Opt-in: a nearly-transparent color-matched fill inside the ring so
+          // the row reads as highlighted, not just bordered. Clipped to the
+          // padding box so it can never antialias past the border at the
+          // rounded corners (the "lighter corners" artifact).
+          ...(style.firstTimeFill === true
+            ? {
+                backgroundColor: `color-mix(in srgb, ${ftAccent} 8%, transparent)`,
+                backgroundClip: 'padding-box' as const,
+              }
+            : null),
+        }
+      : null),
+    ...(firstTime === 'streamnook' && !bubbleOn
+      ? {
+          padding: '3px 8px',
+          borderRadius: 6,
+          backgroundImage: `linear-gradient(to right, color-mix(in srgb, ${ftAccent} 20%, transparent), color-mix(in srgb, ${ftAccent} 10%, transparent), transparent)`,
+          borderLeft: `0.27em solid ${ftAccent}`,
+        }
+      : null),
   };
   const entranceClass =
     style.entrance === 'fade' ? 'sn-ov-fade'
       : style.entrance === 'slide' ? 'sn-ov-slide'
-        : style.entrance === 'pop' ? 'sn-ov-pop'
-          : '';
+        : style.entrance === 'drift' ? 'sn-ov-drift'
+          : style.entrance === 'rise' ? 'sn-ov-rise'
+            : style.entrance === 'pop' ? 'sn-ov-pop'
+              : style.entrance === 'stamp' ? 'sn-ov-stamp'
+                : '';
+  // Moderation retract / age-expiry: the feed (or the expire pass) marks the
+  // message instead of dropping it, this class fades it out, and it's removed
+  // for real right after — so neither reads as an instant layout snap.
+  // (Scroll-off aging has its own exit: the container's dissolve mask.)
+  const retractedClass = message.retracted || expiring ? ' sn-ov-out' : '';
 
   // Reusable pieces so events (decorated style) render the sender exactly like a
   // normal chat row: their badges + paint-decorated name.
@@ -465,9 +536,10 @@ const OverlayRow = ({ message, style }: { message: OverlayMessage; style: Overla
 
   // Paint (or flat color) on a plain inline-block span so background-clip:text
   // clips to the glyphs, not the box (a flex display makes it clip to the box).
+  const rawName = message.display_name || message.username;
   const nameNode = (
     <span style={{ ...nameTextStyle, fontWeight: 700, display: 'inline-block', verticalAlign: 'baseline', textShadow: paintOn ? 'none' : undefined }}>
-      {message.display_name || message.username}
+      {showAt ? rawName : stripAt(rawName)}
     </span>
   );
 
@@ -494,6 +566,15 @@ const OverlayRow = ({ message, style }: { message: OverlayMessage; style: Overla
     const isPrime = category === 'subscription' && message.tags?.['msg-param-sub-plan'] === 'Prime';
     const EventIcon = CATEGORY_ICON[category];
     const isStreamNook = style.eventStyle === 'streamnook';
+    const isOutline = style.eventStyle === 'outline';
+    const evAnimType =
+      style.eventAnimation === 'sheen' || style.eventAnimation === 'pulse' || style.eventAnimation === 'chase'
+        ? style.eventAnimation
+        : null;
+    const outlineAnimClass =
+      isOutline && evAnimType
+        ? `sn-ft-anim-ring sn-ft-t-${evAnimType}${style.eventAnimateRepeat === true ? ' sn-ft-loop' : ''}`
+        : undefined;
     // Charity donations get collapsed into the 'cheer' category for the icon, but
     // in-app they wear the green donation wash — honor that here.
     const gradientClass = msgType === 'charitydonation' ? 'sn-ev-donation' : CATEGORY_GRADIENT[category];
@@ -522,7 +603,7 @@ const OverlayRow = ({ message, style }: { message: OverlayMessage; style: Overla
       ? (message.segments ?? []).filter((s) => s.type === 'emote' || s.type === 'emoji')
       : [];
     return (
-      <div className={`sn-ov-row ${entranceClass}`} style={{ flexShrink: 0, lineHeight: style.lineHeight, textShadow: style.textShadow ? '0 1px 2px rgba(0,0,0,0.85)' : undefined, display: 'flex', alignItems: 'flex-start', gap: '0.35em' }} data-provider={provider} data-ov-row="">
+      <div className={`sn-ov-row ${entranceClass}${retractedClass}`} style={{ flexShrink: 0, lineHeight: style.lineHeight, textShadow: style.textShadow ? '0 1px 2px rgba(0,0,0,0.85)' : undefined, display: 'flex', alignItems: 'flex-start', gap: '0.35em' }} data-provider={provider} data-ov-row="">
         {/* Source tag lives OUTSIDE the event highlight — it's its own thing, so
             the platform indicator is consistent with normal messages. */}
         {style.sourceTag !== 'none' && (
@@ -531,13 +612,31 @@ const OverlayRow = ({ message, style }: { message: OverlayMessage; style: Overla
           </span>
         )}
         <div
-          className={isStreamNook ? gradientClass : undefined}
+          className={isStreamNook ? gradientClass : outlineAnimClass}
           style={{
             flex: 1, minWidth: 0, display: 'flex', alignItems: 'flex-start', gap: '0.5em',
             padding: '3px 8px', borderRadius: 6,
             ...(isStreamNook
               ? { border: '1px solid rgba(255,255,255,0.08)' }
-              : { borderLeft: `2px solid ${meta.color}`, background: `linear-gradient(90deg, color-mix(in srgb, ${meta.color} 20%, transparent), transparent)` }),
+              : isOutline
+                ? {
+                    // The first-time chatter ring treatment, tinted with the
+                    // source platform's color (or the streamer's one fixed
+                    // eventOutlineColor). Em-sized real border (see the
+                    // first-time ring note: px strokes go sub-pixel under
+                    // supersampling), opt-in fill clipped to the padding box,
+                    // opt-in border animation (eventAnimation).
+                    position: 'relative',
+                    borderRadius: 8,
+                    border: `0.09em solid color-mix(in srgb, ${(style.eventOutlineColor || '').trim() || meta.color} 60%, transparent)`,
+                    ...(style.eventFill === true
+                      ? {
+                          backgroundColor: `color-mix(in srgb, ${(style.eventOutlineColor || '').trim() || meta.color} 8%, transparent)`,
+                          backgroundClip: 'padding-box' as const,
+                        }
+                      : null),
+                  }
+                : { borderLeft: `2px solid ${meta.color}`, background: `linear-gradient(90deg, color-mix(in srgb, ${meta.color} 20%, transparent), transparent)` }),
           }}
         >
           <span style={{ flexShrink: 0, display: 'inline-flex', alignItems: 'center', height: '1.5em' }}>
@@ -580,10 +679,19 @@ const OverlayRow = ({ message, style }: { message: OverlayMessage; style: Overla
     );
   }
 
+  // Long-message clamp: cap the whole rendered line block at N lines with an
+  // ellipsis, so one copypasta can't eat the canvas. The -webkit-box line-clamp
+  // works over the mixed inline content (badges, name, emotes) as line boxes.
+  const clampLines = Math.round(style.maxMessageLines ?? 0);
+  const lineClampStyle =
+    clampLines >= 1
+      ? { display: '-webkit-box', WebkitLineClamp: Math.min(6, clampLines), WebkitBoxOrient: 'vertical' as const, overflow: 'hidden' }
+      : null;
+
   // Inline flow (NOT flex) so the 7TV paint's background-clip:text renders like
   // the real chat row, and wrapped lines start at the left edge.
   const line = (
-    <div className="min-w-0" style={{ color: style.bodyTextColor }}>
+    <div className="min-w-0" style={{ color: style.bodyTextColor, ...lineClampStyle }}>
       <SourceTag provider={provider} mode={style.sourceTag} />
       {style.showTimestamps && message.metadata?.formatted_timestamp && (
         <span style={{ fontSize: '0.78em', opacity: 0.55, marginRight: '0.45em', verticalAlign: 'middle' }}>
@@ -604,14 +712,116 @@ const OverlayRow = ({ message, style }: { message: OverlayMessage; style: Overla
     </div>
   );
 
+  // Border accent animation for a first-time chatter's arrival (opt-in). It
+  // rides the highlight's border only, never the fill: around the ring for the
+  // Twitch style, down the left bar for StreamNook. Plays once on mount and
+  // goes still (idle overlay = no paint work), unless repeat is on, which
+  // replays it every ~5s while the message is on screen.
+  const ftAnimType =
+    style.firstTimeAnimation === 'sheen' || style.firstTimeAnimation === 'pulse' || style.firstTimeAnimation === 'chase'
+      ? style.firstTimeAnimation
+      : null;
+  const firstTimeAnimClass =
+    firstTime && ftAnimType
+      ? ` ${firstTime === 'twitch' ? 'sn-ft-anim-ring' : 'sn-ft-anim-bar'} sn-ft-t-${ftAnimType}${style.firstTimeAnimateRepeat === true ? ' sn-ft-loop' : ''}`
+      : '';
+
+  // Bubble mode: the message content sits in its own shrink-to-fit bubble.
+  // Padding and radius are EM-based, not px: raw px halves under the 2x
+  // supersample (the same sub-pixel trap as the outline stroke), which is what
+  // made early bubbles read as flat highlights. The em conversion divides by the
+  // configured font size, so the streamer's chosen radius lands at its true
+  // on-screen size. (bubbleOn is computed above rowStyle.)
+  const bubbleEm = (px: number) => `${(px / Math.max(8, style.fontSize)).toFixed(3)}em`;
+  const bubbleShape = style.bubbleShape === 'pill' || style.bubbleShape === 'speech' ? style.bubbleShape : 'rounded';
+  const bubbleRadius =
+    bubbleShape === 'pill'
+      // NOT 999px: border-radius clamps to half the box's smaller side, so a
+      // stadium value turns a wrapped (tall) bubble's ends into giant half-circle
+      // caps that swallow badges and end-of-line emotes. Capping at ~one line
+      // keeps a single-line message a true pill (it still clamps to half-height)
+      // while a multi-line one becomes a safe rounded rect the content clears.
+      ? '1.15em'
+      : bubbleShape === 'speech'
+        // Messenger-style tail corner: the bottom-left corner tucks in tight
+        // while the rest keep the configured radius.
+        ? `${bubbleEm(style.bubbleRadius)} ${bubbleEm(style.bubbleRadius)} ${bubbleEm(style.bubbleRadius)} ${bubbleEm(Math.min(3, style.bubbleRadius))}`
+        : bubbleEm(style.bubbleRadius);
+  const bubbleBg = `color-mix(in srgb, ${style.bubbleColor || '#0e0e10'} ${Math.round((style.bubbleOpacity ?? 0.55) * 100)}%, transparent)`;
+  // A first-time chatter in bubble mode wears the highlight ON the bubble, not
+  // as a full-width row band (a band under a shrink-to-fit bubble read as two
+  // stacked shapes). It also drops the pill/speech silhouette for a plain
+  // rounded rect: an outlined, labeled highlight wants defined corners, not a
+  // stadium. The neutral bubble fill stays underneath the accent (Twitch
+  // border/fill, StreamNook wash + bar) so it reads as one solid highlighted
+  // card. Radius floors at 6px so a 0-radius bubble still frames the accent.
+  const ftBubbleRadius = bubbleEm(Math.max(6, style.bubbleRadius));
+  const bubbleStyle = !bubbleOn
+    ? null
+    : firstTime === 'twitch'
+      ? {
+          display: 'inline-block' as const,
+          maxWidth: '100%',
+          borderRadius: ftBubbleRadius,
+          padding: '0.28em 0.7em',
+          border: `0.09em solid color-mix(in srgb, ${ftAccent} 62%, transparent)`,
+          backgroundClip: 'padding-box' as const,
+          backgroundColor: style.firstTimeFill === true
+            ? `color-mix(in srgb, ${ftAccent} 12%, ${bubbleBg})`
+            : bubbleBg,
+        }
+      : firstTime === 'streamnook'
+        ? {
+            display: 'inline-block' as const,
+            maxWidth: '100%',
+            borderRadius: ftBubbleRadius,
+            padding: '0.28em 0.7em',
+            borderLeft: `0.27em solid ${ftAccent}`,
+            backgroundColor: bubbleBg,
+            backgroundImage: `linear-gradient(to right, color-mix(in srgb, ${ftAccent} 22%, transparent), color-mix(in srgb, ${ftAccent} 8%, transparent), transparent)`,
+          }
+        : {
+            display: 'inline-block' as const,
+            maxWidth: '100%',
+            borderRadius: bubbleRadius,
+            padding: bubbleShape === 'pill' ? '0.22em 0.8em' : '0.22em 0.6em',
+            backgroundColor: bubbleBg,
+          };
+
+  // In bubble mode the highlight rides the bubble, so its border animation must
+  // too — the ring/bar ::after anchors to whichever element carries the accent.
+  const rowAnimClass = bubbleOn ? '' : firstTimeAnimClass;
+  const bubbleAnimClass = bubbleOn ? firstTimeAnimClass.trim() : '';
+
   return (
-    <div className={`sn-ov-row ${entranceClass}`} style={rowStyle} data-provider={provider} data-ov-row="">
+    <div className={`sn-ov-row ${entranceClass}${rowAnimClass}${retractedClass}`} style={rowStyle} data-provider={provider} data-ov-row="">
       {atmosphere && <AtmosphereChatWash atm={atmosphere} observe={false} />}
-      <div style={{ position: 'relative' }}>
+      <div className={bubbleAnimClass || undefined} style={{ position: 'relative', ...bubbleStyle }}>
+        {firstTime === 'twitch' && (
+          <div
+            style={{
+              fontSize: '0.64em',
+              fontWeight: 700,
+              letterSpacing: '0.08em',
+              textTransform: 'uppercase',
+              color: `color-mix(in srgb, ${ftAccent} 78%, #ffffff)`,
+              marginBottom: '0.25em',
+            }}
+          >
+            First time chat
+          </div>
+        )}
+        {firstTime === 'streamnook' && (
+          <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+            <span style={{ fontSize: '0.72em', opacity: 0.6, color: ftAccent }}>
+              First message in chat
+            </span>
+          </div>
+        )}
         {reply && (
           <div style={{ fontSize: '0.82em', opacity: 0.7, marginBottom: '0.1em' }}>
             <span aria-hidden="true" style={{ marginRight: '0.3em' }}>↳</span>
-            Replying to <span style={{ fontWeight: 700 }}>@{reply.parent_display_name}</span>: {renderReplyBody(reply.parent_msg_body)}
+            Replying to <span style={{ fontWeight: 700 }}>{showAt ? '@' : ''}{stripAt(reply.parent_display_name)}</span>: {renderReplyBody(reply.parent_msg_body)}
           </div>
         )}
         {atmosphereFrost ? (
@@ -755,10 +965,44 @@ export const OverlayChat = ({ messages, style: rawStyle, superSample = 1 }: { me
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [cmdFilterKey],
   );
+  // Phrase filter: hide chat messages containing any listed word/phrase
+  // (case-insensitive substring). Never applied to events.
+  const phraseKey = JSON.stringify(style.hidePhrases ?? []);
+  const phrases = useMemo(
+    () => (style.hidePhrases ?? []).map((p) => String(p ?? '').trim().toLowerCase()).filter(Boolean),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [phraseKey],
+  );
+  // Age expiry: a message older than maxMessageAgeSec (counted from when THIS
+  // renderer first saw it, so every provider and the builder samples behave the
+  // same) fades out and is dropped. The half-second tick only runs while the
+  // feature is on, so a default overlay does no timer work.
+  const ageSec = Math.round(style.maxMessageAgeSec ?? 0);
+  // Longer than the 260ms fade so, with the 500ms tick granularity, an expiring
+  // row is guaranteed to render at least one full ticked frame in its fading
+  // state before removal.
+  const EXPIRE_FADE_MS = 900;
+  const seenAtRef = useRef<Map<string, number>>(new Map());
+  const [expireTick, setExpireTick] = useState(0);
+  useEffect(() => {
+    if (ageSec <= 0) return;
+    const t = setInterval(() => setExpireTick((v) => v + 1), 500);
+    return () => clearInterval(t);
+  }, [ageSec]);
 
-  const ordered = useMemo(() => {
+  const { ordered, expiringIds } = useMemo(() => {
+    void expireTick;
     const allowed = new Set(style.sources);
-    return collapseGiftBombs(messages).filter((m) => {
+    const seen = seenAtRef.current;
+    const nowMs = Date.now();
+    const expiring = new Set<string>();
+    const list = collapseGiftBombs(messages).filter((m) => {
+      if (!seen.has(m.id)) seen.set(m.id, nowMs);
+      if (ageSec > 0) {
+        const elapsed = nowMs - (seen.get(m.id) ?? nowMs);
+        if (elapsed > ageSec * 1000 + EXPIRE_FADE_MS) return false;
+        if (elapsed > ageSec * 1000) expiring.add(m.id);
+      }
       if (!allowed.has((m.provider ?? 'twitch') as ProviderId)) return false;
       if (style.hideBots && isBotMessage(m)) return false;
       if (isBlockedUser(m)) return false;
@@ -775,6 +1019,11 @@ export const OverlayChat = ({ messages, style: rawStyle, superSample = 1 }: { me
           }
         }
       }
+      // Phrase filter (never events).
+      if (!isEvent && phrases.length) {
+        const body = (m.content ?? '').toLowerCase();
+        if (body && phrases.some((p) => body.includes(p))) return false;
+      }
       if (isEvent) {
         const cat = categoryOf(mt);
         if (style.hiddenEvents?.includes(cat)) return false;
@@ -784,8 +1033,14 @@ export const OverlayChat = ({ messages, style: rawStyle, superSample = 1 }: { me
       }
       return true;
     });
+    // Bound the first-seen map on long streams: drop ids no longer in the feed.
+    if (seen.size > 2000) {
+      const keep = new Set(messages.map((m) => m.id));
+      for (const k of Array.from(seen.keys())) if (!keep.has(k)) seen.delete(k);
+    }
+    return { ordered: list, expiringIds: expiring };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [messages, sourcesKey, style.hideBots, hiddenKey, hiddenProviderKey, blockedKey, style.hideCommands, cmdFilterKey]);
+  }, [messages, sourcesKey, style.hideBots, hiddenKey, hiddenProviderKey, blockedKey, style.hideCommands, cmdFilterKey, phraseKey, ageSec, expireTick]);
 
   const windowMsgs = ordered.slice(-count);
   const rendered = style.direction === 'newTop' ? windowMsgs.slice().reverse() : windowMsgs;
@@ -891,12 +1146,101 @@ export const OverlayChat = ({ messages, style: rawStyle, superSample = 1 }: { me
     <div ref={containerRef} style={containerStyle}>
       <style>{`
         @keyframes snOvFade { from { opacity: 0 } to { opacity: 1 } }
-        @keyframes snOvSlide { from { opacity: 0; transform: translateX(-26px) } to { opacity: 1; transform: none } }
-        @keyframes snOvPop { 0% { opacity: 0; transform: scale(0.8) } 60% { transform: scale(1.03) } 100% { opacity: 1; transform: scale(1) } }
+        @keyframes snOvSlide { 0% { opacity: 0; transform: translateX(-44px) } 55% { opacity: 1 } 100% { opacity: 1; transform: none } }
+        @keyframes snOvDrift { from { opacity: 0; transform: translate(20px, 9px) } to { opacity: 1; transform: none } }
+        @keyframes snOvRise { 0% { opacity: 0; transform: translateY(26px) } 68% { opacity: 1; transform: translateY(-5px) } 100% { opacity: 1; transform: none } }
+        @keyframes snOvPop { 0% { opacity: 0; transform: scale(0.5) } 62% { opacity: 1; transform: scale(1.09) } 100% { opacity: 1; transform: scale(1) } }
+        @keyframes snOvStamp { 0% { opacity: 0; transform: scale(1.45) } 28% { opacity: 1 } 52% { transform: scale(0.93) } 76% { transform: scale(1.04) } 100% { opacity: 1; transform: scale(1) } }
+        @keyframes snOvOut { to { opacity: 0; transform: translateX(-12px) } }
         .sn-ov-row { word-break: break-word; overflow-wrap: anywhere; }
-        .sn-ov-fade { animation: snOvFade 300ms ease both; }
-        .sn-ov-slide { animation: snOvSlide 300ms cubic-bezier(0.22, 1, 0.36, 1) both; }
-        .sn-ov-pop { animation: snOvPop 320ms cubic-bezier(0.34, 1.56, 0.64, 1) both; transform-origin: left center; }
+        /* Border accent animations (first-time highlight + Outline events).
+           They ride the BORDER only, never the fill. Ring geometry: an ::after
+           masked to a band matching the em-sized border (the padding-box XOR
+           mask trick); bar geometry: a strip over the left border. Each type
+           has a one-shot form (plays on arrival, then still = no idle paint
+           work in OBS) and a .sn-ft-loop form that replays every ~5s. */
+        @property --sn-ft-angle { syntax: '<angle>'; inherits: false; initial-value: 0deg; }
+        @keyframes snFtSweep { from { background-position: 130% 0 } to { background-position: -60% 0 } }
+        @keyframes snFtSweepLoop { 0% { background-position: 130% 0 } 22% { background-position: -60% 0 } 100% { background-position: -60% 0 } }
+        @keyframes snFtBarSweep { from { background-position: 0 -60% } to { background-position: 0 130% } }
+        @keyframes snFtBarSweepLoop { 0% { background-position: 0 -60% } 22% { background-position: 0 130% } 100% { background-position: 0 130% } }
+        @keyframes snFtPulse { 0% { opacity: 0 } 45% { opacity: 1 } 100% { opacity: 0 } }
+        @keyframes snFtPulseLoop { 0% { opacity: 0 } 12% { opacity: 1 } 24% { opacity: 0 } 100% { opacity: 0 } }
+        @keyframes snFtChase { from { --sn-ft-angle: 0deg } to { --sn-ft-angle: 360deg } }
+        .sn-ft-anim-ring::after {
+          content: '';
+          position: absolute;
+          inset: 0;
+          border-radius: inherit;
+          padding: 0.09em;
+          pointer-events: none;
+          background-repeat: no-repeat;
+          -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+          -webkit-mask-composite: xor;
+          mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+          mask-composite: exclude;
+        }
+        .sn-ft-anim-bar::after {
+          content: '';
+          position: absolute;
+          left: 0;
+          top: 0;
+          bottom: 0;
+          width: 0.27em;
+          pointer-events: none;
+          background-repeat: no-repeat;
+        }
+        /* Sheen: a diagonal glint sweeps across the ring band / down the bar.
+           (On the bar, Chase behaves like Sheen: there's no ring to orbit.) */
+        .sn-ft-anim-ring.sn-ft-t-sheen::after {
+          background-image: linear-gradient(105deg, transparent 38%, rgba(255,255,255,0.9) 50%, transparent 62%);
+          background-size: 250% 100%;
+          background-position: 130% 0;
+          animation: snFtSweep 1.1s ease-out 0.15s 1 both;
+        }
+        .sn-ft-anim-ring.sn-ft-t-sheen.sn-ft-loop::after { animation: snFtSweepLoop 5s ease-out 0.15s infinite; }
+        .sn-ft-anim-bar.sn-ft-t-sheen::after, .sn-ft-anim-bar.sn-ft-t-chase::after {
+          background-image: linear-gradient(180deg, transparent 38%, rgba(255,255,255,0.7) 50%, transparent 62%);
+          background-size: 100% 300%;
+          background-position: 0 -60%;
+          animation: snFtBarSweep 1s ease-out 0.15s 1 both;
+        }
+        .sn-ft-anim-bar.sn-ft-t-sheen.sn-ft-loop::after, .sn-ft-anim-bar.sn-ft-t-chase.sn-ft-loop::after { animation: snFtBarSweepLoop 5s ease-out 0.15s infinite; }
+        /* Pulse: the border band breathes brighter, then settles. */
+        .sn-ft-anim-ring.sn-ft-t-pulse::after, .sn-ft-anim-bar.sn-ft-t-pulse::after {
+          background-color: rgba(255,255,255,0.55);
+          opacity: 0;
+          animation: snFtPulse 1.2s ease-in-out 0.15s 1 both;
+        }
+        .sn-ft-anim-ring.sn-ft-t-pulse.sn-ft-loop::after, .sn-ft-anim-bar.sn-ft-t-pulse.sn-ft-loop::after { animation: snFtPulseLoop 5s ease-in-out 0.15s infinite; }
+        /* Chase: a spark orbits the ring (conic gradient rotating via the
+           registered --sn-ft-angle property; browsers without @property just
+           show a static highlight segment, never a broken row). One-shot does a
+           single orbit; repeat spins CONTINUOUSLY (a 360deg loop wraps
+           seamlessly, so it reads as endless rotation, no pause between laps). */
+        .sn-ft-anim-ring.sn-ft-t-chase::after {
+          background-image: conic-gradient(from var(--sn-ft-angle), transparent 0deg, rgba(255,255,255,0.9) 24deg, transparent 56deg);
+          background-size: 100% 100%;
+          animation: snFtChase 1.4s linear 0.15s 1 both;
+        }
+        .sn-ft-anim-ring.sn-ft-t-chase.sn-ft-loop::after { animation: snFtChase 1.8s linear 0.15s infinite; }
+        @media (prefers-reduced-motion: reduce) {
+          .sn-ft-anim-ring::after, .sn-ft-anim-bar::after { animation: none !important; opacity: 0 !important; }
+        }
+        /* Each entrance leans on a different axis so they don't all read as "a
+           fade": Fade is opacity only and quiet; Slide snaps in hard from the
+           far left; Drift is a slow, airy diagonal float; Rise springs up from
+           below and overshoots to settle; Pop scales up from small with a big
+           overshoot; Stamp slams down from oversized with a bounced settle. */
+        .sn-ov-fade { animation: snOvFade 240ms ease-in-out both; }
+        .sn-ov-slide { animation: snOvSlide 320ms cubic-bezier(0.16, 1, 0.3, 1) both; }
+        .sn-ov-drift { animation: snOvDrift 500ms cubic-bezier(0.25, 0.8, 0.3, 1) both; }
+        .sn-ov-rise { animation: snOvRise 420ms cubic-bezier(0.22, 1, 0.36, 1) both; transform-origin: left center; }
+        .sn-ov-pop { animation: snOvPop 360ms cubic-bezier(0.22, 1, 0.36, 1) both; transform-origin: left center; }
+        .sn-ov-stamp { animation: snOvStamp 340ms cubic-bezier(0.5, 0, 0.2, 1) both; transform-origin: left center; }
+        /* Moderation retract fade — declared AFTER the entrance classes so it
+           overrides them on the same row (same specificity, later wins). */
+        .sn-ov-out { animation: snOvOut 260ms ease both; pointer-events: none; }
         /* StreamNook event style — per-category washes baked from globals.css's
            event gradients (highlight colors resolved to hex) so they render
            self-contained on the hosted overlay, no theme vars needed. Each category
@@ -960,7 +1304,7 @@ export const OverlayChat = ({ messages, style: rawStyle, superSample = 1 }: { me
         .sn-aurora-2 { animation: sn-aurora-2 20s linear infinite; will-change: transform, opacity; }
       `}</style>
       {rendered.map((m) => (
-        <OverlayRow key={m.id} message={m} style={style} />
+        <OverlayRow key={m.id} message={m} style={style} expiring={expiringIds.has(m.id)} />
       ))}
     </div>
   );

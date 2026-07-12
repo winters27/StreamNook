@@ -23,8 +23,37 @@ export const EVENT_CATEGORIES: { id: EventCategory; label: string }[] = [
 export type SourceTagMode = 'none' | 'dot' | 'label' | 'icon';
 export type OverlayBackground = 'transparent' | 'solid';
 export type OverlayDirection = 'newBottom' | 'newTop';
-export type OverlayEntrance = 'none' | 'fade' | 'slide' | 'pop';
+export type OverlayEntrance = 'none' | 'fade' | 'slide' | 'drift' | 'rise' | 'pop' | 'stamp';
+
+export const OVERLAY_ENTRANCES: { value: OverlayEntrance; label: string }[] = [
+  { value: 'none', label: 'None' },
+  { value: 'fade', label: 'Fade' },
+  { value: 'slide', label: 'Slide' },
+  { value: 'drift', label: 'Drift' },
+  { value: 'rise', label: 'Rise' },
+  { value: 'pop', label: 'Pop' },
+  { value: 'stamp', label: 'Stamp' },
+];
 export type EmojiStyle = 'system' | 'apple' | 'google' | 'twitter' | 'facebook';
+export type FirstTimeStyle = 'off' | 'twitch' | 'streamnook';
+export type BubbleShape = 'rounded' | 'pill' | 'speech';
+
+export const BUBBLE_SHAPES: { value: BubbleShape; label: string }[] = [
+  { value: 'rounded', label: 'Rounded' },
+  { value: 'pill', label: 'Pill' },
+  { value: 'speech', label: 'Speech' },
+];
+/** Border accent animations (first-time highlight + Outline events). All ride the
+ *  border only, never the fill: 'sheen' sweeps a glint across it, 'pulse'
+ *  breathes it brighter, 'chase' sends a spark around the ring. */
+export type OverlayAnimation = 'none' | 'sheen' | 'pulse' | 'chase';
+
+export const OVERLAY_ANIMATIONS: { value: OverlayAnimation; label: string }[] = [
+  { value: 'none', label: 'None' },
+  { value: 'sheen', label: 'Sheen' },
+  { value: 'pulse', label: 'Pulse' },
+  { value: 'chase', label: 'Chase' },
+];
 
 export interface OverlayStyle {
   /** Overlay canvas size in px (the Browser Source dimensions in OBS). Taller =
@@ -63,17 +92,29 @@ export interface OverlayStyle {
   /** 0–1, applied to the solid background only. */
   backgroundOpacity: number;
 
-  /** How stream events render. Both show the sender decorated (badges + paint
-   *  name) + the event action; 'streamnook' adds the app's signature multi-color
-   *  gradient wash behind it, 'plain' keeps a subtle per-source tint. */
-  eventStyle: 'plain' | 'streamnook';
+  /** How stream events render. Every style shows the sender decorated (badges +
+   *  paint name) + the event action. 'plain' keeps a subtle per-source tint,
+   *  'outline' draws a thin ring in the source's color, and 'streamnook' adds
+   *  the app's signature multi-color gradient wash. */
+  eventStyle: 'plain' | 'streamnook' | 'outline';
+  /** Outline events only: a nearly-transparent color-matched tint inside the
+   *  ring, so the event reads highlighted instead of just bordered. */
+  eventFill: boolean;
+  /** Outline events only: border accent when the event lands. See
+   *  OverlayAnimation. Plays once on arrival unless eventAnimateRepeat. */
+  eventAnimation: OverlayAnimation;
+  /** Replay the event animation every ~5 seconds while the event is on screen. */
+  eventAnimateRepeat: boolean;
   /** Hide messages from known bot accounts / users carrying a bot badge. */
   hideBots: boolean;
-  /** Event categories to HIDE from the overlay (e.g. 'raid', 'cheer'). Empty =
-   *  show all. See EventCategory. */
+  /** Legacy global event hides (e.g. 'raid', 'cheer'), applied to every platform.
+   *  Superseded by the per-source hiddenProviderEvents below: clampOverlayStyle
+   *  folds anything here into per-source keys and clears this, so new configs
+   *  leave it empty. Kept in the type only so old saved configs still parse. */
   hiddenEvents: string[];
-  /** Per-platform event hides, keyed `provider:category` (e.g. 'tiktok:follow').
-   *  Hides that category for ONE platform only, on top of the global hiddenEvents. */
+  /** The per-source event filter: which event categories are hidden, keyed
+   *  `provider:category` (e.g. 'tiktok:follow'). Each platform is filtered on its
+   *  own, so a Twitch raid and a Kick raid toggle independently. Empty = show all. */
   hiddenProviderEvents: string[];
   /** Target ISO currency to convert YouTube Super Chats into ('' = show as sent). */
   superchatCurrency: string;
@@ -104,10 +145,64 @@ export interface OverlayStyle {
    *  the vendor styles re-render EVERY emoji from every platform as that one style's
    *  images, so a merged overlay looks consistent regardless of platform or OS. */
   emojiStyle: EmojiStyle;
+  /** Show chatter profile pictures (YouTube and TikTok carry avatars). */
+  showAvatars: boolean;
+  /** Show the @ some platforms put in front of usernames (YouTube handles are
+   *  "@name"). Off strips the leading @ wherever a name renders. */
+  showAtSign: boolean;
+  /** Show the small "Replying to @name" context line above a reply. */
+  showReplies: boolean;
+  /** How a chatter's first-ever message in the channel is marked. 'twitch' draws
+   *  the outline + label Twitch's own chat uses; 'streamnook' uses the app chat's
+   *  purple highlight (gradient wash + left border + label). Twitch sends the
+   *  signal; other platforms don't, so it only ever fires on Twitch messages. */
+  firstTimeStyle: FirstTimeStyle;
+  /** Twitch style only: a nearly-transparent color-matched tint inside the ring,
+   *  so the row reads highlighted instead of just bordered. (The StreamNook
+   *  style's gradient wash is its own fill.) */
+  firstTimeFill: boolean;
+  /** Border accent when a first-time chatter's message lands (around the ring
+   *  for the Twitch style, down the left bar for StreamNook). See
+   *  OverlayAnimation. Plays once on arrival unless firstTimeAnimateRepeat. */
+  firstTimeAnimation: OverlayAnimation;
+  /** Replay the animation every ~5 seconds while the message is on screen,
+   *  instead of once on arrival. Costs a little OBS paint work while a
+   *  first-time message is visible (an idle overlay otherwise paints nothing). */
+  firstTimeAnimateRepeat: boolean;
   /** Whether new messages appear at the bottom (chat-style) or the top. */
   direction: OverlayDirection;
   /** Entrance animation for incoming messages. */
   entrance: OverlayEntrance;
+  /** Draw each chat message in its own bubble that hugs the text, instead of
+   *  bare text over the scene. A member's atmosphere wash replaces the bubble
+   *  on their rows; events keep their own event styling. */
+  bubble: boolean;
+  /** Bubble silhouette: 'rounded' uses bubbleRadius on every corner, 'pill'
+   *  fully rounds the ends, 'speech' keeps rounded corners but tucks the
+   *  bottom-left one in (a messenger-style tail corner). */
+  bubbleShape: BubbleShape;
+  /** Corner radius in px for the rounded/speech shapes (pill ignores it). */
+  bubbleRadius: number;
+  /** Bubble background color. */
+  bubbleColor: string;
+  /** Bubble background opacity, 0 to 1. */
+  bubbleOpacity: number;
+  /** Custom accent for the first-time chatter highlight (outline, fill, bar,
+   *  wash, and label all follow it). '' = the style's own default: Twitch pink
+   *  or StreamNook purple. */
+  firstTimeColor: string;
+  /** Outline events only: one fixed ring color for every event. '' = each
+   *  event uses its source platform's color. */
+  eventOutlineColor: string;
+  /** Hide chat messages containing any of these words/phrases (case-insensitive
+   *  substring). Never hides events. */
+  hidePhrases: string[];
+  /** Remove a message this many seconds after it appeared on the overlay
+   *  (0 = keep it until it scrolls off). */
+  maxMessageAgeSec: number;
+  /** Clamp each chat message to this many lines, ending in an ellipsis
+   *  (0 = no limit). */
+  maxMessageLines: number;
 }
 
 // Which event categories each platform can actually emit — drives the per-platform
@@ -178,6 +273,9 @@ export const DEFAULT_OVERLAY_STYLE: OverlayStyle = {
   backgroundColor: '#0e0e10',
   backgroundOpacity: 0.8,
   eventStyle: 'plain',
+  eventFill: false,
+  eventAnimation: 'none',
+  eventAnimateRepeat: false,
   hideBots: false,
   hiddenEvents: [],
   hiddenProviderEvents: [],
@@ -190,6 +288,23 @@ export const DEFAULT_OVERLAY_STYLE: OverlayStyle = {
   showAtmospheres: true,
   hiddenBadgeProviders: [],
   emojiStyle: 'apple',
+  bubble: false,
+  bubbleShape: 'rounded',
+  bubbleRadius: 10,
+  bubbleColor: '#0e0e10',
+  bubbleOpacity: 0.55,
+  firstTimeColor: '',
+  eventOutlineColor: '',
+  hidePhrases: [],
+  maxMessageAgeSec: 0,
+  maxMessageLines: 0,
+  showAvatars: true,
+  showAtSign: true,
+  showReplies: true,
+  firstTimeStyle: 'off',
+  firstTimeFill: false,
+  firstTimeAnimation: 'none',
+  firstTimeAnimateRepeat: false,
   direction: 'newBottom',
   entrance: 'fade',
 };
@@ -205,6 +320,10 @@ export const OVERLAY_LIMITS = {
   emoteScale: { min: 0.5, max: 3 },
   badgeScale: { min: 0.5, max: 2.5 },
   backgroundOpacity: { min: 0, max: 1 },
+  bubbleOpacity: { min: 0.05, max: 1 },
+  bubbleRadius: { min: 0, max: 24 },
+  maxMessageAgeSec: { min: 0, max: 600 },
+  maxMessageLines: { min: 0, max: 6 },
 } as const;
 
 // Coerce commandFilters into valid { value, mode } entries. Repairs legacy shapes
@@ -237,9 +356,41 @@ export function sanitizeCommandFilters(raw: unknown): { value: string; mode: 'pr
 export const clampOverlayStyle = (s: OverlayStyle): OverlayStyle => {
   const clamp = (v: number, lo: number, hi: number) =>
     Math.min(hi, Math.max(lo, v));
+  // Phrases: trimmed, non-empty, deduped case-insensitively, bounded so a
+  // hand-edited config can't ship an absurd list.
+  const phrases: string[] = [];
+  const seenPhrases = new Set<string>();
+  for (const p of Array.isArray(s.hidePhrases) ? s.hidePhrases : []) {
+    const v = String(p ?? '').trim();
+    const key = v.toLowerCase();
+    if (!v || seenPhrases.has(key)) continue;
+    seenPhrases.add(key);
+    phrases.push(v);
+    if (phrases.length >= 100) break;
+  }
+  // Event filtering is per-source (hiddenProviderEvents, keyed `provider:category`).
+  // Fold the legacy global hiddenEvents in: each global hide expands to that
+  // category on every platform that can emit it, then the global list is dropped.
+  // Idempotent once migrated, so it is safe on every render (preview + hosted).
+  const providerEvents = new Set(
+    (Array.isArray(s.hiddenProviderEvents) ? s.hiddenProviderEvents : [])
+      .filter((k) => typeof k === 'string' && k.includes(':')),
+  );
+  for (const cat of Array.isArray(s.hiddenEvents) ? s.hiddenEvents : []) {
+    for (const [provider, cats] of Object.entries(PROVIDER_EVENT_CATEGORIES)) {
+      if ((cats ?? []).includes(cat as EventCategory)) providerEvents.add(`${provider}:${cat}`);
+    }
+  }
   return {
     ...s,
     commandFilters: sanitizeCommandFilters(s.commandFilters),
+    hidePhrases: phrases,
+    hiddenEvents: [],
+    hiddenProviderEvents: Array.from(providerEvents),
+    bubbleOpacity: clamp(s.bubbleOpacity ?? 0.55, OVERLAY_LIMITS.bubbleOpacity.min, OVERLAY_LIMITS.bubbleOpacity.max),
+    bubbleRadius: Math.round(clamp(s.bubbleRadius ?? 10, OVERLAY_LIMITS.bubbleRadius.min, OVERLAY_LIMITS.bubbleRadius.max)),
+    maxMessageAgeSec: Math.round(clamp(s.maxMessageAgeSec ?? 0, OVERLAY_LIMITS.maxMessageAgeSec.min, OVERLAY_LIMITS.maxMessageAgeSec.max)),
+    maxMessageLines: Math.round(clamp(s.maxMessageLines ?? 0, OVERLAY_LIMITS.maxMessageLines.min, OVERLAY_LIMITS.maxMessageLines.max)),
     width: Math.round(clamp(s.width, OVERLAY_LIMITS.width.min, OVERLAY_LIMITS.width.max)),
     height: Math.round(clamp(s.height, OVERLAY_LIMITS.height.min, OVERLAY_LIMITS.height.max)),
     fontSize: clamp(s.fontSize, OVERLAY_LIMITS.fontSize.min, OVERLAY_LIMITS.fontSize.max),
