@@ -48,6 +48,16 @@ interface ProviderStatusValue {
     drop_name?: string | null;
     current_minutes?: number | null;
     required_minutes?: number | null;
+    // Every reward tier's minutes for the current campaign, so the Drops panel's
+    // per-tier bars + "next: X in Ym" can update live off provider pushes (not
+    // just the single current drop the title bar uses).
+    drops?: Array<{
+        drop_id?: string;
+        name?: string;
+        current_minutes?: number;
+        required_minutes?: number;
+        is_claimed?: boolean;
+    }> | null;
 }
 
 /**
@@ -202,6 +212,27 @@ export default function DropProgressController() {
                         last_update: new Date().toISOString(),
                     };
                     emit('drop-progress', status).catch(() => {});
+                    // The title bar updates from 'drop-progress' above (the single
+                    // current drop). The Drops panel's per-tier reward bars and the
+                    // "next: X in Ym" countdown listen for 'drops-progress-update'
+                    // instead — which the native watch path emits but this provider
+                    // path did not, so they only refreshed on a full reload. The
+                    // provider now sends every tier's minutes in `drops`; forward
+                    // them as the same per-tier event so the panel updates live too.
+                    if (Array.isArray(v.drops) && v.campaign_id) {
+                        const now = Date.now();
+                        for (const d of v.drops) {
+                            const req = d?.required_minutes ?? 0;
+                            if (!d?.drop_id || req <= 0) continue;
+                            emit('drops-progress-update', {
+                                drop_id: d.drop_id,
+                                current_minutes: d.current_minutes ?? 0,
+                                required_minutes: req,
+                                timestamp: now,
+                                campaign_id: v.campaign_id,
+                            }).catch(() => {});
+                        }
+                    }
                     useAppStore.getState().setDropProgressActive(!!v.is_active);
                     useAppStore.getState().setLiveDropProgress(v.active ? status : null);
                 }
