@@ -293,9 +293,10 @@ impl WatchHeartbeatService {
         }
     }
 
-    /// The documented working watch report: a single minute-watched event,
-    /// minified, gzipped, base64 encoded, sent through the `sendSpadeEvents`
-    /// mutation. Inner statusCode 204 means credited.
+    /// The watch report for the on-screen channel: one minute-watched event sent
+    /// on two transports — the raw spade ingest POST first (primary), then the
+    /// `sendSpadeEvents` GraphQL mutation as a backup — so drop progress advances
+    /// reliably. true when either is accepted (204).
     async fn send_minute_watched(
         &self,
         target: &WatchTarget,
@@ -322,17 +323,35 @@ impl WatchHeartbeatService {
             }
         }]);
         let minified = serde_json::to_string(&inner_payload)?;
+
+        // PRIMARY drops transport: the raw form POST straight to the spade ingest
+        // endpoint (plain base64, no gzip, no Client-Integrity) — the path that
+        // credits reliably. Mirrors the Autopilot plugin's watch report.
+        let encoded = general_purpose::STANDARD.encode(minified.as_bytes());
+        let spade_ok = match Self::send_once_retrying(|| {
+            self.client
+                .post(SPADE_URL)
+                .form(&[("data", encoded.as_str())])
+                .timeout(Duration::from_secs(15))
+        })
+        .await
+        {
+            Ok(resp) => resp.status().as_u16() == 204,
+            Err(_) => false,
+        };
+
+        // BACKUP drops transport: the sendSpadeEvents GraphQL mutation (gzip+b64),
+        // kept as a safety net in case the raw post ever stops crediting.
         let mut gz = GzEncoder::new(Vec::new(), Compression::default());
         gz.write_all(minified.as_bytes())?;
         let g64 = general_purpose::STANDARD.encode(gz.finish()?);
-
         let mutation = json!({
             "query": "\n mutation SendEvents($input: SendSpadeEventsInput!) {\n sendSpadeEvents(input: $input) {\n statusCode\n}\n}\n",
             "variables": {
                 "input": { "data": g64, "repository": "twilight", "encoding": "GZIP_B64" }
             }
         });
-        let response = Self::send_once_retrying(|| {
+        let gql_ok = match Self::send_once_retrying(|| {
             self.client
                 .post("https://gql.twitch.tv/gql")
                 .header("Client-ID", CLIENT_ID)
@@ -343,12 +362,16 @@ impl WatchHeartbeatService {
                 .json(&mutation)
                 .timeout(Duration::from_secs(15))
         })
-        .await?;
-        if !response.status().is_success() {
-            return Ok(false);
-        }
-        let body: serde_json::Value = response.json().await.unwrap_or(json!({}));
-        Ok(body["data"]["sendSpadeEvents"]["statusCode"].as_i64() == Some(204))
+        .await
+        {
+            Ok(resp) if resp.status().is_success() => {
+                let body: serde_json::Value = resp.json().await.unwrap_or(json!({}));
+                body["data"]["sendSpadeEvents"]["statusCode"].as_i64() == Some(204)
+            }
+            _ => false,
+        };
+
+        Ok(spade_ok || gql_ok)
     }
 
     /// The same watched minute on the legacy spade track endpoint, which is
