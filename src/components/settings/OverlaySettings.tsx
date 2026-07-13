@@ -980,6 +980,7 @@ const OverlaySettings = () => {
           <SettingsRow title="Remove messages after" description="Take a message off the overlay this long after it appeared, so a quiet stream doesn't show stale chat forever.">
             <Slider value={style.maxMessageAgeSec} min={OVERLAY_LIMITS.maxMessageAgeSec.min} max={OVERLAY_LIMITS.maxMessageAgeSec.max} step={5} onChange={(v) => set('maxMessageAgeSec', Math.round(v))} format={(v) => (v === 0 ? 'Never' : `${v}s`)} />
           </SettingsRow>
+          <SettingsRow title="Restore chat on reload" description="Bring back the last on-screen messages when the OBS browser source reloads. Off (default) means the overlay comes back cleared when you reopen OBS or start a stream." control={<Toggle enabled={style.restoreOnReload} onChange={() => set('restoreOnReload', !style.restoreOnReload)} />} />
           <SettingsRow title="New messages" description="Where incoming messages appear.">
             <SegmentedSelect
               value={style.direction}

@@ -843,6 +843,12 @@ export const SETTINGS_INDEX: SettingsIndexEntry[] = [
   },
   {
     tab: 'Overlay',
+    section: 'Messages',
+    title: 'Restore chat on reload',
+    description: 'Bring back the last on-screen messages after an OBS browser source reload instead of clearing. Off by default: clear on reload, OBS refresh, restart, stream start, keep buffer, persistence, blank overlay.'
+  },
+  {
+    tab: 'Overlay',
     section: 'Chatters',
     title: 'First-time chatters',
     description: 'Mark the first message someone ever sends in the channel on the overlay: Twitch style (pink outline like Twitch chat) or StreamNook style (purple highlight like the app chat). First message highlight, new chatter, first time chat border.'

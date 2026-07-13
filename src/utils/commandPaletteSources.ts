@@ -824,6 +824,7 @@ const SETTINGS_CATALOG: SettingsEntry[] = [
   { tab: 'Overlay', section: 'Messages', label: 'Message bubbles', keywords: 'overlay message bubbles bubble pill speech messenger shape corner radius background rounded color opacity chat box' },
   { tab: 'Overlay', section: 'Messages', label: 'Max lines per message', keywords: 'overlay max lines truncate clamp long message copypasta ellipsis wall of text limit' },
   { tab: 'Overlay', section: 'Messages', label: 'Remove messages after', keywords: 'overlay remove expire auto clear stale old messages seconds lifetime hide after inactivity' },
+  { tab: 'Overlay', section: 'Messages', label: 'Restore chat on reload', keywords: 'overlay restore keep clear chat on reload obs refresh restart stream start buffer persist blank empty last messages' },
   { tab: 'Overlay', section: 'Filters', label: 'Hide messages containing', keywords: 'overlay hide messages containing words phrases profanity filter banned blocklist spoiler swear' },
   { tab: 'Overlay', section: 'Events', label: 'Outline color', keywords: 'overlay event outline color fixed ring custom platform default recolor' },
   { tab: 'Overlay', section: 'Events', label: 'Event outline animation', keywords: 'overlay event outline animate animation sheen pulse chase sweep shimmer border flash spark ring one shot repeat loop every 5 seconds' },

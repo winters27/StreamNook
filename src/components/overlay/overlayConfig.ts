@@ -203,6 +203,9 @@ export interface OverlayStyle {
   /** Clamp each chat message to this many lines, ending in an ellipsis
    *  (0 = no limit). */
   maxMessageLines: number;
+  /** Restore the last on-screen messages after an OBS/browser source reload.
+   *  Off (default) = the overlay comes back cleared on reload / stream start. */
+  restoreOnReload: boolean;
 }
 
 // Which event categories each platform can actually emit — drives the per-platform
@@ -307,6 +310,7 @@ export const DEFAULT_OVERLAY_STYLE: OverlayStyle = {
   firstTimeAnimateRepeat: false,
   direction: 'newBottom',
   entrance: 'fade',
+  restoreOnReload: false,
 };
 
 // Clamp ranges so a builder (or a hand-edited saved config) can't produce a
