@@ -1,3 +1,17 @@
+## [8.3.5] - 2026-07-12
+
+### ✨ Features
+- Overlay: Added a "Restore chat on reload" option. By default the overlay comes back cleared when you reopen OBS or start a stream; turn it on to bring the last messages back instead.
+
+### 🐛 Bug Fixes
+- Overlay: YouTube chat now uses YouTube's own badges and colors instead of Twitch ones. Moderators show the blue shield with a blue name, members show the channel's tier badge with a green name, verified users get the check, and the channel owner appears in a gold name tag, with badges in YouTube's order and at full resolution.
+- Drops: Watch time now reports on two paths at once, so drop progress keeps crediting reliably through long sessions.
+- Drops: The Drops panel's per-tier bars and "next reward" countdown update live now, instead of only after reopening the panel.
+- Updates: The updater no longer gets stuck on the old version when a leftover StreamNook process is still running. It closes any stragglers and completes the swap.
+
+### ⚡ Performance
+- Cologne event: The animated backdrop stays smooth in the browser-based overlay view.
+
 ## [8.3.4] - 2026-07-12
 
 ## Overlay update
