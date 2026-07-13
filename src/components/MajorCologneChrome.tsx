@@ -26,7 +26,13 @@ export function MajorCologneChrome({
   return (
     <div className={`cologne-chrome${bare ? ' cologne-chrome--bare' : ''}`} aria-hidden="true">
       <div className="cologne-clip">
-        <div className="cologne-wash" style={{ backgroundImage: `url(${textureUrl})` }} />
+        {/* Brightness lives on this static wrapper, not the animated wash:
+            Gecko won't composite a transform animation on an element that
+            also carries a filter, which drops the drift to main-thread FPS
+            in Firefox (the hosted site runs there; WebView2 didn't care). */}
+        <div className="cologne-wash-filter">
+          <div className="cologne-wash" style={{ backgroundImage: `url(${textureUrl})` }} />
+        </div>
         {!bare && <div className="cologne-veil" />}
         {coin && coinUrl && <img className="cologne-coin" src={coinUrl} alt="" draggable={false} />}
         {frame && frameUrl && <div className="cologne-frame" style={{ borderImageSource: `url(${frameUrl})` }} />}

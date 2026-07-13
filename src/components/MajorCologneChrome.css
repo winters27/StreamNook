@@ -43,6 +43,15 @@
   overflow: hidden;
 }
 
+/* The brightness filter sits on a STATIC wrapper so the animated wash below
+   stays compositor-eligible in every engine: Gecko refuses off-main-thread
+   transform animation when the animated element itself has a filter. */
+.cologne-wash-filter {
+  position: absolute;
+  inset: 0;
+  filter: brightness(var(--wash-brightness));
+}
+
 /* Seamless diagonal scroll: a tiled layer translated by exactly one tile, so
    the loop is invisible. Oversized by one tile on every side so no edge shows
    mid-travel. Pure transform = compositor, same approach as the aurora wash. */
@@ -51,7 +60,6 @@
   inset: calc(-1 * var(--tile));
   background-repeat: repeat;
   background-size: var(--tile) var(--tile);
-  filter: brightness(var(--wash-brightness));
   animation: cologne-drift var(--drift) linear infinite;
   will-change: transform;
 }
