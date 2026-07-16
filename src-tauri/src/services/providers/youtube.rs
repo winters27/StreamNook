@@ -666,33 +666,53 @@ fn is_video_id(s: &str) -> bool {
     s.len() == 11 && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
-/// Fetch the live page and extract the InnerTube config + the initial live-chat
-/// continuation + the channel chrome. Errors (surfaced on the pane) distinguish
-/// not-live / members-only / chat-disabled.
-async fn resolve_live_video(http: &reqwest::Client, identifier: &str) -> Result<Resolved> {
-    let url = live_page_url(identifier);
-    let resp = http.get(&url).send().await?;
+/// Outcome of parsing a page we hoped was a live watch page.
+enum WatchOutcome {
+    /// A watch page with live chat: everything the long-poll needs.
+    Resolved(Resolved),
+    /// Not a watch page. YouTube handed us the channel browse shell instead, so the
+    /// caller recovers candidate video ids from it and re-fetches their watch pages.
+    BrowseShell,
+}
+
+/// GET a YouTube page's HTML, mapping the EU consent interstitial to a clear error.
+async fn fetch_youtube_html(
+    http: &reqwest::Client,
+    url: &str,
+    identifier: &str,
+) -> Result<String> {
+    let resp = http.get(url).send().await?;
     let final_url = resp.url().clone();
     let html = resp.text().await?;
-
-    if final_url.as_str().contains("consent.youtube.com") || html.contains("Before you continue to YouTube")
+    if final_url.as_str().contains("consent.youtube.com")
+        || html.contains("Before you continue to YouTube")
     {
         return Err(anyhow!(
             "YouTube returned a consent page for '{}' (try again)",
             identifier
         ));
     }
+    Ok(html)
+}
 
-    let api_key = json_str_after(&html, "\"INNERTUBE_API_KEY\":\"")
+/// Parse a fetched page as a live watch page. Returns `Resolved` on success,
+/// `BrowseShell` when YouTube served the channel browse page instead of a watch
+/// page (so the caller can re-resolve via /watch?v=), or an error for a real watch
+/// page whose chat is gated (members-only / age / chat disabled).
+async fn parse_watch_page(
+    http: &reqwest::Client,
+    html: &str,
+    identifier: &str,
+) -> Result<WatchOutcome> {
+    let api_key = json_str_after(html, "\"INNERTUBE_API_KEY\":\"")
         .ok_or_else(|| anyhow!("couldn't read YouTube API key (is the channel valid?)"))?;
-    let client_version = json_str_after(&html, "\"INNERTUBE_CONTEXT_CLIENT_VERSION\":\"")
-        .or_else(|| json_str_after(&html, "\"clientVersion\":\""))
+    let client_version = json_str_after(html, "\"INNERTUBE_CONTEXT_CLIENT_VERSION\":\"")
+        .or_else(|| json_str_after(html, "\"clientVersion\":\""))
         .unwrap_or_else(|| "2.20240101.00.00".to_string());
-    let visitor_data =
-        json_str_after(&html, "\"visitorData\":\"").map(|v| decode_json_escapes(&v));
+    let visitor_data = json_str_after(html, "\"visitorData\":\"").map(|v| decode_json_escapes(&v));
 
-    let player = extract_json(&html, "ytInitialPlayerResponse");
-    let initial = extract_json(&html, "ytInitialData");
+    let player = extract_json(html, "ytInitialPlayerResponse");
+    let initial = extract_json(html, "ytInitialData");
 
     // Playability gate: members-only / login-required / age-restricted streams have
     // no anonymous chat. Give a readable reason instead of a blank pane.
@@ -715,11 +735,22 @@ async fn resolve_live_video(http: &reqwest::Client, identifier: &str) -> Result<
         d.pointer("/contents/twoColumnWatchNextResults/conversationBar/liveChatRenderer")
     });
     let Some(lcr) = live_chat_renderer else {
-        // No live-chat renderer: not live (or chat disabled / it's a VOD).
-        return Err(anyhow!(
-            "'{}' isn't live right now (or its chat is unavailable)",
-            identifier
-        ));
+        // No live-chat renderer. If this is a real watch page, its chat is genuinely
+        // unavailable (disabled / gated / it's a VOD), a hard error. If it's the
+        // channel browse shell (YouTube's /live shortcut sometimes fails to surface a
+        // live stream), hand back the recovered video id so the caller re-fetches its
+        // watch page, which always carries the chat token.
+        let is_watch_page = initial
+            .as_ref()
+            .and_then(|d| d.pointer("/contents/twoColumnWatchNextResults"))
+            .is_some();
+        if is_watch_page {
+            return Err(anyhow!(
+                "'{}' isn't live right now (or its chat is unavailable)",
+                identifier
+            ));
+        }
+        return Ok(WatchOutcome::BrowseShell);
     };
     // The watch page's BOOTSTRAP continuation (continuations[0]) is the one
     // get_live_chat accepts — the watch page's view-selector tokens 400 against the
@@ -736,7 +767,7 @@ async fn resolve_live_video(http: &reqwest::Client, identifier: &str) -> Result<
         .and_then(|p| p.pointer("/videoDetails/videoId"))
         .and_then(|v| v.as_str())
         .map(String::from)
-        .or_else(|| json_str_after(&html, "\"videoId\":\""));
+        .or_else(|| json_str_after(html, "\"videoId\":\""));
     let continuation = match video_id.as_deref() {
         Some(vid) => match fetch_live_continuation(http, vid).await {
             Some(live) => {
@@ -757,14 +788,14 @@ async fn resolve_live_video(http: &reqwest::Client, identifier: &str) -> Result<
         }
     };
 
-    let mut meta = extract_meta(player.as_ref(), initial.as_ref(), &html);
+    let mut meta = extract_meta(player.as_ref(), initial.as_ref(), html);
     // Stash the scraped InnerTube creds on the meta so send/moderate can reuse them
     // (kept internal via serde(skip)).
     meta.api_key = Some(api_key.clone());
     meta.client_version = Some(client_version.clone());
     meta.visitor_data = visitor_data.clone();
 
-    Ok(Resolved {
+    Ok(WatchOutcome::Resolved(Resolved {
         ctx: LiveContext {
             api_key,
             client_version,
@@ -772,7 +803,106 @@ async fn resolve_live_video(http: &reqwest::Client, identifier: &str) -> Result<
             continuation,
         },
         meta,
-    })
+    }))
+}
+
+/// Distinct 11-char video ids in document order, capped at `max`. Used to pick the
+/// live video off a channel browse shell, which carries no reliable "this one is
+/// live" marker: the live stream is normally surfaced at the top, but a channel
+/// trailer or pinned upload can precede it, so the caller probes the first few.
+fn candidate_video_ids(html: &str, max: usize) -> Vec<String> {
+    let marker = "\"videoId\":\"";
+    let mut out: Vec<String> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut rest = html;
+    while out.len() < max {
+        let Some(pos) = rest.find(marker) else { break };
+        let start = &rest[pos + marker.len()..];
+        let Some(end) = start.find('"') else { break };
+        let id = &start[..end];
+        if is_video_id(id) && seen.insert(id.to_string()) {
+            out.push(id.to_string());
+        }
+        rest = &start[end..];
+    }
+    out
+}
+
+/// Whether a scraped watch page is a stream that is live right now (not an ended
+/// broadcast's VOD, whose replay chat we must not attach to). Used to gate the
+/// /watch?v= fallback so a browse shell's non-live grid item is rejected.
+fn is_currently_live(html: &str) -> bool {
+    extract_json(html, "ytInitialPlayerResponse")
+        .as_ref()
+        .map(|p| {
+            p.pointer("/videoDetails/isLive")
+                .and_then(|b| b.as_bool())
+                .unwrap_or(false)
+                || p.pointer(
+                    "/microformat/playerMicroformatRenderer/liveBroadcastDetails/isLiveNow",
+                )
+                .and_then(|b| b.as_bool())
+                .unwrap_or(false)
+        })
+        .unwrap_or(false)
+}
+
+/// Fetch the live page and extract the InnerTube config + the initial live-chat
+/// continuation + the channel chrome. Errors (surfaced on the pane) distinguish
+/// not-live / members-only / chat-disabled.
+///
+/// YouTube's `/@handle/live` (and `/channel/UC…/live`) shortcut normally serves the
+/// live watch page, but it intermittently fails to surface a genuinely-live stream
+/// and returns the channel's browse page instead (which carries no chat token). When
+/// that happens we recover candidate video ids from the browse page and re-fetch their
+/// watch pages directly, accepting the first one that is live right now.
+async fn resolve_live_video(http: &reqwest::Client, identifier: &str) -> Result<Resolved> {
+    let html = fetch_youtube_html(http, &live_page_url(identifier), identifier).await?;
+    match parse_watch_page(http, &html, identifier).await? {
+        WatchOutcome::Resolved(resolved) => return Ok(resolved),
+        WatchOutcome::BrowseShell => {}
+    }
+
+    // /live handed us the channel browse shell instead of the live watch page. The
+    // browse page has no reliable "this video is live" marker, so probe the first few
+    // distinct video ids (the live stream is normally at the top, but a trailer/pinned
+    // upload can precede it). Accept the first that is live now — its watch page always
+    // carries the chat token; the is-live gate stops us attaching to a past stream's
+    // replay chat when a non-live grid item comes first.
+    let not_live = || {
+        anyhow!(
+            "'{}' isn't live right now (or its chat is unavailable)",
+            identifier
+        )
+    };
+    let candidates = candidate_video_ids(&html, 3);
+    if candidates.is_empty() {
+        return Err(not_live());
+    }
+    for vid in candidates {
+        let watch_url = format!("https://www.youtube.com/watch?v={}", vid);
+        let Ok(watch_html) = fetch_youtube_html(http, &watch_url, identifier).await else {
+            continue;
+        };
+        if !is_currently_live(&watch_html) {
+            continue;
+        }
+        match parse_watch_page(http, &watch_html, identifier).await {
+            Ok(WatchOutcome::Resolved(resolved)) => {
+                log::info!(
+                    "[YouTube] '{}' resolved via /watch?v={} after /live returned a browse shell",
+                    identifier,
+                    vid
+                );
+                return Ok(resolved);
+            }
+            // A live candidate whose watch page still won't parse (e.g. members-only
+            // playability): surface that reason rather than a misleading "not live".
+            Ok(WatchOutcome::BrowseShell) => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    Err(not_live())
 }
 
 /// The watch page's bootstrap live-chat continuation — the token get_live_chat
@@ -1646,6 +1776,42 @@ mod tests {
                 ]
             } } } } } } });
         assert_eq!(live_view_continuation(&iframe).as_deref(), Some("LIVE"));
+    }
+
+    #[test]
+    fn detects_currently_live() {
+        // Live now: videoDetails.isLive true.
+        let live = r#"var ytInitialPlayerResponse = {"videoDetails":{"isLive":true}};"#;
+        assert!(is_currently_live(live));
+        // Live now via the microformat broadcast details.
+        let live2 = r#"ytInitialPlayerResponse = {"microformat":{"playerMicroformatRenderer":{"liveBroadcastDetails":{"isLiveNow":true}}}};"#;
+        assert!(is_currently_live(live2));
+        // Ended stream VOD (isLiveContent stays true, but isLive is false): reject,
+        // so the browse-shell fallback never attaches to replay chat.
+        let ended = r#"var ytInitialPlayerResponse = {"videoDetails":{"isLive":false,"isLiveContent":true}};"#;
+        assert!(!is_currently_live(ended));
+        // Plain upload / no player — reject.
+        assert!(!is_currently_live(r#"var ytInitialPlayerResponse = {"videoDetails":{}};"#));
+        assert!(!is_currently_live("no player here"));
+    }
+
+    #[test]
+    fn collects_distinct_candidate_video_ids() {
+        // Dedups repeats, skips non-11-char junk, preserves order, honors the cap.
+        let html = concat!(
+            r#"{"videoId":"AVfiMm5fK_U"}, {"videoId":"AVfiMm5fK_U"},"#,
+            r#" {"videoId":"shortid"}, {"videoId":"qnuD9ZYOh9U"},"#,
+            r#" {"videoId":"knjbSynIY5k"}, {"videoId":"jdkKmsj4ETY"}"#,
+        );
+        assert_eq!(
+            candidate_video_ids(html, 3),
+            vec![
+                "AVfiMm5fK_U".to_string(),
+                "qnuD9ZYOh9U".to_string(),
+                "knjbSynIY5k".to_string(),
+            ]
+        );
+        assert!(candidate_video_ids("no ids here", 3).is_empty());
     }
 
     #[test]
