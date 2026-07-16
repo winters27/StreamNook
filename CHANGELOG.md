@@ -1,3 +1,8 @@
+## [8.3.6] - 2026-07-15
+
+### 🐛 Bug Fixes
+- Fixed YouTube live chat not showing up for some streams. When a creator was genuinely live but YouTube's live shortcut returned their channel page instead of the stream, the chat would silently never load. StreamNook now finds the live stream and connects to its chat directly, and it won't attach to an old stream's replay chat by mistake.
+
 ## [8.3.5] - 2026-07-12
 
 ### ✨ Features
