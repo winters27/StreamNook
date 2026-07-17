@@ -72,6 +72,23 @@ pub async fn get_active_drop_campaigns(
         .map_err(|e| e.to_string())
 }
 
+/// Re-fetch active campaigns to pick up a fresh `is_account_connected` after the user connects
+/// their account, bypassing the 5-minute cache. Deliberately does NOT run the progress-map sync
+/// (unlike `get_active_drop_campaigns`), so a connection refresh can't snap live automation
+/// progress backward; it only re-primes the campaign cache so later opens stay consistent.
+#[tauri::command]
+pub async fn refresh_drops_connection_status(
+    state: State<'_, AppState>,
+) -> Result<Vec<DropCampaign>, String> {
+    let drops_service = state.drops_service.lock().await;
+    let campaigns = drops_service
+        .fetch_all_active_campaigns_from_api()
+        .await
+        .map_err(|e| e.to_string())?;
+    drops_service.prime_campaign_cache(&campaigns).await;
+    Ok(campaigns)
+}
+
 #[tauri::command]
 pub async fn get_drops_inventory(state: State<'_, AppState>) -> Result<InventoryResponse, String> {
     let drops_service = state.drops_service.lock().await;

@@ -1584,6 +1584,16 @@ pub async fn update_user_chat_color(target_user_id: String, color: String) -> Re
         .map_err(|e| e.to_string())
 }
 
+/// Batch-fetch users' chosen Twitch name colors (`user_id -> hex`). Never errors:
+/// returns an empty map when unauthenticated or on request failure so the chat
+/// render path degrades to its default color.
+#[tauri::command]
+pub async fn get_user_chat_colors(
+    user_ids: Vec<String>,
+) -> Result<std::collections::HashMap<String, String>, String> {
+    Ok(TwitchService::get_user_chat_colors(user_ids).await)
+}
+
 #[tauri::command]
 pub async fn block_user(target_user_id: String) -> Result<(), String> {
     TwitchService::block_user(&target_user_id)

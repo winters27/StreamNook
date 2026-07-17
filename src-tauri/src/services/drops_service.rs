@@ -581,6 +581,7 @@ impl DropsService {
                 allowed_channels,
                 is_acl_based,
                 details_url: None,
+                account_link: None,
             };
 
             items.push(InventoryItem {
@@ -682,6 +683,14 @@ impl DropsService {
     /// This should only be called by get_all_active_campaigns_cached or during automation operations
     pub(crate) async fn fetch_all_active_campaigns_from_api(&self) -> Result<Vec<DropCampaign>> {
         Self::fetch_active_campaigns(&self.client, &self.device_id, &self.session_id).await
+    }
+
+    /// Overwrite the active-campaign cache without touching the live progress map. Used by the
+    /// connection-status refresh, which must not disturb in-flight automation progress the way a
+    /// full `update_campaigns_and_progress` would.
+    pub async fn prime_campaign_cache(&self, campaigns: &[DropCampaign]) {
+        let mut cache = self.cached_campaigns.write().await;
+        *cache = Some((campaigns.to_vec(), Utc::now()));
     }
 
     /// Fetches all active drop campaigns with per-account progress (each drop's
@@ -1017,6 +1026,13 @@ impl DropsService {
                     .or_else(|| campaign_json["url"].as_str())
                     .map(|s| s.to_string());
 
+                // Publisher "connect account" URL: present when this campaign requires
+                // linking your Twitch account to the game before drops will credit.
+                let account_link = campaign_json["accountLinkURL"]
+                    .as_str()
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.to_string());
+
                 result.push(DropCampaign {
                     id: campaign_json["id"].as_str().unwrap_or("").to_string(),
                     name: campaign_json["name"].as_str().unwrap_or("").to_string(),
@@ -1030,10 +1046,13 @@ impl DropsService {
                     start_at,
                     end_at,
                     time_based_drops,
-                    is_account_connected: true,
+                    is_account_connected: campaign_json["self"]["isAccountConnected"]
+                        .as_bool()
+                        .unwrap_or(true),
                     allowed_channels,
                     is_acl_based,
                     details_url,
+                    account_link,
                 });
             }
         }
@@ -2015,6 +2034,7 @@ impl DropsService {
                 allowed_channels: Vec::new(),
                 is_acl_based: false,
                 details_url: None, // Will be populated from the main fetch method
+                account_link: None,
             });
         }
 

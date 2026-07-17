@@ -41,7 +41,6 @@ use commands::{
 use log::{debug, error};
 use models::settings::{AppState, Settings};
 use services::background_service::BackgroundService;
-use services::badge_polling_service::BadgePollingService;
 use services::cache_service;
 use services::drops_service::DropsService;
 use services::live_notification_service::LiveNotificationService;
@@ -574,12 +573,12 @@ fn main() {
                 }
             });
 
-            // Start badge polling service
-            let badge_polling_service = Arc::new(BadgePollingService::new());
-            let badge_app_handle = app_handle.clone();
-            tauri::async_runtime::spawn(async move {
-                badge_polling_service.start(badge_app_handle, app_state_for_live_notif).await;
-            });
+            // Badge-drop detection now lives server-side on the Penrose bot and
+            // is delivered to the app over the badge WebSocket feed (started on
+            // the frontend via badgeSocketService). The old cache-polling
+            // detector is retired so drops surface within minutes instead of up
+            // to a day late, and so a pushed drop and a locally-detected one can
+            // never double-notify.
 
             // Verify token health on startup
             tauri::async_runtime::spawn(async move {
@@ -620,34 +619,10 @@ fn main() {
                 }
             });
 
-            // Pre-fetch badges in the background
-            tauri::async_runtime::spawn(async move {
-                use services::twitch_service::TwitchService;
-                use commands::badges::fetch_global_badges;
-
-                debug!("[Main] Starting background badge pre-fetch...");
-
-                // Wait a few seconds to let the app fully initialize (after token health check)
-                tokio::time::sleep(tokio::time::Duration::from_secs(4)).await;
-
-                match TwitchService::get_token().await {
-                    Ok(token) => {
-                        let client_id = env!("TWITCH_APP_CLIENT_ID").to_string();
-                        match fetch_global_badges(client_id, token).await {
-                            Ok(badges) => {
-                                debug!("[Main] Background badge pre-fetch complete: {} badge sets cached", badges.data.len());
-                            }
-                            Err(e) => {
-                                debug!("[Main] Background badge pre-fetch failed: {}", e);
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        debug!("[Main] Failed to get token for background badge pre-fetch: {}", e);
-                    }
-                }
-            });
-
+            // No background global-badge prefetch. Global badges are fetched
+            // lazily on the first chat badge resolution (get_user_badges), and
+            // badge-drop detection is handled centrally by the bot and delivered
+            // over the badge feed, so no client hits Helix for badges at startup.
 
             // Initialize unified badge service
             tauri::async_runtime::spawn(async move {
@@ -880,6 +855,7 @@ fn main() {
             remove_channel_vip,
             update_suspicious_user_status,
             update_user_chat_color,
+            get_user_chat_colors,
             block_user,
             unblock_user,
             get_channel_moderators,
@@ -938,6 +914,7 @@ fn main() {
             get_all_third_party_badges,
             get_bttv_pro_badge,
             get_discovered_bttv_pro_badges,
+            push_badge_notification,
             // Badge Metadata commands
             fetch_badge_metadata,
             // Link preview commands
@@ -991,6 +968,7 @@ fn main() {
             get_drops_settings,
             update_drops_settings,
             get_active_drop_campaigns,
+            refresh_drops_connection_status,
             get_drops_inventory,
             get_drop_progress,
             claim_drop,

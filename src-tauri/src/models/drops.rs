@@ -21,6 +21,8 @@ pub struct DropCampaign {
     pub is_acl_based: bool,
     #[serde(default)]
     pub details_url: Option<String>, // "About this drop" link
+    #[serde(default)]
+    pub account_link: Option<String>, // publisher "connect account" URL (Twitch accountLinkURL)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

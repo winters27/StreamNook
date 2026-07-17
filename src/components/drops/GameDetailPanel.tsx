@@ -1,5 +1,6 @@
 import { useState, useRef } from 'react';
-import { X, Gift, Package, Check, Pause, Clock, Star, Ban, ExternalLink, Tv } from 'lucide-react';
+import { X, Gift, Package, Check, Pause, Clock, Star, Ban, Link2, Tv } from 'lucide-react';
+import { invoke } from '@tauri-apps/api/core';
 import { useAppStore } from '../../stores/AppStore';
 import type { UnifiedGame, DropProgress, DropProgressStatus, DropCampaign, TimeBasedDrop, InventoryItem, CompletedDrop, DropBenefit, TwitchStream } from '../../types';
 import { Tooltip } from '../ui/Tooltip';
@@ -450,24 +451,33 @@ export default function GameDetailPanel({
                             {game.active_campaigns.length} campaign{game.active_campaigns.length !== 1 ? 's' : ''} active
                         </p>
                         {(() => {
-                            // Find account link from any active campaign for this game
-                            const accountLink = game.active_campaigns.find(c => c.account_link)?.account_link;
-                            
-                            if (accountLink) {
-                                return (
-                                    <a
-                                        href={accountLink}
-                                        target="_blank"
-                                        rel="noopener noreferrer"
-                                        className="text-xs text-accent hover:text-accent/80 mt-0.5 flex items-center gap-1 hover:underline transition-colors"
-                                        onClick={(e) => e.stopPropagation()}
+                            // Twitch marks a campaign as needing an account link (accountLinkURL)
+                            // that credits drops only once the viewer connects; self.isAccountConnected
+                            // mirrors what Twitch's own rewards page shows. We surface the connect
+                            // action only when Twitch reports not-connected (same rule as Twitch), and
+                            // show nothing once it's satisfied — no permanent stamp.
+                            const connectUrl = game.active_campaigns
+                                .find(c => c.account_link && !c.is_account_connected)?.account_link;
+                            if (!connectUrl) return null;
+                            return (
+                                <Tooltip content="Open the account-connection page in your browser, where you're already signed in to Twitch and the game.">
+                                    <button
+                                        onClick={(e) => {
+                                            e.stopPropagation();
+                                            // The link page is a publisher-side flow (game login + Twitch
+                                            // OAuth), not a twitch.tv-cookie op, so it opens in the real
+                                            // browser rather than the in-app Twitch overlay. Signal the
+                                            // Drops Center to re-check status when the app regains focus.
+                                            invoke('open_browser_url', { url: connectUrl }).catch(() => {});
+                                            window.dispatchEvent(new CustomEvent('drops-connect-initiated'));
+                                        }}
+                                        className="glass-button px-2.5 py-1 mt-1 text-xs font-semibold text-accent flex items-center gap-1.5"
                                     >
-                                        <ExternalLink size={10} />
-                                        Connect game account
-                                    </a>
-                                );
-                            }
-                            return null;
+                                        <Link2 size={12} />
+                                        Connect account
+                                    </button>
+                                </Tooltip>
+                            );
                         })()}
                     </div>
                     <button

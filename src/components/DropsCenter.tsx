@@ -1,8 +1,9 @@
-import { useEffect, useState, useMemo, useRef } from 'react';
+import { useEffect, useState, useMemo, useRef, useCallback } from 'react';
 import { motion, LayoutGroup } from 'framer-motion';
 import { invoke } from '@tauri-apps/api/core';
 import { useAppStore } from '../stores/AppStore';
 import { listen, emit } from '@tauri-apps/api/event';
+import { getCurrentWindow } from '@tauri-apps/api/window';
 import { Search, Gift, MonitorPlay, BarChart3, Package, ArrowDownUp, SlidersHorizontal } from 'lucide-react';
 import { usePluginUiRegistry, selectSlot } from '../plugins-ui/registry';
 import { Dropdown } from './ui/Dropdown';
@@ -687,6 +688,53 @@ export default function DropsCenter() {
         }
     // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [dropsSearchTerm, unifiedGames]);
+
+    // The "Connect account" button opens the publisher's link page in the external browser, so
+    // there's no in-app close event to hang a refresh on. Instead: when the user clicks Connect we
+    // arm a pending flag, and re-check connection status the next time the app regains focus (they've
+    // come back from the browser). Gated by the flag so we don't refetch on every alt-tab.
+    const pendingConnectRef = useRef(false);
+
+    // Re-check status without a full reload. loadDropsData() here would blank the panel behind a
+    // spinner AND clear the backend's live progress map (see handleClaimDrop); instead we fetch fresh
+    // campaigns via a command that skips the progress sync, then patch the is_account_connected /
+    // account_link flags in place — on both the grid and the open panel (selectedGame is a snapshot,
+    // not a live reference into unifiedGames).
+    const refreshConnectionStatus = useCallback(async () => {
+        const fresh = await invoke<DropCampaign[]>('refresh_drops_connection_status').catch(() => null);
+        if (!fresh) return;
+        const byId = new Map(fresh.map(c => [c.id, c]));
+        const patchGame = (g: UnifiedGame): UnifiedGame => ({
+            ...g,
+            active_campaigns: g.active_campaigns.map(c => {
+                const f = byId.get(c.id);
+                return f
+                    ? { ...c, is_account_connected: f.is_account_connected, account_link: f.account_link }
+                    : c;
+            }),
+        });
+        setUnifiedGames(prev => prev.map(patchGame));
+        setSelectedGame(prev => (prev ? patchGame(prev) : prev));
+    }, []);
+
+    useEffect(() => {
+        const arm = () => { pendingConnectRef.current = true; };
+        window.addEventListener('drops-connect-initiated', arm);
+        let unlisten: (() => void) | undefined;
+        getCurrentWindow()
+            .onFocusChanged(({ payload: focused }) => {
+                if (focused && pendingConnectRef.current) {
+                    pendingConnectRef.current = false;
+                    refreshConnectionStatus();
+                }
+            })
+            .then(u => { unlisten = u; })
+            .catch(() => {});
+        return () => {
+            window.removeEventListener('drops-connect-initiated', arm);
+            unlisten?.();
+        };
+    }, [refreshConnectionStatus]);
 
 
     // ---- Data Loading & Merging Logic ----

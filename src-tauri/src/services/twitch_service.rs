@@ -4174,6 +4174,78 @@ impl TwitchService {
         Ok(())
     }
 
+    /// Get User Chat Color for a batch of users, returning `user_id -> hex color`.
+    /// Helix allows up to 100 ids per request and ignores duplicate/unknown ids.
+    /// Degrades to an empty map on a missing token (anonymous viewing) or any
+    /// request failure, so the chat render path always has a value to fall back
+    /// on rather than surfacing an error.
+    pub async fn get_user_chat_colors(
+        user_ids: Vec<String>,
+    ) -> std::collections::HashMap<String, String> {
+        let mut out: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+        if user_ids.is_empty() {
+            return out;
+        }
+
+        let token = match Self::get_token().await {
+            Ok(t) => t,
+            Err(_) => return out, // anonymous / logged-out: no color lookup available
+        };
+        let client = crate::services::http::client().clone();
+
+        for chunk in user_ids.chunks(100) {
+            let query = chunk
+                .iter()
+                .map(|id| format!("user_id={}", id))
+                .collect::<Vec<_>>()
+                .join("&");
+            let url = format!("https://api.twitch.tv/helix/chat/color?{}", query);
+
+            let response = match client
+                .get(&url)
+                .header("Client-Id", CLIENT_ID)
+                .header(AUTHORIZATION, format!("Bearer {}", token))
+                .send()
+                .await
+            {
+                Ok(r) => r,
+                Err(e) => {
+                    warn!("[TwitchService] get_user_chat_colors request failed: {}", e);
+                    continue;
+                }
+            };
+
+            if !response.status().is_success() {
+                let error_text = response.text().await.unwrap_or_default();
+                warn!(
+                    "[TwitchService] get_user_chat_colors non-success: {}",
+                    error_text
+                );
+                continue;
+            }
+
+            let body: serde_json::Value = match response.json().await {
+                Ok(v) => v,
+                Err(e) => {
+                    warn!("[TwitchService] get_user_chat_colors parse failed: {}", e);
+                    continue;
+                }
+            };
+
+            if let Some(data) = body.get("data").and_then(|d| d.as_array()) {
+                for item in data {
+                    let uid = item.get("user_id").and_then(|v| v.as_str()).unwrap_or("");
+                    let color = item.get("color").and_then(|v| v.as_str()).unwrap_or("");
+                    if !uid.is_empty() && !color.is_empty() {
+                        out.insert(uid.to_string(), color.to_string());
+                    }
+                }
+            }
+        }
+
+        out
+    }
+
     /// Block user
     pub async fn block_user(target_user_id: &str) -> Result<()> {
         let token = Self::get_token().await?;
