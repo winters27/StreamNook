@@ -198,6 +198,21 @@ function extractUsageStats(html) {
 }
 
 /**
+ * Decode HTML entities (smart quotes/dashes) so more_info is clean text.
+ */
+function htmlDecodeEntities(s) {
+  return String(s)
+    .replace(/&#x([0-9a-fA-F]+);/g, (_, h) => String.fromCodePoint(parseInt(h, 16)))
+    .replace(/&#(\d+);/g, (_, d) => String.fromCodePoint(parseInt(d, 10)))
+    .replace(/&quot;/g, '"')
+    .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&nbsp;/g, ' ')
+    .replace(/&rsquo;/g, '’').replace(/&lsquo;/g, '‘')
+    .replace(/&ldquo;/g, '“').replace(/&rdquo;/g, '”')
+    .replace(/&ndash;/g, '–').replace(/&mdash;/g, '—')
+    .replace(/&amp;/g, '&');
+}
+
+/**
  * Extract more info from BadgeBase HTML
  */
 function extractMoreInfo(html) {
@@ -217,8 +232,9 @@ function extractMoreInfo(html) {
       text = text.replace(pattern, '$1');
     }
 
-    // Remove HTML tags
-    text = text.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+    // Remove HTML tags, decode entities (smart quotes/dashes), and drop the
+    // U+FFFD replacement char so more_info is clean text, not mojibake.
+    text = htmlDecodeEntities(text.replace(/<[^>]*>/g, ' ')).replace(/�/g, '').replace(/\s+/g, ' ').trim();
 
     return text || null;
   }

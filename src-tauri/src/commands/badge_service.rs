@@ -14,12 +14,11 @@ pub async fn initialize_badge_service() {
     let client_id = env!("TWITCH_APP_CLIENT_ID").to_string();
     let service = BadgeService::new(client_id);
 
-    // Pre-fetch global badges if token is available
-    if let Ok(token) = TwitchService::get_token().await {
-        let _ = service.fetch_global_badges(&token).await;
-    }
+    // No per-client Helix prefetch of global badges on startup. get_user_badges
+    // self-heals when the cache is empty (it lazily fetches on the first badge
+    // resolution), so idle clients never call Helix for badges.
 
-    // Pre-fetch third-party badge databases
+    // Pre-fetch third-party badge databases (FFZ/Chatterino/etc — not Helix)
     let _ = service.fetch_third_party_badges().await;
 
     *BADGE_SERVICE.write().await = Some(service);
@@ -363,4 +362,27 @@ pub async fn get_bttv_pro_badge(
 #[tauri::command]
 pub async fn get_discovered_bttv_pro_badges() -> Result<Vec<String>, String> {
     Ok(crate::services::bttv_pro_service::get_discovered_bttv_pro_badges())
+}
+
+/// Emit a badge notification received from the real-time feed (the badge
+/// WebSocket, or its latest.json poll fallback) through the exact same
+/// `badge-notification` event the UI already renders. This lets a pushed drop
+/// surface identically to a locally-detected one, with no UI change. Dedupe is
+/// handled client-side by the socket service before this is invoked.
+#[tauri::command]
+pub fn push_badge_notification(
+    app_handle: tauri::AppHandle,
+    badge: crate::services::badge_polling_service::BadgeNotification,
+) -> Result<(), String> {
+    use crate::services::badge_polling_service::BadgeNotificationStatus;
+    use tauri::Emitter;
+
+    let is_available = matches!(badge.status, BadgeNotificationStatus::Available);
+    app_handle
+        .emit("badge-notification", vec![badge.clone()])
+        .map_err(|e| e.to_string())?;
+    if is_available {
+        let _ = app_handle.emit("badge-available", vec![badge]);
+    }
+    Ok(())
 }
