@@ -15,6 +15,8 @@ import type { ThirdPartyBadge as ThirdPartyBadgeType } from '../services/thirdPa
 import { useAppStore } from '../stores/AppStore';
 import { openBadgesWithBadgeInMain } from '../utils/openBadgesInMain';
 import { useChatUserStore } from '../stores/chatUserStore';
+import { useGiftBombRecipients } from '../stores/giftBombStore';
+import { useUserColor } from '../services/userColorCache';
 import { queueBadgeForCaching, getCachedBadgeUrl } from '../services/badgeImageCacheService';
 import { isStreamNookUser, getStreamNookUserNumber, subscribeStreamNookRegistryVersion, getStreamNookRegistryVersion } from '../services/supabaseService';
 import { StreamNookBadge } from './StreamNookBadge';
@@ -308,6 +310,15 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
   }, [message]);
 
   const isAction = parsed.isAction || false;
+
+  // Gift-bomb recipients: when the collapse setting funnels a submysterygift's
+  // subgift children into giftBombStore, this announcement card lists them.
+  // Called unconditionally (rules of hooks); returns a stable empty result for
+  // normal messages, where giftOriginId is undefined.
+  const giftOriginId =
+    parsed.tags.get('msg-param-origin-id') || parsed.tags.get('msg-param-community-gift-id') || undefined;
+  const { expected: giftExpected, recipients: giftRecipients } = useGiftBombRecipients(giftOriginId);
+  const [giftRecipientsExpanded, setGiftRecipientsExpanded] = useState(false);
 
   // PHASE 3.1 - THE ENDGAME: Use pre-formatted timestamps from Rust
   // Zero Date parsing on main thread!
@@ -2084,10 +2095,11 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
       const userPaint = userCosmetics?.paints.find((p) => p.selected);
       const userBadge = userCosmetics?.badges.find((b) => b.selected);
 
-      // Resolve a per-recipient color override (separate from the message
-      // author's override at the top of the component). Falls back to Twitch
-      // purple when nothing is set, matching the prior behavior here.
-      const recipientBaseColor = getColorOverride(userIdProp, userOverrides) ?? '#9147FF';
+      // Resolve a per-recipient color: a manual override wins, else the user's
+      // real Twitch name color (batched Helix lookup), else Twitch purple. This
+      // is why a gift recipient no longer inherits the gifter's color.
+      const fetchedColor = useUserColor(userIdProp);
+      const recipientBaseColor = getColorOverride(userIdProp, userOverrides) ?? fetchedColor ?? '#9147FF';
 
       const userStyle = useMemo(() => {
         if (!userPaint) {
@@ -2298,6 +2310,30 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
             <p className="text-white font-semibold leading-relaxed">
               {parseSystemMessageWithClickableNames(displayMessage)}
             </p>
+            {subMsgId === 'submysterygift' && giftRecipients.length > 0 && (
+              <div className="text-textSecondary text-xs mt-1 leading-relaxed break-words">
+                <span className="mr-1">
+                  {giftExpected
+                    ? `${giftRecipients.length} of ${giftExpected} gifted to`
+                    : `Gifted to`}
+                </span>
+                {(giftRecipientsExpanded ? giftRecipients : giftRecipients.slice(0, 8)).map((r, i, arr) => (
+                  <span key={r.userId}>
+                    <UsernameWithCosmetics username={r.userName} userIdProp={r.userId} displayName={r.displayName} />
+                    {i < arr.length - 1 ? <span>, </span> : null}
+                  </span>
+                ))}
+                {!giftRecipientsExpanded && giftRecipients.length > 8 && (
+                  <button
+                    type="button"
+                    onClick={() => setGiftRecipientsExpanded(true)}
+                    className="ml-1 text-accent hover:underline cursor-pointer"
+                  >
+                    +{giftRecipients.length - 8} more
+                  </button>
+                )}
+              </div>
+            )}
             {parsed.content && (
               <p className="text-textSecondary mt-1 leading-relaxed break-words">
                 {renderContent(contentWithEmotes)}

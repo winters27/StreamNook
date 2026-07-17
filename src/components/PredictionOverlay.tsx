@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 import { Trophy, Users, ChevronDown, ChevronUp, Hourglass, PartyPopper, Frown, RefreshCw, CheckCircle2, XCircle } from 'lucide-react';
@@ -12,6 +12,8 @@ const ChannelPointsIcon = ({ className = "", size = 14 }: { className?: string; 
   </svg>
 );
 import { useAppStore } from '../stores/AppStore';
+import { useChannelEmotes } from '../stores/chatConnectionStore';
+import { buildEmoteNameMap, EmoteText } from '../utils/emoteText';
 
 import { Logger } from '../utils/logger';
 interface PredictionOutcome {
@@ -73,6 +75,11 @@ const PredictionOverlay = ({ channelId, channelLogin, isHypeTrainActive = false 
   // Get current channel ID from props or from currentStream
   const currentChannelId = channelId || currentStream?.user_id;
   const currentChannelLogin = channelLogin || currentStream?.user_login;
+
+  // Outcome titles are plain GQL/PubSub text with no emote ranges, so match
+  // emote names against the channel's set the same way pinned messages do.
+  const channelEmotes = useChannelEmotes(currentChannelLogin, currentChannelId, 'twitch');
+  const emoteMap = useMemo(() => buildEmoteNameMap(channelEmotes), [channelEmotes]);
 
   // Debug log on mount and when channel changes
   useEffect(() => {
@@ -592,7 +599,9 @@ const PredictionOverlay = ({ channelId, channelLogin, isHypeTrainActive = false 
                             <div className="w-2.5 h-2.5 rounded-full bg-white" />
                           </div>
                         )}
-                        <span className="font-semibold text-white text-sm">{outcome.title}</span>
+                        <span className="font-semibold text-white text-sm">
+                          <EmoteText text={outcome.title} emoteMap={emoteMap} keyPrefix={`pred-${outcome.id}`} />
+                        </span>
                       </div>
                       <div className="flex items-center gap-3 text-xs text-white/90">
                         <span className="flex items-center gap-1">
@@ -725,7 +734,7 @@ const PredictionOverlay = ({ channelId, channelLogin, isHypeTrainActive = false 
                   <span className="text-green-400 text-lg font-bold">YOU WON!</span>
                   {winningOutcomeId && (
                     <p className="text-green-300/80 text-sm mt-1">
-                      {activePrediction.outcomes.find(o => o.id === winningOutcomeId)?.title}
+                      <EmoteText text={activePrediction.outcomes.find(o => o.id === winningOutcomeId)?.title ?? ''} emoteMap={emoteMap} keyPrefix="pred-win" />
                     </p>
                   )}
                 </div>
@@ -741,7 +750,7 @@ const PredictionOverlay = ({ channelId, channelLogin, isHypeTrainActive = false 
                   <span className="text-red-400 text-lg font-bold">Better Luck Next Time</span>
                   {winningOutcomeId && (
                     <p className="text-red-300/80 text-sm mt-1">
-                      Winner: {activePrediction.outcomes.find(o => o.id === winningOutcomeId)?.title}
+                      Winner: <EmoteText text={activePrediction.outcomes.find(o => o.id === winningOutcomeId)?.title ?? ''} emoteMap={emoteMap} keyPrefix="pred-loss" />
                     </p>
                   )}
                 </div>
@@ -769,7 +778,7 @@ const PredictionOverlay = ({ channelId, channelLogin, isHypeTrainActive = false 
                   <span className="text-purple-400 text-lg font-bold">Prediction Ended</span>
                   {winningOutcomeId && (
                     <p className="text-purple-300/80 text-sm mt-1">
-                      Winner: {activePrediction.outcomes.find(o => o.id === winningOutcomeId)?.title}
+                      Winner: <EmoteText text={activePrediction.outcomes.find(o => o.id === winningOutcomeId)?.title ?? ''} emoteMap={emoteMap} keyPrefix="pred-announced" />
                     </p>
                   )}
                 </div>

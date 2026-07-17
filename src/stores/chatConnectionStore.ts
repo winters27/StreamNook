@@ -28,6 +28,7 @@ import { fetchRecentMessagesAsIRC } from '../services/ivrService';
 import { fetchAllEmotes, fetchKickChannelEmotes, type EmoteSet } from '../services/emoteService';
 import { Logger } from '../utils/logger';
 import { useAppStore } from './AppStore';
+import { useGiftBombStore } from './giftBombStore';
 import type { SongMatch } from '../utils/songId';
 
 // Hard caps borrowed from the prior single-channel hook. Keeping them as
@@ -203,6 +204,15 @@ function persistOwnChatColor(color: string): void {
 const emoteCache = new Map<string, EmoteSet>();
 const inflightEmoteFetches = new Map<string, Promise<EmoteSet | null>>();
 const emoteSubscribers = new Map<string, Set<() => void>>();
+
+// Chat-side gift-bomb collapse: a submysterygift announces N gifts and its N
+// subgift follow-ups share an origin id. When collapse is on we keep only the
+// announcement row and route children to the activity path (dropped from chat),
+// funneling their recipients into giftBombStore for the announcement card. The
+// map arms an origin for a short window so lone gifts (no announcement) are
+// never collapsed.
+const giftBombChatOrigins = new Map<string, number>(); // originId -> expiry ms
+const GIFT_BOMB_CHAT_WINDOW_MS = 60_000;
 
 function notifyEmoteSubscribers(channelKey: string) {
   const subs = emoteSubscribers.get(channelKey);
@@ -1504,11 +1514,46 @@ function appendStructuredMessage(slice: ChannelSlice, parsed: any) {
   if (slice.seenMessageIds.size > CHAT_MAX_WITH_BUFFER) {
     slice.seenMessageIds = new Set(Array.from(slice.seenMessageIds).slice(-CHAT_MAX_WITH_BUFFER));
   }
+  // Gift-bomb collapse (v1 scope: non-anon submysterygift + subgift only). Anon
+  // variants render on the plain/system path, not the sub-card, so collapsing
+  // them would hide children with no card to show recipients — deferred. The
+  // announcement arms its origin and seeds the store; each subsequent subgift on
+  // that origin is dropped from chat and its recipient funneled to the card.
+  let giftBombChildSuppressed = false;
+  if (parsed.provider === 'twitch') {
+    const t = (parsed.tags ?? {}) as Record<string, string>;
+    const mt = parsed.metadata?.msg_type;
+    const origin = t['msg-param-origin-id'] || t['msg-param-community-gift-id'];
+    const collapse = useAppStore.getState().settings.collapse_gift_subs ?? true;
+    if (origin && mt === 'submysterygift') {
+      giftBombChatOrigins.set(origin, Date.now() + GIFT_BOMB_CHAT_WINDOW_MS);
+      if (collapse) {
+        const n = parseInt(t['msg-param-mass-gift-count'] ?? '', 10);
+        useGiftBombStore.getState().noteAnnouncement(origin, Number.isFinite(n) ? n : undefined);
+      }
+    } else if (origin && mt === 'subgift') {
+      const exp = giftBombChatOrigins.get(origin);
+      if (collapse && exp && exp > Date.now()) {
+        const rid = t['msg-param-recipient-id'] || '';
+        if (rid) {
+          useGiftBombStore.getState().addRecipient(origin, {
+            userId: rid,
+            userName: t['msg-param-recipient-user-name'] || '',
+            displayName: t['msg-param-recipient-display-name'] || t['msg-param-recipient-user-name'] || '',
+          });
+        }
+        giftBombChildSuppressed = true;
+      }
+    }
+  }
+
   // TikTok likes are high-frequency engagement, not conversation. Keep them OUT of
   // the chat feed (they'd bury real chat) but still feed the activity panel below
   // (the producer reads `parsed` directly, not the slice, so skipping the queue is
   // safe). Follows / gifts stay inline like every other platform's events.
-  const activityOnly = parsed.provider === 'tiktok' && parsed.metadata?.msg_type === 'tiktok_like';
+  const activityOnly =
+    (parsed.provider === 'tiktok' && parsed.metadata?.msg_type === 'tiktok_like') ||
+    giftBombChildSuppressed;
 
   if (!activityOnly) {
     queueMessage(slice.channel, parsed);
