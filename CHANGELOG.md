@@ -1,3 +1,20 @@
+## [8.3.7] - 2026-07-17
+
+## 🎉 New: Subscriber milestone badges
+> As our first subscribers approach three months, we are rolling out milestone badges for the people who stick around. Reach 3, 6, 9, or 12 months and you unlock a holographic Penrose badge to wear anywhere in StreamNook.
+
+![Subscriber milestone badges](https://cdn.streamnook.app/badges/tenure-lineup.webp)
+
+### ✨ Features
+- Prediction outcomes now show emotes in their titles.
+- Real-time badge drop alerts, so new Twitch badge drops surface the moment they go live.
+
+### 🐛 Bug Fixes
+- Mass gift-sub announcements collapse into a single card that lists the recipients, instead of flooding chat.
+- Gift-sub recipients show in their own name color instead of the gifter's.
+- Drops automation fixes so mining tracks the correct drop and channel and resumes cleanly.
+- The what's-new popup renders release images and keeps descriptions in order.
+
 ## [8.3.6] - 2026-07-15
 
 ### 🐛 Bug Fixes
