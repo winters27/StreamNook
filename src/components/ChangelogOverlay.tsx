@@ -105,40 +105,28 @@ const ConnectFooter = () => (
   </div>
 );
 
-type ChangeKind = 'hero' | 'feature' | 'fix' | 'perf' | 'maint' | 'note';
+// A changelog body is rendered in DOCUMENT ORDER as a list of typed blocks, so
+// a description or image always shows where it was written (an earlier version
+// bucketed loose paragraphs into a "notes" group that rendered at the very
+// bottom, which is why a lead blurb could jump to the end).
+type Block =
+  | { t: 'hero'; title: string; desc: string }   // ## 🎉 New: <headline> + > <blurb>
+  | { t: 'image'; url: string; alt: string }      // ![alt](url)
+  | { t: 'header'; label: string }                // ### <section>
+  | { t: 'item'; title: string; desc: string }    // - **Title**: description
+  | { t: 'note'; desc: string };                  // a plain paragraph
 
-interface ChangeRow {
-  kind: ChangeKind;
-  title: string;
-  desc: string;
-}
-
-// Friendly, text-only category labels. Deliberately no icons — the panel reads
-// as a clean list of changes, not a structured markdown document.
-const CATEGORY_LABELS: Record<Exclude<ChangeKind, 'hero' | 'note'>, string> = {
-  feature: 'Features',
-  perf: 'Performance',
-  fix: 'Fixes',
-  maint: 'Improvements',
-};
-const CATEGORY_ORDER: Array<Exclude<ChangeKind, 'hero' | 'note'>> = [
-  'feature',
-  'perf',
-  'fix',
-  'maint',
-];
-
-// Turn a release-notes markdown body into typed rows. release_manager.ps1 emits
-// a stable shape: an optional "## 🎉 New: <headline>" + "> <blurb>" lead, then
-// "### <section>" blocks of "- **Title**: description" bullets.
-const parseChangelog = (content: string): ChangeRow[] => {
-  const rows: ChangeRow[] = [];
-  let section: ChangeKind = 'feature';
+// Turn a release-notes markdown body into ordered blocks. release_manager.ps1
+// emits an optional "## 🎉 New: <headline>" + "> <blurb>" lead, then
+// "### <section>" blocks of "- **Title**: description" bullets; images and loose
+// paragraphs are also supported and render in place.
+const parseChangelog = (content: string): Block[] => {
+  const blocks: Block[] = [];
   let hero: { title: string; desc: string[] } | null = null;
 
   const flushHero = () => {
     if (hero) {
-      rows.push({ kind: 'hero', title: hero.title, desc: hero.desc.join(' ').trim() });
+      blocks.push({ t: 'hero', title: hero.title, desc: hero.desc.join(' ').trim() });
       hero = null;
     }
   };
@@ -152,20 +140,21 @@ const parseChangelog = (content: string): ChangeRow[] => {
       flushHero();
       continue;
     }
-    // Section heading (### ✨ Features) — sets the bucket for following rows.
-    if (/^###\s+/.test(line)) {
+    // Image — ![alt](url). Rendered as a preview where it appears.
+    const img = line.match(/^!\[(.*?)\]\((.+?)\)\s*$/);
+    if (img) {
       flushHero();
-      const s = line.toLowerCase();
-      section = s.includes('fix')
-        ? 'fix'
-        : s.includes('perf')
-          ? 'perf'
-          : s.includes('maint')
-            ? 'maint'
-            : 'feature';
+      blocks.push({ t: 'image', alt: img[1], url: img[2] });
       continue;
     }
-    // Headline (## 🎉 New: ...) becomes the lead row; strip the emoji + "New:".
+    // Section heading (### ✨ Features) — a styled header in place.
+    if (/^###\s+/.test(line)) {
+      flushHero();
+      const label = line.replace(/^###\s+/, '').replace(/^[^A-Za-z0-9]+/, '').trim();
+      blocks.push({ t: 'header', label });
+      continue;
+    }
+    // Headline (## 🎉 New: ...) becomes the lead hero; strip the emoji + "New:".
     if (/^##\s+/.test(line)) {
       flushHero();
       const title = line
@@ -176,11 +165,11 @@ const parseChangelog = (content: string): ChangeRow[] => {
       hero = { title, desc: [] };
       continue;
     }
-    // Blockquote — the headline's description.
+    // Blockquote — the hero's description, or a standalone note in place.
     if (line.startsWith('>')) {
       const t = line.replace(/^>\s?/, '');
       if (hero) hero.desc.push(t);
-      else rows.push({ kind: 'note', title: '', desc: t });
+      else blocks.push({ t: 'note', desc: t });
       continue;
     }
     // Horizontal rule — drop it.
@@ -193,19 +182,15 @@ const parseChangelog = (content: string): ChangeRow[] => {
       flushHero();
       const text = line.replace(/^[-*]\s+/, '');
       const m = text.match(/^\*\*(.+?)\*\*\s*[:—-]?\s*(.*)$/);
-      rows.push({
-        kind: section,
-        title: m ? m[1] : text,
-        desc: m ? m[2] : '',
-      });
+      blocks.push({ t: 'item', title: m ? m[1] : text, desc: m ? m[2] : '' });
       continue;
     }
-    // Anything else — a standalone muted note.
+    // Anything else — a plain paragraph, in place.
     flushHero();
-    rows.push({ kind: 'note', title: '', desc: line });
+    blocks.push({ t: 'note', desc: line });
   }
   flushHero();
-  return rows;
+  return blocks;
 };
 
 // A single change: bold title, readable description. No icon, no bullet.
@@ -223,48 +208,48 @@ const ChangeItem = ({ title, desc, lead }: { title: string; desc: string; lead?:
 );
 
 const ReleaseBody = ({ content }: { content: string }) => {
-  const rows = parseChangelog(stripBoilerplate(content));
-  if (rows.length === 0) return null;
-
-  const heroes = rows.filter((r) => r.kind === 'hero');
-  const notes = rows.filter((r) => r.kind === 'note' && r.desc);
-  const categories = CATEGORY_ORDER.map((kind) => ({
-    kind,
-    label: CATEGORY_LABELS[kind],
-    rows: rows.filter((r) => r.kind === kind && r.title),
-  })).filter((c) => c.rows.length > 0);
+  const blocks = parseChangelog(stripBoilerplate(content));
+  if (blocks.length === 0) return null;
 
   return (
     <div className="text-left">
-      {heroes.length > 0 && (
-        <div className="space-y-4">
-          {heroes.map((h, i) => (
-            <ChangeItem key={`hero-${i}`} title={h.title} desc={h.desc} lead />
-          ))}
-        </div>
-      )}
-
-      {categories.map((cat) => (
-        <div key={cat.kind} className="mt-8 first:mt-0">
-          <div className="mb-4">
-            <div className="text-xs font-bold uppercase tracking-[0.14em] text-accent">
-              {cat.label}
-            </div>
-            <div className="h-[2px] w-7 rounded-full bg-accent/60 mt-1.5" />
-          </div>
-          <div className="space-y-4">
-            {cat.rows.map((row, i) => (
-              <ChangeItem key={i} title={row.title} desc={row.desc} />
-            ))}
-          </div>
-        </div>
-      ))}
-
-      {notes.map((n, i) => (
-        <p key={`note-${i}`} className="text-[15px] leading-relaxed mt-5" style={{ color: BODY_TEXT }}>
-          {parseInlineMarkdown(n.desc)}
-        </p>
-      ))}
+      {blocks.map((b, i) => {
+        switch (b.t) {
+          case 'hero':
+            return (
+              <div key={i} className="first:mt-0 mt-6">
+                <ChangeItem title={b.title} desc={b.desc} lead />
+              </div>
+            );
+          case 'image':
+            return (
+              <div key={i} className="first:mt-0 mt-5 rounded-xl overflow-hidden border border-borderSubtle bg-black/20">
+                <img src={b.url} alt={b.alt} className="block w-full h-auto" loading="lazy" />
+              </div>
+            );
+          case 'header':
+            return (
+              <div key={i} className="first:mt-0 mt-8 mb-4">
+                <div className="text-xs font-bold uppercase tracking-[0.14em] text-accent">
+                  {b.label}
+                </div>
+                <div className="h-[2px] w-7 rounded-full bg-accent/60 mt-1.5" />
+              </div>
+            );
+          case 'item':
+            return (
+              <div key={i} className="first:mt-0 mt-4">
+                <ChangeItem title={b.title} desc={b.desc} />
+              </div>
+            );
+          case 'note':
+            return b.desc ? (
+              <p key={i} className="first:mt-0 mt-4 text-[15px] leading-relaxed" style={{ color: BODY_TEXT }}>
+                {parseInlineMarkdown(b.desc)}
+              </p>
+            ) : null;
+        }
+      })}
     </div>
   );
 };
