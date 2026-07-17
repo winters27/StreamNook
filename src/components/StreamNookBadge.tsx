@@ -10,7 +10,7 @@ import {
   getAtmospheresVersion,
   subscribeAtmospheresVersion,
 } from '../services/supabaseService';
-import { COSMETIC_ASSET_BY_SLUG } from './cosmeticAssets';
+import { resolveCosmeticAsset } from './cosmeticAssets';
 import { openProfileViewerInMain } from '../utils/openBadgesInMain';
 import { useChatUserStore } from '../stores/chatUserStore';
 import { AtmosphereBackground } from './AtmosphereBackground';
@@ -376,11 +376,10 @@ const useActiveCosmeticAsset = (userId: string | undefined): string | null => {
   if (!userId) return null;
   const slug = getActiveCosmeticSlug(userId);
   if (!slug) return null;
-  // The catalog may have the slug but we still need an actual file we bundle.
-  // If the asset map is missing the slug, treat it as no cosmetic so the
-  // default logo wins.
-  const asset = COSMETIC_ASSET_BY_SLUG[slug];
-  return asset ?? null;
+  // Bundled cosmetics win (the original gold trio, fingerprinted by Vite); cloud
+  // cosmetics fall back to the catalog's R2 asset_path, so a new badge ships as a
+  // DB row + an upload with no desktop release (same model as atmospheres).
+  return resolveCosmeticAsset({ slug, asset_path: getCosmeticBySlug(slug)?.asset_path });
 };
 
 export const StreamNookBadge = memo(function StreamNookBadge({

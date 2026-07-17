@@ -55,3 +55,4 @@ Thumbs.db
 
 # Wrangler / Cloudflare local dev cache (streamnook.app tooling)
 .wrangler/
+badge-assets-r2/

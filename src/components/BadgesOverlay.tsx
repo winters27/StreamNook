@@ -23,7 +23,7 @@ import {
 } from '../services/supabaseService';
 import type { CosmeticCatalogEntry } from '../services/supabaseService';
 import { StreamNookTierCard } from './StreamNookBadge';
-import { COSMETIC_ASSET_BY_SLUG } from './cosmeticAssets';
+import { resolveCosmeticAsset } from './cosmeticAssets';
 import { listAtmospheres, getAtmosphereUnlock } from '../services/atmospheres';
 import { AtmosphereBackground } from './AtmosphereBackground';
 import streamNookLogo from '../assets/streamnook-logo.png';
@@ -267,13 +267,17 @@ const BadgesOverlay = ({ onClose, onBadgeClick, initialPaintId, initialBadgeId, 
 
   // Cosmetics catalog + ownership for the StreamNook tab grid.
   useSyncExternalStore(subscribeCosmeticsVersion, getCosmeticsVersion, getCosmeticsVersion);
-  // Only wearable badges belong in this grid. Atmospheres also live in the
-  // cosmetics catalog (kind 'atmosphere') for ownership, but they are applied
-  // from the Atmospheres picker, not worn as the icon.
-  const cosmeticsCatalog = getAllCosmetics().filter((c) => c.kind === 'badge');
   const ownedCosmeticSlugs = currentUser?.user_id
     ? getOwnedCosmeticSlugs(currentUser.user_id)
     : new Set<string>();
+  // Only wearable badges belong in this grid. Atmospheres also live in the
+  // cosmetics catalog (kind 'atmosphere') for ownership, but they are applied
+  // from the Atmospheres picker, not worn as the icon. Hidden cosmetics
+  // (owner-only badges) are kept out of the public collection unless the viewer
+  // actually owns one, so they can still equip it from here.
+  const cosmeticsCatalog = getAllCosmetics().filter(
+    (c) => c.kind === 'badge' && (!c.hidden || ownedCosmeticSlugs.has(c.slug)),
+  );
   const activeCosmeticSlug = currentUser?.user_id ? getActiveCosmeticSlug(currentUser.user_id) : null;
   const [selectedCosmetic, setSelectedCosmetic] = useState<CosmeticCatalogEntry | null>(null);
 
@@ -2653,14 +2657,21 @@ const BadgesOverlay = ({ onClose, onBadgeClick, initialPaintId, initialBadgeId, 
                   </p>
                   <div className="grid grid-cols-3 gap-6 max-w-md mx-auto">
                     {cosmeticsCatalog.map((cosmetic) => {
-                      const asset = COSMETIC_ASSET_BY_SLUG[cosmetic.slug];
+                      const asset = resolveCosmeticAsset(cosmetic);
                       if (!asset) return null;
                       const owned = ownedCosmeticSlugs.has(cosmetic.slug);
                       const isActive = activeCosmeticSlug === cosmetic.slug;
                       return (
                         <Tooltip
                           key={cosmetic.slug}
-                          content={owned ? `${cosmetic.name} (Collected!)` : cosmetic.name}
+                          content={
+                            <div className="text-center">
+                              <div className="font-semibold">{cosmetic.name}{owned ? ' · Collected' : ''}</div>
+                              {cosmetic.description && (
+                                <div className="text-[11px] text-textSecondary mt-0.5">{cosmetic.description}</div>
+                              )}
+                            </div>
+                          }
                           side="bottom"
                         >
                           <button
@@ -3113,7 +3124,7 @@ const BadgesOverlay = ({ onClose, onBadgeClick, initialPaintId, initialBadgeId, 
       {selectedCosmetic && createPortal(
         (() => {
           const cosmetic = selectedCosmetic;
-          const asset = COSMETIC_ASSET_BY_SLUG[cosmetic.slug];
+          const asset = resolveCosmeticAsset(cosmetic);
           const owned = ownedCosmeticSlugs.has(cosmetic.slug);
           const isActive = activeCosmeticSlug === cosmetic.slug;
           // Switch only — never unequip. A StreamNook member always wears a

@@ -6,7 +6,7 @@
 // tracker (App.tsx) on stream start, once a minute while watching, and the moment
 // the watched channel's category changes.
 import { invoke } from '@tauri-apps/api/core';
-import { claimReward, listActiveEventRewards } from './supabaseService';
+import { claimReward, listActiveEventRewards, listActiveMilestoneRewards } from './supabaseService';
 import { useAppStore } from '../stores/AppStore';
 import { Logger } from '../utils/logger';
 
@@ -55,6 +55,17 @@ export async function maybeClaimLoginRewards(userId: string | undefined | null):
   await claimEventRewards(userId, rewards, {});
 }
 
+// Milestone rewards (subscriber-tenure badges gated on total_months): claimed
+// once at sign-in. The server checks the real stored month count, so a member
+// at/over the threshold is granted and everyone else just answers
+// below_threshold. New tiers are pure config (a rewards row), no client release.
+export async function maybeClaimMilestoneRewards(userId: string | undefined | null): Promise<void> {
+  if (!userId) return;
+  const rewards = await listActiveMilestoneRewards();
+  if (!rewards.length) return;
+  await claimEventRewards(userId, rewards, {});
+}
+
 async function claimEventRewards(
   userId: string,
   rewards: Awaited<ReturnType<typeof listActiveEventRewards>>,
@@ -72,9 +83,10 @@ async function claimEventRewards(
       continue;
     }
     if (!res.ok) {
-      // not_eligible is the normal answer for a claim that doesn't match this
-      // reward; only the unexpected failures (RLS / network / missing fn) warn.
-      if (res.reason !== 'not_eligible') {
+      // not_eligible (event mismatch) and below_threshold (milestone not yet
+      // reached) are the normal "not for you right now" answers; only the
+      // unexpected failures (RLS / network / missing fn) warn.
+      if (res.reason !== 'not_eligible' && res.reason !== 'below_threshold') {
         Logger.warn(`[WatchRewards] claim failed reward=${reward.id} context=${JSON.stringify(context)}: ${res.reason ?? 'unknown'}`);
       }
       continue;

@@ -782,6 +782,37 @@ export const listActiveEventRewards = async (): Promise<EventReward[]> => {
 };
 
 /**
+ * Active milestone rewards (the tenure kind, e.g. subscriber-month badges gated
+ * on total_months). Same world-readable rewards table, cached briefly. Claiming
+ * is gated server-side by claim_reward against the real stored value, so a new
+ * milestone badge is pure config (a cosmetics row + a rewards row) with no
+ * client release.
+ */
+let milestoneRewardsCache: { at: number; rows: EventReward[] } | null = null;
+export const listActiveMilestoneRewards = async (): Promise<EventReward[]> => {
+    if (!supabase) return [];
+    const now = Date.now();
+    if (milestoneRewardsCache && now - milestoneRewardsCache.at < 5 * 60_000) return milestoneRewardsCache.rows;
+    try {
+        const { data, error } = await supabase
+            .from('rewards')
+            .select('id, title, reward_kind, reward_id')
+            .eq('active', true)
+            .eq('gate_kind', 'milestone');
+        if (error) {
+            Logger.warn('[Supabase] listActiveMilestoneRewards failed:', error.message);
+            return milestoneRewardsCache?.rows ?? [];
+        }
+        const rows = (data ?? []) as EventReward[];
+        milestoneRewardsCache = { at: now, rows };
+        return rows;
+    } catch (error) {
+        Logger.warn('[Supabase] listActiveMilestoneRewards exception:', error);
+        return milestoneRewardsCache?.rows ?? [];
+    }
+};
+
+/**
  * Sync the caller's owned subscriber atmospheres. The server function
  * (grant_atmosphere_ownership, security definer) grants ownership of every
  * current subscriber atmosphere ONLY if the user is an active subscriber, so a
@@ -1332,6 +1363,9 @@ export interface CosmeticCatalogEntry {
     sort_order: number;
     is_active: boolean;
     is_default: boolean;
+    // Owner-only / staged cosmetics: kept out of the public "all badges"
+    // collection. Still ownable and equippable by whoever has been granted it.
+    hidden?: boolean;
 }
 
 let cosmeticsCatalog: Map<string, CosmeticCatalogEntry> = new Map();

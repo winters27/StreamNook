@@ -14,3 +14,20 @@ export const COSMETIC_ASSET_BY_SLUG: Record<string, string> = {
   'streamnook-supporter': supporterBadge,
   'streamnook-subscriber': subscriberBadge,
 };
+
+/**
+ * Resolve a cosmetic's displayable image URL: the bundled asset if we ship one
+ * for this slug, otherwise the catalog's cloud `asset_path` (an R2 URL on
+ * cdn.streamnook.app). Returns null when neither is usable, so callers can skip
+ * a cosmetic they can't render. This is what lets a cloud-served badge (added as
+ * a DB row + an upload, no desktop release) show up in the picker and on chat.
+ */
+export function resolveCosmeticAsset(
+  cosmetic: { slug: string; asset_path?: string | null } | null | undefined,
+): string | null {
+  if (!cosmetic) return null;
+  const bundled = COSMETIC_ASSET_BY_SLUG[cosmetic.slug];
+  if (bundled) return bundled;
+  const path = cosmetic.asset_path;
+  return path && /^https?:\/\//.test(path) ? path : null;
+}

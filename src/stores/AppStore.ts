@@ -2547,6 +2547,15 @@ export const useAppStore = create<AppState>((set, get) => ({
             Logger.warn('[Auth] Failed to claim login rewards:', e);
           });
 
+        // Claim subscriber-tenure milestone badges (server gates on the real
+        // total_months; below-threshold members simply aren't granted). Lazy
+        // import for the same store-cycle reason as above.
+        import('../services/watchRewards')
+          .then((m) => m.maybeClaimMilestoneRewards(user.user_id))
+          .catch((e) => {
+            Logger.warn('[Auth] Failed to claim milestone rewards:', e);
+          });
+
         // Keep an active subscriber's owned atmospheres current (server gates on
         // active status, so a lapsed member accrues nothing new). Idempotent.
         grantAtmosphereOwnership(user.user_id).catch((e) => {

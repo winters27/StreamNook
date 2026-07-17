@@ -51,7 +51,7 @@ import { isSubscriber } from '../../services/subscriberService';
 import { listAtmospheres, getAtmosphere, type Atmosphere } from '../../services/atmospheres';
 import { MAJOR_COLOGNE_THEME_ID, MAJOR_COLOGNE_ACCOLADE_ID, parseCologneTheme, buildCologneTheme, isCologneTheme } from '../../services/cologneEvent';
 import { getTier, getTierAccent, StreamNookBadge } from '../StreamNookBadge';
-import { COSMETIC_ASSET_BY_SLUG } from '../cosmeticAssets';
+import { resolveCosmeticAsset } from '../cosmeticAssets';
 import {
   captureProfileCard,
   copyImageToClipboard,
@@ -1357,7 +1357,7 @@ const ProfileSettings = () => {
           </div>
           <div className="flex flex-wrap gap-2">
             {ownedCosmetics.map((cosmetic) => {
-              const asset = COSMETIC_ASSET_BY_SLUG[cosmetic.slug];
+              const asset = resolveCosmeticAsset(cosmetic);
               if (!asset) return null;
               const isActive = activeCosmeticSlug === cosmetic.slug;
               // Switch only — never unequip. A StreamNook member always wears a
@@ -1365,7 +1365,18 @@ const ProfileSettings = () => {
               // clicking the already-active badge is a no-op rather than clearing
               // the selection back to none.
               return (
-                <Tooltip key={cosmetic.slug} content={cosmetic.name} side="top">
+                <Tooltip
+                  key={cosmetic.slug}
+                  content={
+                    <div className="text-center">
+                      <div className="font-semibold">{cosmetic.name}</div>
+                      {cosmetic.description && (
+                        <div className="text-[11px] text-textSecondary mt-0.5">{cosmetic.description}</div>
+                      )}
+                    </div>
+                  }
+                  side="top"
+                >
                   <div
                     onClick={() => { if (!isActive) void setActiveCosmetic(currentUser.user_id, cosmetic.slug); }}
                     className={`
