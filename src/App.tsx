@@ -557,6 +557,14 @@ function App() {
         autoSyncUniversalCacheIfStale();
       });
 
+      // Connect the real-time badge-drop feed (WebSocket + latest.json fallback).
+      // New Twitch badges are detected server-side on the bot and pushed here, so
+      // drops surface within minutes; a startup poll catches any missed while
+      // the app was closed.
+      import('./services/badgeSocketService').then(({ startBadgeFeed }) => {
+        startBadgeFeed();
+      });
+
       // Pre-fetch cosmetics for current user
       const { currentUser, isAuthenticated } = useAppStore.getState();
       if (isAuthenticated && currentUser?.user_id) {

@@ -447,6 +447,18 @@ const ChatSettings = ({ hidePlacement = false }: { hidePlacement?: boolean } = {
             />
           }
         />
+        <SettingsRow
+          title="Collapse gift-sub floods"
+          description="When someone gifts a batch of subs, show one 'gifting N subs' row with the recipients attached, instead of a separate row per gift. Turn off to see every gift row."
+          control={
+            <Toggle
+              enabled={settings.collapse_gift_subs ?? true}
+              onChange={() =>
+                updateSettings({ ...settings, collapse_gift_subs: !(settings.collapse_gift_subs ?? true) })
+              }
+            />
+          }
+        />
       </SettingsSection>
 
       <SettingsSection label="Chat Logging">

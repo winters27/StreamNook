@@ -694,6 +694,7 @@ export interface Settings {
   show_polls?: boolean; // Show the live poll overlay card at the top of chat (default on)
   show_predictions?: boolean; // Show the live prediction overlay card at the top of chat (default on)
   show_channel_point_redemptions?: boolean; // Show no-input channel-point redemptions as chat rows (default on)
+  collapse_gift_subs?: boolean; // Collapse mass gift-sub bombs into one announcement row with recipients (default on)
   chat_logging?: ChatLoggingSettings; // Save chat to plain text files as you watch
   moderation?: ModerationSettings;
   keybindings?: KeybindingOverrides; // Customizable keyboard shortcut overrides (id -> chords)

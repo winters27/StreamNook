@@ -329,6 +329,13 @@ export const SETTINGS_INDEX: SettingsIndexEntry[] = [
   },
   {
     tab: 'Chat',
+    section: 'Chat Events',
+    sectionId: 'settings-section-chat-events',
+    title: 'Collapse gift-sub floods',
+    description: 'When someone gifts a batch of subs, show one row with the recipients attached instead of a separate row per gift.'
+  },
+  {
+    tab: 'Chat',
     section: 'Chat Logging',
     title: 'Chat Logging',
     description: 'Save chat to plain text files as you watch: one folder per channel, one file per day. Log folder, per-channel filter, timestamps, events and moderation.'
