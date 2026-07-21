@@ -16,6 +16,7 @@ import { useAppStore } from '../stores/AppStore';
 import { openBadgesWithBadgeInMain } from '../utils/openBadgesInMain';
 import { useChatUserStore } from '../stores/chatUserStore';
 import { useGiftBombRecipients } from '../stores/giftBombStore';
+import { ChannelPointsIcon } from './ChannelPointsIcon';
 import { useUserColor } from '../services/userColorCache';
 import { queueBadgeForCaching, getCachedBadgeUrl } from '../services/badgeImageCacheService';
 import { isStreamNookUser, getStreamNookUserNumber, subscribeStreamNookRegistryVersion, getStreamNookRegistryVersion } from '../services/supabaseService';
@@ -1270,6 +1271,8 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
     msgId === 'resub' ||
     msgId === 'subgift' ||
     msgId === 'submysterygift' ||
+    msgId === 'anonsubmysterygift' ||
+    msgId === 'anonsubgift' ||
     msgId === 'sharedchatnotice' ||
     // YouTube channel memberships: a new/continuing member ('membership') and gifted
     // memberships ('membergift') reuse the same sub-card decoration via the system-msg
@@ -1279,7 +1282,9 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
     sourceMsgId === 'sub' ||
     sourceMsgId === 'resub' ||
     sourceMsgId === 'subgift' ||
-    sourceMsgId === 'submysterygift';
+    sourceMsgId === 'submysterygift' ||
+    sourceMsgId === 'anonsubmysterygift' ||
+    sourceMsgId === 'anonsubgift';
 
   // TEMP [sub-debug]: trace non-Twitch sub/membership events through the chat render
   // (they show in activity but reportedly not in chat). Confirms the message reaches
@@ -1311,6 +1316,10 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
   // The named msg-id values cover the automatic message-style rewards.
   const customRewardId = parsed.tags.get('custom-reward-id');
   const hasCustomReward = !!customRewardId;
+  // Cost + channel points icon for an injected no-input redemption row, shown as
+  // "<reward name> <points glyph> <amount>" instead of a plain "(N)" in the text.
+  const redemptionCost = parsed.tags.get('sn-reward-cost');
+  const redemptionPointsIcon = parsed.tags.get('sn-points-icon');
   const isGigantifiedEmote =
     msgId === 'gigantified-emote-message' || sourceMsgId === 'gigantified-emote-message';
   const isAnimatedMessage =
@@ -2248,6 +2257,10 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
         displayMessage = `${parsed.username} gifted a subscription to ${msgParamRecipientDisplayName}!`;
       } else if (msgId === 'submysterygift') {
         displayMessage = `${parsed.username} is gifting ${msgParamMassGiftCount} subscriptions to the community!`;
+      } else if (msgId === 'anonsubmysterygift') {
+        displayMessage = `An anonymous user is gifting ${msgParamMassGiftCount} subscriptions to the community!`;
+      } else if (msgId === 'anonsubgift') {
+        displayMessage = `An anonymous user gifted a subscription to ${msgParamRecipientDisplayName}!`;
       } else {
         displayMessage = `${parsed.username} subscribed!`;
       }
@@ -2310,7 +2323,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
             <p className="text-white font-semibold leading-relaxed">
               {parseSystemMessageWithClickableNames(displayMessage)}
             </p>
-            {subMsgId === 'submysterygift' && giftRecipients.length > 0 && (
+            {(subMsgId === 'submysterygift' || subMsgId === 'anonsubmysterygift') && giftRecipients.length > 0 && (
               <div className="text-textSecondary text-xs mt-1 leading-relaxed break-words">
                 <span className="mr-1">
                   {giftExpected
@@ -2819,6 +2832,21 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
                   >
                     {' '}{renderContent(contentWithEmotes)}
                   </span>
+                  {redemptionCost && (
+                    <span className="inline-flex items-center gap-0.5 ml-1 align-middle text-cyan-300/90 font-medium">
+                      {redemptionPointsIcon ? (
+                        <img
+                          src={redemptionPointsIcon}
+                          alt=""
+                          className="w-3.5 h-3.5 inline-block align-middle rounded-full object-cover"
+                          onError={(e) => { e.currentTarget.style.display = 'none'; }}
+                        />
+                      ) : (
+                        <ChannelPointsIcon size={14} className="text-cyan-300/90" />
+                      )}
+                      {Number(redemptionCost).toLocaleString()}
+                    </span>
+                  )}
                   {moderationContext && (chatDesign?.deleted_message_style ?? 'strikethrough') === 'strikethrough' && (
                     <span className="ml-1.5 text-xs text-red-400/70 font-medium">
                       {moderationContext.type === 'timeout'
