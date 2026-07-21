@@ -1645,6 +1645,24 @@ impl IrcService {
         }
     }
 
+    /// Ensure the channel's third-party emote set is in the parse cache for a
+    /// channel we never JOIN over IRC (VOD chat replay). No-ops once a 7TV-bearing
+    /// set is cached, so it fetches at most once per channel per session. Awaited
+    /// so a following `parse_privmsg` resolves 7TV/BTTV/FFZ emotes.
+    pub async fn ensure_channel_emotes_for_parse(
+        channel_name: &str,
+        emote_service: Arc<tokio::sync::RwLock<EmoteService>>,
+    ) {
+        let key = channel_name.to_lowercase();
+        {
+            let map = get_channel_emotes().lock().await;
+            if map.get(&key).map(|s| s.seven_tv.len()).unwrap_or(0) > 0 {
+                return;
+            }
+        }
+        let _ = Self::fetch_and_store_emotes(channel_name, emote_service).await;
+    }
+
     /// Parse message content into segments (text, emotes, emojis, links)
     /// This is the "endgame" - all parsing done in Rust, zero regex on main thread
     ///

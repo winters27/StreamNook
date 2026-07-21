@@ -1463,6 +1463,293 @@ pub async fn get_user_videos(
     .map_err(|e| e.to_string())
 }
 
+// --- VOD chat replay (synced historical comments) ---------------------------
+// VODs expose no Helix chat endpoint; Twitch's own web player reads historical
+// chat via the GQL VideoCommentsByOffsetOrCursor persisted query. We page by
+// content offset — never by cursor: cursor-mode trips Twitch's integrity
+// challenge on the 2nd request of a session, offset-mode doesn't, and offset
+// paging is exactly what playback-synced replay needs. The query is public, so
+// this uses the web Client-ID with no OAuth (the same anonymous path every VOD
+// chat downloader uses). Each comment is rendered into a synthetic IRC PRIVMSG
+// line and run through the same parser the live + IVR-historical paths use, so
+// badges / emotes / segments come out identical to live chat.
+
+const TWITCH_WEB_CLIENT_ID: &str = "kimne78kx3ncx6brgo4mv6wki5h1ko";
+const H_VIDEO_COMMENTS: &str =
+    "b70a3591ff0f4e0313d126c6a1502d79a1c02baebb288227c582044aa76adf6a";
+
+fn vod_comments_client() -> &'static reqwest::Client {
+    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    CLIENT.get_or_init(reqwest::Client::new)
+}
+
+#[derive(serde::Serialize)]
+pub struct VodComment {
+    /// Playback offset (seconds into the VOD) this comment was posted at. The
+    /// frontend sync engine drips it into chat when the playhead passes this.
+    pub content_offset_seconds: f64,
+    pub message: crate::models::chat_layout::ChatMessage,
+}
+
+// GQL response shape. Every nested field is optional/defaulted: commenter is
+// null for deleted accounts, userColor is null when unset, emote is null on
+// plain-text fragments.
+#[derive(serde::Deserialize)]
+struct VcResponse {
+    data: Option<VcData>,
+}
+#[derive(serde::Deserialize)]
+struct VcData {
+    video: Option<VcVideo>,
+}
+#[derive(serde::Deserialize)]
+struct VcVideo {
+    comments: Option<VcComments>,
+}
+#[derive(serde::Deserialize)]
+struct VcComments {
+    #[serde(default)]
+    edges: Vec<VcEdge>,
+}
+#[derive(serde::Deserialize)]
+struct VcEdge {
+    node: VcNode,
+}
+#[derive(serde::Deserialize)]
+struct VcNode {
+    #[serde(default)]
+    id: String,
+    #[serde(rename = "contentOffsetSeconds", default)]
+    content_offset_seconds: f64,
+    #[serde(rename = "createdAt")]
+    created_at: Option<String>,
+    commenter: Option<VcCommenter>,
+    message: Option<VcMessage>,
+}
+#[derive(serde::Deserialize)]
+struct VcCommenter {
+    id: Option<String>,
+    login: Option<String>,
+    #[serde(rename = "displayName")]
+    display_name: Option<String>,
+}
+#[derive(serde::Deserialize)]
+struct VcMessage {
+    #[serde(rename = "userColor")]
+    user_color: Option<String>,
+    #[serde(rename = "userBadges", default)]
+    user_badges: Vec<VcBadge>,
+    #[serde(default)]
+    fragments: Vec<VcFragment>,
+}
+#[derive(serde::Deserialize)]
+struct VcBadge {
+    #[serde(rename = "setID")]
+    set_id: Option<String>,
+    version: Option<String>,
+}
+#[derive(serde::Deserialize)]
+struct VcFragment {
+    text: Option<String>,
+    emote: Option<VcEmote>,
+}
+#[derive(serde::Deserialize)]
+struct VcEmote {
+    #[serde(rename = "emoteID")]
+    emote_id: Option<String>,
+}
+
+/// parse_privmsg reads these tag values raw (no IRCv3 unescape for name/color/
+/// badges), so strip only the characters that would break tag/line framing.
+/// Display names, colors and badge ids never legitimately contain them.
+fn sanitize_tag_value(s: &str) -> String {
+    s.chars()
+        .filter(|c| !matches!(c, ';' | ' ' | '\\' | '\r' | '\n'))
+        .collect()
+}
+
+/// Render one GQL comment node into a raw IRC PRIVMSG line that `parse_privmsg`
+/// understands. Emote spans use Twitch code-point (inclusive) indices, matching
+/// the native `emotes` tag the live path consumes. The real playback offset
+/// rides along in a synthetic `vod-offset` tag so it travels *with* the message
+/// through the parser (parse_privmsg copies all tags), keeping offset↔message
+/// alignment bulletproof regardless of batch ordering.
+fn build_vod_comment_line(node: &VcNode, channel_lc: &str) -> String {
+    let (login, display_name, user_id) = match &node.commenter {
+        Some(c) => (
+            c.login.clone().unwrap_or_else(|| "unknown".to_string()),
+            c.display_name
+                .clone()
+                .or_else(|| c.login.clone())
+                .unwrap_or_else(|| "unknown".to_string()),
+            c.id.clone().unwrap_or_default(),
+        ),
+        None => ("unknown".to_string(), "unknown".to_string(), String::new()),
+    };
+    let login_lc = login.to_lowercase();
+
+    let (content, emotes_tag, badges_tag, user_color) = match &node.message {
+        Some(m) => {
+            // Concatenate fragment text = the message content. Emote fragments
+            // carry the emote code as their text, exactly like the live path.
+            let mut content = String::new();
+            let mut cp = 0usize; // running code-point cursor over `content`
+            let mut emote_groups: Vec<String> = Vec::new();
+            for f in &m.fragments {
+                let text = f.text.as_deref().unwrap_or("");
+                let len = text.chars().count();
+                if let Some(em) = &f.emote {
+                    if let Some(id) = &em.emote_id {
+                        if len > 0 {
+                            emote_groups.push(format!("{}:{}-{}", id, cp, cp + len - 1));
+                        }
+                    }
+                }
+                content.push_str(text);
+                cp += len;
+            }
+            // CR/LF would break line framing; replace 1:1 so code-point offsets
+            // computed above stay valid.
+            let content = content.replace(['\r', '\n'], " ");
+            let badges_tag = m
+                .user_badges
+                .iter()
+                .filter_map(|b| match (&b.set_id, &b.version) {
+                    (Some(s), Some(v)) if !s.is_empty() => {
+                        Some(format!("{}/{}", sanitize_tag_value(s), sanitize_tag_value(v)))
+                    }
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join(",");
+            (content, emote_groups.join("/"), badges_tag, m.user_color.clone())
+        }
+        None => (String::new(), String::new(), String::new(), None),
+    };
+
+    let ts_ms = node
+        .created_at
+        .as_deref()
+        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+        .map(|dt| dt.timestamp_millis())
+        .unwrap_or(0);
+
+    let mut tags = format!(
+        "vod-offset={};id={};user-id={};display-name={};tmi-sent-ts={}",
+        node.content_offset_seconds,
+        sanitize_tag_value(&node.id),
+        sanitize_tag_value(&user_id),
+        sanitize_tag_value(&display_name),
+        ts_ms
+    );
+    if let Some(color) = &user_color {
+        if !color.is_empty() {
+            tags.push_str(&format!(";color={}", sanitize_tag_value(color)));
+        }
+    }
+    if !badges_tag.is_empty() {
+        tags.push_str(&format!(";badges={}", badges_tag));
+    }
+    if !emotes_tag.is_empty() {
+        tags.push_str(&format!(";emotes={}", emotes_tag));
+    }
+
+    format!(
+        "@{} :{lp}!{lp}@{lp}.tmi.twitch.tv PRIVMSG #{chan} :{content}",
+        tags,
+        lp = login_lc,
+        chan = channel_lc,
+        content = content
+    )
+}
+
+/// Fetch a page of a VOD's historical chat starting at `offset_seconds`.
+/// `channel_login` keys the per-channel 7TV/BTTV emote set during parsing, so
+/// third-party emotes render exactly as in live chat. Returns comments in
+/// ascending offset order; the caller dedups same-second overlap by comment id.
+#[tauri::command]
+pub async fn get_vod_comments(
+    video_id: String,
+    channel_login: String,
+    offset_seconds: f64,
+    state: State<'_, AppState>,
+) -> Result<Vec<VodComment>, String> {
+    let offset_int = offset_seconds.max(0.0).floor() as i64;
+    let body = serde_json::json!({
+        "operationName": "VideoCommentsByOffsetOrCursor",
+        "variables": { "videoID": video_id, "contentOffsetSeconds": offset_int },
+        "extensions": { "persistedQuery": { "version": 1, "sha256Hash": H_VIDEO_COMMENTS } }
+    });
+    // Device/session ids keep GQL out of the harsh anonymous rate-limit bucket
+    // (same reason the clip path sends them).
+    let device_id = uuid::Uuid::new_v4().to_string().replace('-', "");
+    let session_id = uuid::Uuid::new_v4().to_string().replace('-', "");
+    let resp = vod_comments_client()
+        .post("https://gql.twitch.tv/gql")
+        .header("Client-ID", TWITCH_WEB_CLIENT_ID)
+        .header("Origin", "https://www.twitch.tv")
+        .header("Referer", "https://www.twitch.tv")
+        .header("X-Device-Id", device_id)
+        .header("Client-Session-Id", session_id)
+        .json(&body)
+        .timeout(std::time::Duration::from_secs(15))
+        .send()
+        .await
+        .map_err(|_| "NETWORK".to_string())?;
+    let status = resp.status();
+    if !status.is_success() {
+        return Err(format!("HTTP {}", status.as_u16()));
+    }
+    let parsed: VcResponse = resp.json().await.map_err(|_| "PARSE".to_string())?;
+    let edges = parsed
+        .data
+        .and_then(|d| d.video)
+        .and_then(|v| v.comments)
+        .map(|c| c.edges)
+        .unwrap_or_default();
+
+    let chan = channel_login.to_lowercase();
+
+    // Populate the channel's 7TV/BTTV/FFZ set in the parse cache. VOD replay
+    // never JOINs the channel over IRC (which is what normally fills this), so
+    // without this third-party emotes would fall back to plain text. Guarded to
+    // fetch at most once per channel per session.
+    if !chan.is_empty() {
+        crate::services::irc_service::IrcService::ensure_channel_emotes_for_parse(
+            &chan,
+            state.emote_service.clone(),
+        )
+        .await;
+    }
+
+    let raws: Vec<String> = edges
+        .iter()
+        .map(|e| build_vod_comment_line(&e.node, &chan))
+        .collect();
+
+    // Same parse path as IVR historical chat, so rendering is byte-identical.
+    let messages =
+        crate::services::irc_service::IrcService::parse_historical_messages(raws).await;
+
+    // Offset rode through parsing in the `vod-offset` tag, so read it back per
+    // message — no positional zip that a dropped line could desync.
+    let out = messages
+        .into_iter()
+        .map(|message| {
+            let content_offset_seconds = message
+                .tags
+                .get("vod-offset")
+                .and_then(|s| s.parse::<f64>().ok())
+                .unwrap_or(0.0);
+            VodComment {
+                content_offset_seconds,
+                message,
+            }
+        })
+        .collect();
+    Ok(out)
+}
+
 #[tauri::command]
 pub async fn update_chat_settings(
     broadcaster_id: String,
