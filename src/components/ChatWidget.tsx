@@ -91,6 +91,8 @@ interface ParsedMessage {
 import { EMOJI_CATEGORIES, EMOJI_KEYWORDS } from '../services/emojiCategories';
 import { usemultiNookStore } from '../stores/multiNookStore';
 import { usePinStore } from '../stores/pinStore';
+import { useVodReplayStore, useVodReplaySnapshot, nudgeVodReplay } from '../stores/vodReplayStore';
+import { SegmentedSelect } from './settings/_primitives';
 import type { TwitchStream, HypeTrainData } from '../types';
 
 import { Logger } from '../utils/logger';
@@ -282,8 +284,32 @@ const ChatWidget = ({ channelOverride, hypeTrainOverride }: ChatWidgetProps = {}
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [providerSnapshot, providerSnapshot.liveMessageCount, providerKey, provider, channelOverride],
   );
-  const chat = isTwitch ? twitchChat : providerChat;
+  // VOD chat replay seam. In the main widget (never a popout) while a VOD is
+  // playing, the panel defaults to synced historical chat and can toggle to the
+  // channel's live chat. The replay hook always runs (rules of hooks); we just
+  // select it as the message source when in replay mode. Replay is read-only.
+  const replayChat = useVodReplaySnapshot();
+  const replaySessionId = useVodReplayStore((s) => s.sessionId);
+  const replayActive = useVodReplayStore((s) => s.active);
+  // The toggle is available whenever a VOD replay session exists — started for a
+  // VOD opened from the Videos list OR via the offline-channel button. Never in
+  // popouts (they always show their own live channel).
+  const isVodReplay = !channelOverride && replayActive;
+  const [chatMode, setChatMode] = useState<'replay' | 'live'>('replay');
+  const chat = isVodReplay && chatMode === 'replay' ? replayChat : isTwitch ? twitchChat : providerChat;
   const { messages, connectChat, sendMessage, isConnected, error, setPaused: setBufferPaused, deletedMessageIds, clearedUserContexts, roomState, userBadges, liveMessageCount } = chat;
+
+  // A new VOD always starts in replay (beginVodReplay bumps sessionId).
+  useEffect(() => {
+    setChatMode('replay');
+  }, [replaySessionId]);
+
+  // Returning to replay from live: catch up to the current playhead instantly.
+  // The engine keeps running across the toggle, so this never resets position —
+  // it just avoids waiting up to one poll interval to resync.
+  useEffect(() => {
+    if (isVodReplay && chatMode === 'replay') nudgeVodReplay();
+  }, [isVodReplay, chatMode]);
 
   // Kick sending requires a connected Kick account (OAuth). Poll the state so the
   // composer enables right after the user connects.
@@ -655,6 +681,10 @@ const ChatWidget = ({ channelOverride, hypeTrainOverride }: ChatWidgetProps = {}
   // points feed). Message-style and text-input rewards already surface in chat
   // on their own, so we inject only the ones that otherwise wouldn't show, as a
   // native-looking redemption row. Gated by a setting (defaults on).
+  // The channel's points icon loads asynchronously and this listener only
+  // re-subscribes on channel change, so read the latest value from a ref at
+  // redemption time (synced just below the customPointsIconUrl state).
+  const customPointsIconRef = useRef<string | null>(null);
   useEffect(() => {
     if (!isTwitch) return;
     const channelId = currentStream?.user_id;
@@ -682,6 +712,7 @@ const ChatWidget = ({ channelOverride, hypeTrainOverride }: ChatWidgetProps = {}
         rewardTitle: p.reward_title,
         cost: p.reward_cost,
         redemptionId: p.redemption_id,
+        pointsIconUrl: customPointsIconRef.current,
       });
     });
     return () => {
@@ -703,6 +734,9 @@ const ChatWidget = ({ channelOverride, hypeTrainOverride }: ChatWidgetProps = {}
   // so the first connect can happen with an empty user_id; badges fail to
   // load until we re-trigger acquireChannel with the real id).
   const connectedRoomIdRef = useRef<string | null>(null);
+  // Tracks the channel whose LIVE chat we joined for a VOD's live-toggle, so a
+  // replay↔live flip doesn't re-join on every effect run.
+  const liveJoinedRef = useRef<string | null>(null);
 
   // Warm up badge cache on mount (non-blocking, runs before messages render)
   useEffect(() => {
@@ -867,6 +901,7 @@ const ChatWidget = ({ channelOverride, hypeTrainOverride }: ChatWidgetProps = {}
   const [isLoadingChannelPoints, setIsLoadingChannelPoints] = useState(false);
   const [customPointsName, setCustomPointsName] = useState<string | null>(null);
   const [customPointsIconUrl, setCustomPointsIconUrl] = useState<string | null>(null);
+  customPointsIconRef.current = customPointsIconUrl;
 
   // Pinned chat state
   interface PinnedMessage {
@@ -934,10 +969,16 @@ const ChatWidget = ({ channelOverride, hypeTrainOverride }: ChatWidgetProps = {}
   // Twitch always sends; Kick sends once a Kick account is connected (OAuth);
   // other providers stay read-only. Disable + label the composer accordingly
   // rather than letting a no-op send swallow input.
+  // VOD chat replay is historical — you can't post into the past, so the
+  // composer is read-only until the viewer toggles to live chat.
+  const isReplayReadOnly = isVodReplay && chatMode === 'replay';
   const canSendHere =
-    isTwitch || (provider === 'kick' && kickConnected) || (provider === 'youtube' && youtubeConnected);
+    !isReplayReadOnly &&
+    (isTwitch || (provider === 'kick' && kickConnected) || (provider === 'youtube' && youtubeConnected));
   const isInputDisabled = !canSendHere || !isConnected || (isSubOnly && !canBypassSubOnly);
-  const chatPlaceholder = !canSendHere
+  const chatPlaceholder = isReplayReadOnly
+    ? 'Viewing chat replay (read-only)'
+    : !canSendHere
     ? provider === 'kick'
       ? 'Connect your Kick account to send'
       : provider === 'youtube'
@@ -1191,7 +1232,9 @@ const ChatWidget = ({ channelOverride, hypeTrainOverride }: ChatWidgetProps = {}
       !connectedRoomIdRef.current
     ) {
       connectedRoomIdRef.current = currentStream.user_id;
-      connectChat(currentStream.user_login, currentStream.user_id);
+      // Replay mode never opens the live IRC join (read-only historical chat);
+      // still load emotes so replay renders third-party emotes.
+      if (!isReplayReadOnly) connectChat(currentStream.user_login, currentStream.user_id);
       loadEmotes(currentStream.user_login, currentStream.user_id);
     }
 
@@ -1202,8 +1245,10 @@ const ChatWidget = ({ channelOverride, hypeTrainOverride }: ChatWidgetProps = {}
       setChatPaused(false, { force: true });
       setNewSincePause(0);
       mountTimeRef.current = Date.now(); // Reset grace period on channel switch
-      // Pass roomId (user_id) to enable fetching recent messages from IVR API
-      connectChat(currentStream.user_login, currentStream.user_id);
+      // Pass roomId (user_id) to enable fetching recent messages from IVR API.
+      // Skipped for a VOD in replay mode: chat is read-only historical, so we
+      // bind the channel (for header/emotes) without joining live IRC.
+      if (!isReplayReadOnly) connectChat(currentStream.user_login, currentStream.user_id);
       // Defer emote loading until user_id is known. MultiChat pops in with an
       // empty user_id (async stream-info poll), so without this guard we'd
       // fetch globals-only first (Rust caches them under "global"), THEN
@@ -1283,11 +1328,41 @@ const ChatWidget = ({ channelOverride, hypeTrainOverride }: ChatWidgetProps = {}
       }
     }
     
+    // VOD live-chat toggle. The channel is already "bound" (branches above set
+    // connectedChannelRef but skipped the IRC join in replay), so a mode flip
+    // never re-enters them — join live chat here when the viewer asks for it.
+    if (
+      isVodReplay &&
+      chatMode === 'live' &&
+      currentStream?.user_login &&
+      liveJoinedRef.current !== currentStream.user_login
+    ) {
+      liveJoinedRef.current = currentStream.user_login;
+      connectChat(currentStream.user_login, currentStream.user_id);
+      if (currentStream.user_id) loadEmotes(currentStream.user_login, currentStream.user_id);
+    } else if (!(isVodReplay && chatMode === 'live')) {
+      liveJoinedRef.current = null;
+    }
+
     return () => {
       if (currentStream?.user_login !== connectedChannelRef.current) connectedChannelRef.current = null;
       if (timeoutId) clearTimeout(timeoutId);
     };
-  }, [currentStream?.user_login, currentStream?.user_id, isMultiNookActive, channelOverride, setChatPaused]);
+  }, [currentStream?.user_login, currentStream?.user_id, isMultiNookActive, channelOverride, setChatPaused, isVodReplay, chatMode]);
+
+  // Pre-warm the channel's live chat while a VOD is playing, so the FIRST switch
+  // to Live shows messages instantly instead of a blank "waiting" screen. The
+  // display stays on replay (read-only) until the viewer toggles; this only
+  // populates the live slice in the background. Uses `twitchChat.connectChat` —
+  // the REAL connect — because the display-selected `connectChat` is the replay
+  // no-op while in replay mode. Idempotent per channel; released on unmount.
+  useEffect(() => {
+    if (!isVodReplay) return;
+    const login = currentStream?.user_login;
+    if (!login) return;
+    void twitchChat.connectChat(login, currentStream?.user_id ?? undefined);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isVodReplay, currentStream?.user_login, currentStream?.user_id]);
 
   // Force unpause chat when returning from About view
   useEffect(() => {
@@ -3905,6 +3980,23 @@ const ChatWidget = ({ channelOverride, hypeTrainOverride }: ChatWidgetProps = {}
                     <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
                   </button>
                   </Tooltip>
+                </div>
+              )}
+
+              {/* VOD chat source toggle. Uses the app's standard segmented control
+                  (recessed track + sliding thumb) so it matches Settings and the
+                  rest of the app instead of a one-off style. */}
+              {isVodReplay && (
+                <div className="mb-2">
+                  <SegmentedSelect
+                    fullWidth
+                    value={chatMode}
+                    onChange={(v) => setChatMode(v)}
+                    options={[
+                      { value: 'replay', label: 'VOD Chat' },
+                      { value: 'live', label: 'Live Chat' },
+                    ]}
+                  />
                 </div>
               )}
 

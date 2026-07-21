@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useState, useRef, useCallback, useMemo } from 'react';
 import { useAppStore, HomeTab } from '../stores/AppStore';
 import { createPortal } from 'react-dom';
-import { Search, ArrowLeft, Heart, Maximize2, X, Gift, Pickaxe, LayoutGrid, Flame, ArrowUpRight, Undo2, Users, User, Loader2, MessageSquare, Clock } from 'lucide-react';
+import { Search, ArrowLeft, Heart, Maximize2, X, Gift, Pickaxe, LayoutGrid, Flame, ArrowUpRight, Undo2, Users, User, Loader2, Clock, Play } from 'lucide-react';
 import { motion, LayoutGroup, AnimatePresence } from 'framer-motion';
 import { usemultiNookStore } from '../stores/multiNookStore';
 
@@ -2952,8 +2952,8 @@ const Home = () => {
                                                                 }}
                                                                 className="px-3 py-1.5 rounded-lg glass-button text-[12px] font-bold text-white hover:bg-white/20 transition-all border border-white/10 hover:border-white/30 shadow-lg flex items-center gap-1.5"
                                                             >
-                                                                <MessageSquare size={14} strokeWidth={2.5} />
-                                                                <span>Offline Chat</span>
+                                                                <Play size={14} strokeWidth={2.5} />
+                                                                <span>Watch VOD</span>
                                                             </button>
                                                             
                                                             <Tooltip content="Profile" side="top">

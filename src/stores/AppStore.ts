@@ -70,6 +70,9 @@ export interface MediaInfo {
   id?: string;
   broadcaster_id?: string;
   user_id?: string;
+  /** VOD owner login (lowercase). Present on TwitchVideo-sourced plays; used to
+   *  bind the channel for VOD chat replay + the replay/live toggle. */
+  user_login?: string;
   broadcaster_name?: string;
   user_name?: string;
   title?: string;
@@ -1314,11 +1317,16 @@ export const useAppStore = create<AppState>((set, get) => ({
       }
       const result = await invoke<StreamStartResult>('start_stream', { url: url, quality: settings.quality });
       logQualityFallback(settings.quality, result.quality);
+      // VODs carry their owner login (TwitchVideo.user_login). Binding it lets
+      // the chat panel offer replay + a live-chat toggle. The live IRC connect
+      // stays gated behind the replay/live toggle in ChatWidget, so setting a
+      // login here does NOT auto-join live chat. Clips leave it blank.
+      const vodOwnerLogin = type === 'video' ? (info.user_login || '').toLowerCase() : '';
       const parsedInfo: TwitchStream = {
         id: info.id || '',
         user_id: info.broadcaster_id || info.user_id || '',
         user_name: info.broadcaster_name || info.user_name || 'StreamNook Media',
-        user_login: '',
+        user_login: vodOwnerLogin,
         title: info.title || `Twitch ${type}`,
         viewer_count: info.view_count || 0,
         game_name: type === 'clip' ? 'Twitch Clip' : 'Twitch Video',
@@ -1339,7 +1347,20 @@ export const useAppStore = create<AppState>((set, get) => ({
         // stopStream() clears this, so we re-set it here from the current navigation context.
         streamOriginCategory: get().homeSelectedCategory || null,
       });
-      
+
+      // Start synced chat replay for VODs. The vod id comes from the url
+      // (/videos/<id>); the owner login keys the channel's emote set. Replay is
+      // read-only and drives the chat panel until the user toggles to live.
+      if (type === 'video') {
+        const vodId = url.match(/\/videos\/(\d+)/)?.[1] ?? null;
+        if (vodId) {
+          const login = vodOwnerLogin;
+          import('./vodReplayStore')
+            .then((m) => m.beginVodReplay(vodId, login))
+            .catch((e) => Logger.warn('[playMedia] could not start VOD replay:', e));
+        }
+      }
+
     } catch (e: unknown) {
       Logger.error(`Failed to start ${type}:`, e);
       get().addToast(`Failed to load ${type}: ${String(e)}`, 'error');
@@ -1351,6 +1372,10 @@ export const useAppStore = create<AppState>((set, get) => ({
   stopStream: async (options) => {
     const preserveBackend = options?.preserveBackend ?? false;
     trackActivity('Stopped stream');
+    // Tear down any VOD chat replay session (no-op if none is active).
+    import('./vodReplayStore')
+      .then((m) => m.stopVodReplay())
+      .catch(() => {});
     try {
       // Unmount the player (VideoPlayer is keyed on streamUrl) BEFORE the backend
       // kills the relay. The reverse order leaves hls.js live-polling the dead
@@ -2114,6 +2139,19 @@ export const useAppStore = create<AppState>((set, get) => ({
         originalMediaUrl: latestVideoUrl,
         isHomeActive: false
       });
+
+      // When a VOD actually resolved and is playing, default this view to the
+      // VOD's own chat (synced replay), with a toggle back to the channel's live
+      // chat. Skipped when no VOD played (streamUrl 'offline'), since there's no
+      // playhead to sync against.
+      if (resolvedStreamUrl) {
+        const replayVodId = latestVideoUrl?.match(/\/videos\/(\d+)/)?.[1];
+        if (replayVodId) {
+          import('./vodReplayStore')
+            .then((m) => m.beginVodReplay(replayVodId, channel.toLowerCase()))
+            .catch((e) => Logger.warn('[Offline Chat] could not start VOD replay:', e));
+        }
+      }
 
       // Warm up the chat bridge. claim:false for the same reason as the live
       // path: ChatWidget's acquireChannel registers the real consumer, and an
