@@ -17,6 +17,7 @@ import type { OverlayMessage } from './sampleMessages';
 import { ProviderIcon } from './ProviderIcon';
 import { AtmosphereChatWash } from './AtmosphereChatWash';
 import { convertMoneyInText, loadRates, ratesReady } from './currency';
+import { giftBombOriginOf, isGiftBombAnnouncement, isGiftBombChild } from '../../utils/giftBombCollapse';
 
 // The StreamNook identity badge on the overlay is just the member's equipped
 // cosmetic image (the app's rich hover card doesn't belong on a broadcast). The
@@ -366,23 +367,20 @@ const isBotMessage = (m: OverlayMessage): boolean => {
 // individual `subgift`s that share an origin id. Keep the announcement, drop the
 // individual gifts, so the overlay shows ONE row instead of N. Order-independent
 // (matches how the app's activity feed collapses them).
-const originIdOf = (m: OverlayMessage): string | undefined =>
-  m.tags?.['msg-param-origin-id'] || m.tags?.['msg-param-community-gift-id'];
-
 const collapseGiftBombs = (messages: OverlayMessage[]): OverlayMessage[] => {
   const bombs = new Set<string>();
   for (const m of messages) {
     const mt = m.metadata?.msg_type || m.tags?.['msg-id'];
-    if (mt === 'submysterygift' || mt === 'anonsubmysterygift') {
-      const o = originIdOf(m);
+    if (isGiftBombAnnouncement(mt)) {
+      const o = giftBombOriginOf(m.tags);
       if (o) bombs.add(o);
     }
   }
   if (bombs.size === 0) return messages;
   return messages.filter((m) => {
     const mt = m.metadata?.msg_type || m.tags?.['msg-id'];
-    if (mt === 'subgift' || mt === 'anonsubgift') {
-      const o = originIdOf(m);
+    if (isGiftBombChild(mt)) {
+      const o = giftBombOriginOf(m.tags);
       if (o && bombs.has(o)) return false;
     }
     return true;

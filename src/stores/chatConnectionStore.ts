@@ -28,7 +28,8 @@ import { fetchRecentMessagesAsIRC } from '../services/ivrService';
 import { fetchAllEmotes, fetchKickChannelEmotes, type EmoteSet } from '../services/emoteService';
 import { Logger } from '../utils/logger';
 import { useAppStore } from './AppStore';
-import { useGiftBombStore } from './giftBombStore';
+import { useGiftBombStore, type GiftRecipient } from './giftBombStore';
+import { giftBombOriginOf, isGiftBombAnnouncement, isGiftBombChild } from '../utils/giftBombCollapse';
 import type { SongMatch } from '../utils/songId';
 
 // Hard caps borrowed from the prior single-channel hook. Keeping them as
@@ -208,11 +209,61 @@ const emoteSubscribers = new Map<string, Set<() => void>>();
 // Chat-side gift-bomb collapse: a submysterygift announces N gifts and its N
 // subgift follow-ups share an origin id. When collapse is on we keep only the
 // announcement row and route children to the activity path (dropped from chat),
-// funneling their recipients into giftBombStore for the announcement card. The
-// map arms an origin for a short window so lone gifts (no announcement) are
-// never collapsed.
-const giftBombChatOrigins = new Map<string, number>(); // originId -> expiry ms
-const GIFT_BOMB_CHAT_WINDOW_MS = 60_000;
+// funneling their recipients into giftBombStore for the announcement card.
+//
+// A child is collapsed only once we've SEEN its announcement, so a lone single
+// gift (its own origin, no announcement) still renders as its own card. Children
+// that arrive BEFORE the announcement (out of order) render for a moment, then
+// get folded out of the buffer the instant the announcement lands
+// (foldBufferedGiftChildren). Origin ids are globally unique, so a pruned origin
+// can never collide with a later bomb; the set is bounded purely to cap memory.
+// This mirrors the overlay's order-independent, anon-aware collapse
+// (OverlayChat.collapseGiftBombs) via the shared matchers in giftBombCollapse.
+const announcedGiftBombOrigins = new Set<string>();
+const MAX_TRACKED_BOMB_ORIGINS = 200;
+
+// Extract the gift-bomb origin + recipient from a buffered message, if it is a
+// (non-suppressed, out-of-order) gift child. Raw-string rows and non-gift rows
+// return null. Used to retroactively fold early children into the card.
+function bufferedGiftChildInfo(m: any): { origin: string; recipient?: GiftRecipient } | null {
+  if (!m || typeof m !== 'object') return null;
+  const mt = m.metadata?.msg_type || m.tags?.['msg-id'];
+  if (!isGiftBombChild(mt)) return null;
+  const origin = giftBombOriginOf(m.tags);
+  if (!origin) return null;
+  const rid = m.tags?.['msg-param-recipient-id'];
+  const recipient: GiftRecipient | undefined = rid
+    ? {
+        userId: rid,
+        userName: m.tags?.['msg-param-recipient-user-name'] || '',
+        displayName:
+          m.tags?.['msg-param-recipient-display-name'] || m.tags?.['msg-param-recipient-user-name'] || '',
+      }
+    : undefined;
+  return { origin, recipient };
+}
+
+// When an announcement arrives after some of its children, pull those children
+// back out of both the live buffer and the pending flush queue and fold their
+// recipients into the card. Returns how many rows were removed.
+function foldBufferedGiftChildren(slice: ChannelSlice, origin: string): number {
+  const store = useGiftBombStore.getState();
+  let removed = 0;
+  const scrub = (arr: any[]) => {
+    for (let i = arr.length - 1; i >= 0; i--) {
+      const info = bufferedGiftChildInfo(arr[i]);
+      if (info && info.origin === origin) {
+        if (info.recipient) store.addRecipient(origin, info.recipient);
+        arr.splice(i, 1);
+        removed++;
+      }
+    }
+  };
+  scrub(slice.messages);
+  const pending = pendingByChannel.get(slice.channel);
+  if (pending) scrub(pending);
+  return removed;
+}
 
 function notifyEmoteSubscribers(channelKey: string) {
   const subs = emoteSubscribers.get(channelKey);
@@ -386,6 +437,47 @@ function scheduleFlush(): void {
   }
 }
 
+// Every chat row — plain chat, subs, gift bombs, redemptions, raids — shares one
+// capped buffer. A burst of low-value rows (a mass-gift's children, a channel
+// sub-bot posting one line per sub, or plain spam) must not evict the recent
+// high-value events with it. trimWithEventRetention keeps the last `limit` rows
+// AND rescues up to EVENT_RETAIN recent event rows from just before that window,
+// so an event survives a flood long enough to be seen, then scrolls off
+// naturally. EVENT_LOOKBACK bounds how far back a rescue reaches (so old events
+// aren't pinned forever); memory stays within `limit + EVENT_RETAIN`.
+const EVENT_RETAIN = 30;
+const EVENT_LOOKBACK = 600;
+const EVENT_MSG_IDS = new Set([
+  'sub', 'resub', 'subgift', 'submysterygift', 'anonsubgift', 'anonsubmysterygift',
+  'raid', 'unraid', 'viewermilestone', 'announcement', 'bitsbadgetier', 'charitydonation',
+  'highlighted-message', 'gigantified-emote-message', 'animated-message', 'skip-subs-mode-message',
+]);
+
+function isEventRow(m: any): boolean {
+  if (!m || typeof m !== 'object') return false; // raw-string fallback rows aren't rescued
+  const mt = m.metadata?.msg_type || m.tags?.['msg-id'];
+  return !!(
+    m.metadata?.system_message ||
+    m.tags?.['system-msg'] ||
+    m.tags?.['custom-reward-id'] ||
+    (mt && EVENT_MSG_IDS.has(mt))
+  );
+}
+
+function trimWithEventRetention(messages: any[], limit: number): any[] {
+  if (messages.length <= limit) return messages;
+  const windowStart = messages.length - limit;
+  const recentTail = messages.slice(windowStart);
+  const rescued: any[] = [];
+  const lookbackStart = Math.max(0, windowStart - EVENT_LOOKBACK);
+  for (let i = windowStart - 1; i >= lookbackStart && rescued.length < EVENT_RETAIN; i--) {
+    if (isEventRow(messages[i])) rescued.push(messages[i]);
+  }
+  if (rescued.length === 0) return recentTail;
+  rescued.reverse(); // newest-first scan back to chronological order
+  return rescued.concat(recentTail);
+}
+
 function flushPending(): void {
   const state = useChatConnectionStore.getState();
   for (const [key, queued] of pendingByChannel) {
@@ -394,16 +486,12 @@ function flushPending(): void {
     if (!slice) continue;
     const historyMax = getActiveHistoryMax();
     const limit = slice.isPausedForBuffer ? historyMax + CHAT_BUFFER_SIZE : historyMax;
-    // Coalesce under load: only the last `limit` queued messages can survive the
-    // cap this frame anyway, so drop the older ones before paying to reconcile
-    // rows that would be sliced off the same frame. liveMessageCount still counts
-    // every received message (drives the accurate "N new since paused" badge).
-    const tail = queued.length > limit ? queued.slice(queued.length - limit) : queued;
-    for (const m of tail) slice.messages.push(m);
+    // Push everything received this frame, then trim event-aware so a burst can't
+    // evict recent subs/redemptions/raids from the shared buffer. liveMessageCount
+    // still counts every message (drives the accurate "N new since paused" badge).
+    for (const m of queued) slice.messages.push(m);
     slice.liveMessageCount += queued.length;
-    if (slice.messages.length > limit) {
-      slice.messages = slice.messages.slice(slice.messages.length - limit);
-    }
+    slice.messages = trimWithEventRetention(slice.messages, limit);
   }
   pendingByChannel.clear();
   // flushPending only runs when something called scheduleFlush(), so a render is
@@ -499,9 +587,7 @@ function pushMessage(slice: ChannelSlice, msg: any) {
   // Monotonic — counts the append regardless of any trim below. Drives the
   // accurate "N new since paused" badge.
   slice.liveMessageCount++;
-  if (slice.messages.length > limit) {
-    slice.messages = slice.messages.slice(slice.messages.length - limit);
-  }
+  slice.messages = trimWithEventRetention(slice.messages, limit);
 }
 
 /**
@@ -1514,36 +1600,37 @@ function appendStructuredMessage(slice: ChannelSlice, parsed: any) {
   if (slice.seenMessageIds.size > CHAT_MAX_WITH_BUFFER) {
     slice.seenMessageIds = new Set(Array.from(slice.seenMessageIds).slice(-CHAT_MAX_WITH_BUFFER));
   }
-  // Gift-bomb collapse (v1 scope: non-anon submysterygift + subgift only). Anon
-  // variants render on the plain/system path, not the sub-card, so collapsing
-  // them would hide children with no card to show recipients — deferred. The
-  // announcement arms its origin and seeds the store; each subsequent subgift on
-  // that origin is dropped from chat and its recipient funneled to the card.
+  // Gift-bomb collapse: keep only the announcement row and fold the individual
+  // gifts into its recipient list. Handles anon variants and out-of-order arrival
+  // (children before their announcement), mirroring the overlay via the shared
+  // matchers. A child is collapsed only once its announcement has been seen, so a
+  // lone single gift still renders as its own card.
   let giftBombChildSuppressed = false;
-  if (parsed.provider === 'twitch') {
+  if (parsed.provider === 'twitch' && (useAppStore.getState().settings.collapse_gift_subs ?? true)) {
     const t = (parsed.tags ?? {}) as Record<string, string>;
-    const mt = parsed.metadata?.msg_type;
-    const origin = t['msg-param-origin-id'] || t['msg-param-community-gift-id'];
-    const collapse = useAppStore.getState().settings.collapse_gift_subs ?? true;
-    if (origin && mt === 'submysterygift') {
-      giftBombChatOrigins.set(origin, Date.now() + GIFT_BOMB_CHAT_WINDOW_MS);
-      if (collapse) {
-        const n = parseInt(t['msg-param-mass-gift-count'] ?? '', 10);
-        useGiftBombStore.getState().noteAnnouncement(origin, Number.isFinite(n) ? n : undefined);
+    const mt = parsed.metadata?.msg_type || t['msg-id'];
+    const origin = giftBombOriginOf(t);
+    if (origin && isGiftBombAnnouncement(mt)) {
+      // Track the announcement so its children collapse (bounded by count), seed
+      // the card, and reclaim any children that arrived ahead of it.
+      announcedGiftBombOrigins.add(origin);
+      if (announcedGiftBombOrigins.size > MAX_TRACKED_BOMB_ORIGINS) {
+        const oldest = announcedGiftBombOrigins.values().next().value;
+        if (oldest !== undefined) announcedGiftBombOrigins.delete(oldest);
       }
-    } else if (origin && mt === 'subgift') {
-      const exp = giftBombChatOrigins.get(origin);
-      if (collapse && exp && exp > Date.now()) {
-        const rid = t['msg-param-recipient-id'] || '';
-        if (rid) {
-          useGiftBombStore.getState().addRecipient(origin, {
-            userId: rid,
-            userName: t['msg-param-recipient-user-name'] || '',
-            displayName: t['msg-param-recipient-display-name'] || t['msg-param-recipient-user-name'] || '',
-          });
-        }
-        giftBombChildSuppressed = true;
+      const n = parseInt(t['msg-param-mass-gift-count'] ?? '', 10);
+      useGiftBombStore.getState().noteAnnouncement(origin, Number.isFinite(n) ? n : undefined);
+      if (foldBufferedGiftChildren(slice, origin) > 0) bumpRevision();
+    } else if (origin && isGiftBombChild(mt) && announcedGiftBombOrigins.has(origin)) {
+      const rid = t['msg-param-recipient-id'] || '';
+      if (rid) {
+        useGiftBombStore.getState().addRecipient(origin, {
+          userId: rid,
+          userName: t['msg-param-recipient-user-name'] || '',
+          displayName: t['msg-param-recipient-display-name'] || t['msg-param-recipient-user-name'] || '',
+        });
       }
+      giftBombChildSuppressed = true;
     }
   }
 
@@ -2122,6 +2209,7 @@ export function injectRedemptionMessage(
     cost?: number;
     color?: string;
     redemptionId?: string;
+    pointsIconUrl?: string | null;
   },
 ): void {
   // A stable id from Twitch's redemption id (when present) makes this idempotent:
@@ -2131,8 +2219,22 @@ export function injectRedemptionMessage(
     : `redeem-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
   const login = r.userLogin || r.userName;
   const name = r.userName || r.userLogin || login;
-  const body =
-    r.cost && r.cost > 0 ? `${r.rewardTitle} (${r.cost.toLocaleString()})` : r.rewardTitle;
+  // Body is just the reward name; the cost renders as the channel-points glyph +
+  // amount in ChatMessage (via the sn-reward-cost / sn-points-icon tags), not as
+  // a plain "(N)" appended to the text.
+  const body = r.rewardTitle;
+  // Plain-object tags (NOT a Map): parseMessage rebuilds tags with
+  // `Object.entries(raw.tags)`, which is empty for a Map — that silently dropped
+  // custom-reward-id, so redemptions lost their decoration and rendered plain.
+  const tags: Record<string, string> = {
+    'user-id': r.userId || '',
+    id,
+    'display-name': name,
+    // Triggers the redemption highlight + label in ChatMessage.
+    'custom-reward-id': r.rewardId || 'sn-redemption',
+  };
+  if (r.cost && r.cost > 0) tags['sn-reward-cost'] = String(r.cost);
+  if (r.pointsIconUrl) tags['sn-points-icon'] = r.pointsIconUrl;
   withSlice(channel, (slice) => {
     if (slice.seenMessageIds.has(id)) return;
     pushMessage(slice, {
@@ -2148,13 +2250,7 @@ export function injectRedemptionMessage(
       is_mentioned: false,
       is_from_shared_chat: false,
       user_id: r.userId || '',
-      tags: new Map([
-        ['user-id', r.userId || ''],
-        ['id', id],
-        ['display-name', name],
-        // Triggers the redemption highlight + label in ChatMessage.
-        ['custom-reward-id', r.rewardId || 'sn-redemption'],
-      ]),
+      tags,
     });
     slice.seenMessageIds.add(id);
   });
@@ -2165,7 +2261,7 @@ export function setChannelPaused(channel: string, paused: boolean): void {
     slice.isPausedForBuffer = paused;
     const historyMax = getActiveHistoryMax();
     if (!paused && slice.messages.length > historyMax) {
-      slice.messages = slice.messages.slice(slice.messages.length - historyMax);
+      slice.messages = trimWithEventRetention(slice.messages, historyMax);
     }
   });
 }
