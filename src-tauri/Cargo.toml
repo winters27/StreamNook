@@ -64,7 +64,7 @@ sevenz-rust = "0.6"
 cosmic-text = "0.15.0"
 scopeguard = "1.2"
 phf = "0.11"
-lru = "0.12"
+lru = "0.18"
 
 # TikTok LIVE webcast reader (vendored in-tree, see vendor/tiktok-live). Pure-Rust
 # ttwid-only connector (no signing service / no Python); deps pinned to match ours
@@ -75,7 +75,7 @@ tiktok-live = { path = "vendor/tiktok-live" }
 toml = "0.8"
 semver = "1"
 minisign-verify = "0.2"
-zip = { version = "2", default-features = false, features = ["deflate"] }
+zip = { version = "8", default-features = false, features = ["deflate"] }
 
 log = "0.4"
 env_logger = "0.11"
