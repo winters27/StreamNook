@@ -1,3 +1,9 @@
+## [8.3.8] - 2026-07-20
+
+### ✨ Features
+- Watch a VOD with its chat in sync. Historical chat now replays alongside the video and scrolls in time with the playhead, so you can follow the conversation even on streams that never kept an on-screen chat box. A header toggle switches between the synced replay and the channel's current live chat.
+- See every drop, not just the ones you earn by watching. A new filter on the Drops page switches between "Watch to earn" and "All drops," so purchase and subscription drops are no longer hidden from the list.
+
 ## [8.3.7] - 2026-07-17
 
 ## 🎉 New: Subscriber milestone badges
