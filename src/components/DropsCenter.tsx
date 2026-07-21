@@ -7,6 +7,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 import { Search, Gift, MonitorPlay, BarChart3, Package, ArrowDownUp, SlidersHorizontal } from 'lucide-react';
 import { usePluginUiRegistry, selectSlot } from '../plugins-ui/registry';
 import { Dropdown } from './ui/Dropdown';
+import { SegmentedSelect } from './settings/_primitives';
 import {
     UnifiedGame, DropCampaign, DropProgress, DropsStatistics,
     DropProgressStatus, DropsDeviceCodeInfo, InventoryResponse, InventoryItem, CompletedDrop, TwitchStream
@@ -47,6 +48,18 @@ interface DropsSettings {
     reserve_token_for_current_stream?: boolean;
     auto_reserve_on_watch?: boolean;
     priority_channels?: Array<{ channel_id: string; channel_login: string; display_name: string }>;
+}
+
+// A campaign has something mineable if any of its drops is watch-time earnable.
+// Event/paid/sub/gift-only campaigns (no watch-time drop) are non-mineable; they
+// only show when the grid's "All drops" view is on.
+function campaignHasMineableDrop(c: DropCampaign): boolean {
+    return (c.time_based_drops || []).some(d =>
+        typeof d.is_collectible === 'boolean'
+            ? d.is_collectible
+            : (d.required_minutes_watched || 0) > 0 ||
+              (d.progress?.required_minutes_watched || 0) > 0
+    );
 }
 
 export default function DropsCenter() {
@@ -90,6 +103,9 @@ export default function DropsCenter() {
     const [searchTerm, setSearchTerm] = useState('');
     // Game grid sort: 'recommended' = relevance order, 'newest'/'oldest' = by most-recent campaign release.
     const [sortMode, setSortMode] = useState<'recommended' | 'newest' | 'oldest'>('recommended');
+    // When on, include campaigns with no watch-time (mineable) drop — paid, sub,
+    // gift, and event-only drops — instead of hiding them from the grid.
+    const [showAllDrops, setShowAllDrops] = useState(false);
     const [selectedGame, setSelectedGame] = useState<UnifiedGame | null>(null);
     const [, setIsLoadingGameDetail] = useState(false);
     const { addToast, setShowDropsOverlay, currentUser, dropsSearchTerm, setDropsSearchTerm } = useAppStore();
@@ -121,6 +137,21 @@ export default function DropsCenter() {
             ? dropProgress.current_drop?.game_name || dropProgress.current_channel?.game_name
             : null)?.toLowerCase() || null;
         let games = unifiedGames;
+
+        // "Mineable only" (default): drop fully non-mineable campaigns from each
+        // game, then any game with nothing left to mine. "All drops" keeps them,
+        // so paid/sub/gift/event-only drops are shown (with their unlock text in
+        // the detail panel). Filtered at render so toggling never reloads.
+        if (!showAllDrops) {
+            games = games
+                .map(g => {
+                    const mineable = g.active_campaigns.filter(campaignHasMineableDrop);
+                    return mineable.length === g.active_campaigns.length
+                        ? g
+                        : { ...g, active_campaigns: mineable, total_active_drops: mineable.reduce((n, c) => n + (c.time_based_drops?.length || 0), 0) };
+                })
+                .filter(g => g.active_campaigns.length > 0);
+        }
 
         // Apply search filter
         if (searchTerm) {
@@ -177,7 +208,7 @@ export default function DropsCenter() {
             }
             return a.name.localeCompare(b.name);
         });
-    }, [unifiedGames, searchTerm, dropsSettings?.favorite_games, sortMode, dropProgress]);
+    }, [unifiedGames, searchTerm, dropsSettings?.favorite_games, sortMode, dropProgress, showAllDrops]);
 
     // Fetch earned badges on mount for badge drop ownership verification
     useEffect(() => {
@@ -799,18 +830,6 @@ export default function DropsCenter() {
                 return game;
             };
 
-            // A campaign only belongs in the games grid if it has something you can
-            // still collect: at least one watch-time (collectible) drop. Event/special
-            // campaigns with no watch-time drops have "nothing to collect", so we skip
-            // them instead of surfacing dead entries that read "nothing to collect".
-            const campaignIsCollectible = (c: DropCampaign): boolean =>
-                (c.time_based_drops || []).some(d =>
-                    typeof d.is_collectible === 'boolean'
-                        ? d.is_collectible
-                        : (d.required_minutes_watched || 0) > 0 ||
-                          (d.progress?.required_minutes_watched || 0) > 0
-                );
-
             // Process Active Campaigns and merge progress data from inventory
             if (campaignsData) {
                 campaignsData.forEach(campaign => {
@@ -845,12 +864,10 @@ export default function DropsCenter() {
                             };
                         })
                     };
-                    
-                    // Skip campaigns with nothing to collect (all event/special drops).
-                    if (!campaignIsCollectible(campaignWithProgress)) {
-                        return;
-                    }
 
+                    // Include every active campaign (mineable or not). The grid's
+                    // "Mineable only / All drops" toggle filters non-mineable ones at
+                    // render (see filteredGames), so flipping it never reloads.
                     const game = getOrCreateGame(campaign.game_id, campaign.game_name, campaign.image_url);
                     game.active_campaigns.push(campaignWithProgress);
                     game.total_active_drops += campaign.time_based_drops.length;
@@ -1475,35 +1492,10 @@ export default function DropsCenter() {
                 </div>
                 </LayoutGroup>
 
-                {/* Right side: Search + Logout (Absolutely positioned) */}
+                {/* Account-level logout stays in the tab header (tab-independent);
+                    the games browsing controls live in their own toolbar row below,
+                    so a descriptive filter label never crowds the centered tabs. */}
                 <div className="absolute right-4 flex items-center gap-3">
-                    {activeTab === 'games' && (
-                        <Dropdown
-                            value={sortMode}
-                            onChange={setSortMode}
-                            triggerPrefix="Sort"
-                            align="right"
-                            ariaLabel="Sort games"
-                            leadingIcon={<ArrowDownUp size={13} />}
-                            options={[
-                                { value: 'recommended', label: 'Recommended' },
-                                { value: 'newest', label: 'Newest' },
-                                { value: 'oldest', label: 'Oldest' },
-                            ]}
-                        />
-                    )}
-                    {activeTab === 'games' && (
-                        <div className="relative">
-                            <input
-                                type="text"
-                                placeholder="Search games..."
-                                value={searchTerm}
-                                onChange={(e) => setSearchTerm(e.target.value)}
-                                className="glass-input pl-8 pr-4 py-1.5 text-sm w-48 focus:w-64 transition-all focus:outline-none"
-                            />
-                            <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-textSecondary" />
-                        </div>
-                    )}
                     <Tooltip content="Logout from Drops (Android Client)" side="bottom">
                         <button
                             className="px-3 py-1.5 text-xs font-medium rounded-lg glass-panel text-textSecondary hover:text-red-400 hover:bg-red-500/10 hover:border-red-500/30 border border-transparent transition-all"
@@ -1514,6 +1506,46 @@ export default function DropsCenter() {
                     </Tooltip>
                 </div>
             </div>
+
+            {/* Games browsing toolbar: filter + sort on the left, search on the
+                right. Full-width row so labels never fight the tabs for space. */}
+            {activeTab === 'games' && (
+                <div className="flex items-center justify-between gap-3 px-4 py-2 bg-backgroundSecondary border-b border-borderLight shrink-0 relative z-10">
+                    <div className="flex items-center gap-3">
+                        <SegmentedSelect
+                            value={showAllDrops ? 'all' : 'mineable'}
+                            onChange={(v) => setShowAllDrops(v === 'all')}
+                            options={[
+                                { value: 'mineable', label: 'Watch to earn' },
+                                { value: 'all', label: 'All drops' },
+                            ]}
+                        />
+                        <Dropdown
+                            value={sortMode}
+                            onChange={setSortMode}
+                            triggerPrefix="Sort"
+                            align="left"
+                            ariaLabel="Sort games"
+                            leadingIcon={<ArrowDownUp size={13} />}
+                            options={[
+                                { value: 'recommended', label: 'Recommended' },
+                                { value: 'newest', label: 'Newest' },
+                                { value: 'oldest', label: 'Oldest' },
+                            ]}
+                        />
+                    </div>
+                    <div className="relative">
+                        <input
+                            type="text"
+                            placeholder="Search games..."
+                            value={searchTerm}
+                            onChange={(e) => setSearchTerm(e.target.value)}
+                            className="glass-input pl-8 pr-4 py-1.5 text-sm w-48 focus:w-64 transition-all focus:outline-none"
+                        />
+                        <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-textSecondary" />
+                    </div>
+                </div>
+            )}
 
             {/* Content Area */}
             <div className="flex-1 overflow-hidden relative">
