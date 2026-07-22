@@ -29,7 +29,7 @@ A third shape, **hybrid**, is a `process` plugin that also ships a `ui` module: 
 
 ### Choosing
 
-- The feature is something the app **does in the background** (mining, watching, polling, networking on a timer): build a `process` plugin.
+- The feature is something the app **does in the background** (tracking, polling, networking on a timer): build a `process` plugin.
 - The feature is something the user **sees and touches** (a panel, a button, a window, a command): build a `ui` plugin.
 - It is both (a background worker with its own native controls and settings): build a **hybrid**.
 
