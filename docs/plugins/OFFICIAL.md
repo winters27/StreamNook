@@ -14,7 +14,7 @@ All three must hold. A fork of an official plugin signed by someone else is not 
 
 ## Scope of the official index
 
-The official index lists the curated A and B tiers only; this is decision 10 in the migration audit and the host enforces it (a tier C entry in the official index is ignored). The official set is the focused, first-party collection. Heavier or specialized add-ons such as background drops and points automation or ad-bypass resolution are tier C: they are community-distributed, published under their authors' own identity, and not part of the first-party set. Keeping them out of the official index keeps that set focused and first-party, which is the same reason the core itself stays lean.
+The official index lists the curated A and B tiers only; this is decision 10 in the migration audit and the host enforces it (a tier C entry in the official index is ignored). The official set is the focused, first-party collection. Heavier or specialized add-ons such as background automation or alternate playback resolution are tier C: they are community-distributed, published under their authors' own identity, and not part of the first-party set. Keeping them out of the official index keeps that set focused and first-party, which is the same reason the core itself stays lean.
 
 What is official: emote and badge providers, chat tools, overlays, notifiers, integrations, and similar A and B functionality.
 

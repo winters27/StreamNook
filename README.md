@@ -16,7 +16,7 @@ StreamNook is the answer to this very specific but deeply relatable problem. Bui
 
 ## What you get
 
-**Ad-free playback up to 1440p.** Built-in ad blocking strips ads at every quality up to 1440p. First-run auto-optimizer picks the fastest proxy region for you, and the built-in latency dashboard lets you switch any time. Picture-in-picture, theater mode, and jump-to-live-edge on every stream load. When the channel you're watching goes offline, StreamNook auto-switches you to another live one without asking.
+**Native playback up to 1440p.** A Rust-native player with picture-in-picture, theater mode, and jump-to-live-edge on every stream load. Per-tile quality control keeps background streams light. When the channel you're watching goes offline, StreamNook can auto-switch you to another live one.
 
 **Custom theming engine.** Built-in themes including Frosted Glass, Standard Issue, a color-pickable OLED, Dracula, Nord, Gruvbox, Tokyo Night, and Catppuccin, plus a full theme creator with color picker, live preview, and dynamic switching from the title bar. Build your own and tune every color in the UI, save it, swap back any time.
 
@@ -82,15 +82,15 @@ The chat is the part this app gets right. Every piece of the live Twitch chat su
 
 **Moderator tools.** Ban, timeout, clear, mod, VIP, all reflected in real time. Dedicated moderator log pane. Slash-command autocomplete and mention autocomplete (`@` as you type). Reply threads. Everything a mod needs without flipping back to the Twitch dashboard.
 
-## Farming
+## Drops and channel points
 
-**Drops.** Automated campaign tracking and progress monitoring across every channel you watch. Inventory viewer for everything you've earned. Manual channel selection if you want to target a specific campaign. In-app drops login via a secure embedded browser. No external miner, no other apps to run, no separate window for it to live in.
+**Drops.** Campaign tracking and progress monitoring for the channels you watch, with an inventory viewer for everything you've earned. Pick a specific campaign to focus, and sign in for drops through a secure embedded browser. No separate app or window to manage.
 
 <div align="center">
   <img src="src-tauri/images/drops.png" alt="Drops dashboard" width="900" />
 </div>
 
-**Channel points.** Auto-mine across every channel you watch. Cross-streamer leaderboard so you can see where your points are concentrated. Quick mining toggle lives right in the chat widget so you can flip it on and off mid-conversation. Raid auto-follow keeps your follow list current when streamers raid out, so the next raid's mining starts the moment they land.
+**Channel points.** Claims point bonuses on channels you're watching, with a cross-streamer leaderboard so you can see where your points are concentrated. A quick toggle lives in the chat widget to turn it on or off mid-conversation. Raid auto-follow keeps your follow list current when streamers raid out.
 
 ## Badge tracker
 

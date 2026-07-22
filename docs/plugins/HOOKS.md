@@ -62,7 +62,7 @@ Contracts for the hooks core currently exposes. Hook names are owned by the host
 
 ### Playback resolution (`playback.*`)
 
-- Action: `playback.resolve` — invoked when a live stream starts and the viewer is not already entitled to watch it ad-free (Twitch Turbo or a channel subscription). Entitled streams never reach the hook.
+- Action: `playback.resolve` — invoked when a live stream starts and the viewer is not already entitled to watch it without proxying (Twitch Turbo or a channel subscription). Entitled streams never reach the hook.
 
   Args:
 
@@ -92,4 +92,4 @@ The mid-stream loop is entirely the plugin's own: it detects ad windows in its o
 
 ## Why this shape
 
-It keeps the host generic. The Drops center is a core feature, so it owns the `drops.*` hook names, but it has no knowledge of any particular plugin: it invokes actions, reads a status slot, and checks a provides flag. The farming plugin happens to fill those hooks; a different miner could fill the same ones. The same mechanism serves every future plugin, so features become extension points rather than per-plugin wiring.
+It keeps the host generic. The Drops center is a core feature, so it owns the `drops.*` hook names, but it has no knowledge of any particular plugin: it invokes actions, reads a status slot, and checks a provides flag. The drops plugin happens to fill those hooks; a different one could fill the same ones. The same mechanism serves every future plugin, so features become extension points rather than per-plugin wiring.

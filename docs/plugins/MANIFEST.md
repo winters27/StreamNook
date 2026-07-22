@@ -6,11 +6,11 @@ Every plugin ships a `plugin.toml` at the root of its artifact. The manifest is 
 
 ```toml
 id          = "community.drops-farmer"
-name        = "Drops and Points Farmer"
+name        = "Drops and Points Tracker"
 version     = "1.2.0"
 author      = "communityhandle"
 tier        = "C"
-description = "Background drops and channel-points farming."
+description = "Background drops and channel-points tracking."
 homepage    = "https://example.org/drops-farmer"
 host_min    = "8.0.0"
 
@@ -92,7 +92,7 @@ A neutral capability-scope label and curation metadata. It is not a risk rating.
 |---|---|---|---|---|
 | A | Standard | Official APIs, local-only features, read-only integrations, ordinary user actions | Theme packs, layout tools, local stats | Official index |
 | B | Extended | Additional Twitch and third-party interfaces; user-initiated actions with no official equivalent | Alternate emote providers, community badge sources | Official index |
-| C | Advanced | Power-user add-ons that run their own background work and may use the user's login | Drops or points farming, ad bypass | Community sources |
+| C | Advanced | Power-user add-ons that run their own background work and may use the user's login | Background automation, alternate playback resolution | Community sources |
 
 The tier is curation metadata: it determines where a plugin may be listed (SIGNING.md). Its user-facing presentation is a neutral badge; the consent flow (CAPABILITIES.md) is the same calm, capability-focused dialog for every tier. The official index lists the curated A and B tiers; heavier or specialized add-ons live in community sources.
 
