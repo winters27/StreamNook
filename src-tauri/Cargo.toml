@@ -43,7 +43,7 @@ keyring = "3.6.3"  # For secure token storage
 url = "2.5.7"
 sha2 = "0.10.9"
 sha1 = "0.10.6"  # SAPISIDHASH for the YouTube webview-session auth
-base64 = "0.22.1"
+base64 = "0.23.0"
 # Song recognition: FFT + binary signature encoding for the vendored Shazam
 # fingerprinter (services/song_id, MIT, from shazamio-core).
 chfft = "0.3.4"
