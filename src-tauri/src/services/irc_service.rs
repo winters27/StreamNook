@@ -130,7 +130,18 @@ const HANDSHAKE_STEP_TIMEOUT: std::time::Duration = std::time::Duration::from_se
 // Read timeout plus slack: past this the frontend must be allowed to see
 // silence so its own watchdog can act.
 const HEARTBEAT_SUPPRESS_AFTER_MS: u64 = 90_000;
-const RECONNECT_DELAY_AFTER_DROP: std::time::Duration = std::time::Duration::from_secs(5);
+// After a clean drop, reconnect almost immediately: a read-liveness timeout is
+// our own local detection (no server pressure, so zero wait; on a phone this
+// fires the moment the app resumes from suspension and the user is staring at
+// the chat), and server-initiated closes get one polite second (reference
+// clients use a 1s base). The flap guard in the supervisor keeps short-lived
+// sessions from hot-looping on these fast delays.
+const RECONNECT_DELAY_AFTER_TIMEOUT: std::time::Duration = std::time::Duration::ZERO;
+const RECONNECT_DELAY_AFTER_DROP: std::time::Duration = std::time::Duration::from_secs(1);
+// A session that dies this quickly never really established; count it toward
+// the failure backoff instead of resetting it, or a connect-drop cycle would
+// spin at the fast delays forever.
+const SESSION_FLAP_THRESHOLD_MS: u64 = 10_000;
 // Twitch caps JOINs at 20 per rolling 10s per connection. Burst this many at
 // handshake, pace the rest; the headroom absorbs concurrent ensure_joined
 // JOINs from user actions.
@@ -582,6 +593,7 @@ impl IrcService {
                 }
             };
 
+            let session_started = mono_ms();
             let outcome = Self::irc_session(
                 username,
                 &token,
@@ -591,6 +603,7 @@ impl IrcService {
                 &emote_service,
             )
             .await;
+            let session_lived_ms = mono_ms().saturating_sub(session_started);
 
             // Between sessions: fail sends/JOINs fast instead of writing into
             // a dead socket, and retire this session's keepalive tasks.
@@ -599,10 +612,31 @@ impl IrcService {
 
             let delay = match outcome {
                 Ok(reason) => {
-                    consecutive_failures = 0;
-                    record_lifecycle(&format!("session ended: {}; reconnecting in 5s", reason));
                     let _ = tx.send("IRC_RECONNECTING".to_string());
-                    RECONNECT_DELAY_AFTER_DROP
+                    if session_lived_ms < SESSION_FLAP_THRESHOLD_MS {
+                        consecutive_failures = consecutive_failures.saturating_add(1);
+                        let d = reconnect_delay(consecutive_failures, false);
+                        record_lifecycle(&format!(
+                            "session ended after {}ms ({}); flap backoff {}s",
+                            session_lived_ms,
+                            reason,
+                            d.as_secs()
+                        ));
+                        d
+                    } else {
+                        consecutive_failures = 0;
+                        let d = if reason == "read liveness timeout" {
+                            RECONNECT_DELAY_AFTER_TIMEOUT
+                        } else {
+                            RECONNECT_DELAY_AFTER_DROP
+                        };
+                        record_lifecycle(&format!(
+                            "session ended: {}; reconnecting in {}s",
+                            reason,
+                            d.as_secs()
+                        ));
+                        d
+                    }
                 }
                 Err(SessionError::Transient(e)) => {
                     consecutive_failures = consecutive_failures.saturating_add(1);
