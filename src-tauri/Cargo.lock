@@ -57,7 +57,7 @@ dependencies = [
  "tiktok-live",
  "tokio",
  "tokio-tungstenite 0.27.0",
- "toml 0.8.2",
+ "toml 1.1.0+spec-1.1.0",
  "url",
  "urlencoding",
  "uuid 1.24.1",

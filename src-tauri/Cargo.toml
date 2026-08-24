@@ -72,7 +72,7 @@ lru = "0.12"
 tiktok-live = { path = "vendor/tiktok-live" }
 
 # Plugin host: manifest parsing, version gating, artifact verification and unpack
-toml = "0.8"
+toml = "1.1"
 semver = "1"
 minisign-verify = "0.2"
 zip = { version = "2", default-features = false, features = ["deflate"] }
