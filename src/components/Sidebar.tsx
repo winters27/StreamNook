@@ -1,17 +1,24 @@
-import { useEffect, useState, useRef, useCallback, memo } from 'react';
+import { useEffect, useState, useRef, useCallback, useMemo, memo } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../stores/AppStore';
-import { ChevronLeft, ChevronRight, Users, Sparkles, Radio, Heart, Gift, Flame } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Users, Sparkles, Radio, Heart, Gift, Flame, Star } from 'lucide-react';
 import type { TwitchStream } from '../types';
 import { invoke } from '@tauri-apps/api/core';
 import { getSidebarSettings, type SidebarMode } from './settings/InterfaceSettings';
+import { WATCHABLE_PROVIDERS, providerLabel, type ProviderId } from '../types/providers';
 
 import { useContextMenuStore } from '../stores/contextMenuStore';
 import { usemultiNookStore } from '../stores/multiNookStore';
 import { Tooltip } from './ui/Tooltip';
+import StreamHoverCard, { STREAM_HOVER_CARD_CLASS } from './StreamHoverCard';
+import { ProviderLogo } from './ProviderLogo';
+import { useFollowsStore } from '../stores/followsStore';
+import { streamProvider, streamKey } from '../utils/streamProvider';
+import { useStreamAvatars } from '../hooks/useStreamAvatars';
 
 import { Logger } from '../utils/logger';
 import { useVisibleInterval } from '../utils/useVisibleInterval';
+import { formatViewerCount } from '../utils/streamStats';
 // Width constants
 const COMPACT_WIDTH = 56;
 const DEFAULT_EXPANDED_WIDTH = 280;
@@ -49,14 +56,6 @@ const persistWidth = (width: number): void => {
 };
 
 // Pure helper: format a viewer count like 12300 -> "12.3K".
-const formatViewerCount = (count: number): string => {
-    if (count >= 1000000) {
-        return (count / 1000000).toFixed(1) + 'M';
-    } else if (count >= 1000) {
-        return (count / 1000).toFixed(1) + 'K';
-    }
-    return count.toString();
-};
 
 type HypeTrainStatus = { level: number; isGolden: boolean };
 
@@ -92,6 +91,10 @@ interface StreamItemProps {
     showExpanded: boolean;
     isCurrentStream: boolean;
     isFavorite: boolean;
+    /** Subscribed to this channel on its platform (imported with the follows). */
+    isSubscribed: boolean;
+    /** The list is showing more than one platform, so rows need marking. */
+    showPlatformBadge: boolean;
     hasDrops: boolean;
     hypeTrainStatus: HypeTrainStatus | undefined;
     watchStreak: number;
@@ -112,6 +115,8 @@ const StreamItem = memo(({
     showExpanded,
     isCurrentStream,
     isFavorite,
+    isSubscribed,
+    showPlatformBadge,
     hasDrops,
     hypeTrainStatus,
     watchStreak,
@@ -121,8 +126,14 @@ const StreamItem = memo(({
     onFavoriteClick,
 }: StreamItemProps) => {
     return (
-        <Tooltip content={showExpanded ? null : `${stream.user_name} - ${stream.game_name}${hasDrops ? ' (Drops enabled)' : ''}`} delay={300} side="right">
+        <Tooltip
+            content={<StreamHoverCard stream={stream} hasDrops={hasDrops} />}
+            containerClassName={STREAM_HOVER_CARD_CLASS}
+            delay={300}
+            side="right"
+        >
             <div
+                aria-label={`${stream.user_name} - ${stream.title}`}
                 className={`group
                     flex items-center px-2 py-1.5 cursor-pointer rounded transition-all duration-200
                     ${isCurrentStream
@@ -150,6 +161,27 @@ const StreamItem = memo(({
                     stream-card `pulse-dot` keyframes (transform-scale, GPU-cheap)
                     and only animates on the hovered row via group-hover. */}
                 <div className="absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full bg-live border-2 border-background group-hover:animate-[pulse-dot_2s_ease-in-out_infinite]" />
+                {/* Which platform this channel is on — shown ONLY while the list
+                    is mixed, and then on EVERY row including Twitch, since with
+                    platforms mixed an unmarked row would be a guess rather than a
+                    default. Scoped to one platform it disappears entirely. */}
+                {/* The bare mark floats on the avatar — no disc behind it. A
+                    background plate reads as a UI chip stuck to the picture; the
+                    logo alone reads as what it is. A soft shadow keeps it legible
+                    over a light avatar without drawing a container. */}
+                {showPlatformBadge && (
+                    <div className="absolute -top-1 -left-1 flex items-center justify-center drop-shadow-[0_1px_2px_rgba(0,0,0,0.85)]">
+                        <ProviderLogo provider={streamProvider(stream)} size={12} />
+                    </div>
+                )}
+                {/* Subscribed on that platform (imported with the follow list). */}
+                {isSubscribed && (
+                    <Tooltip content="Subscribed" delay={100} side="right">
+                        <div className="absolute -bottom-0.5 -left-0.5 w-3 h-3 rounded-full bg-accent border-2 border-background flex items-center justify-center">
+                            <Star size={6} className="text-white" fill="currentColor" />
+                        </div>
+                    </Tooltip>
+                )}
                 {/* Drops indicator on avatar - only show in compact mode */}
                 {hasDrops && !showExpanded && (
                     <div className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-accent flex items-center justify-center border border-background">
@@ -292,6 +324,9 @@ const Sidebar = ({ side = 'left' }: { side?: 'left' | 'right' }) => {
         const settings = getSidebarSettings();
         return settings.expandOnHover;
     });
+    // Which platform the app is scoped to. Declared up here with the other
+    // top-level state because the scroll effect below reads it.
+    const activePlatform = useAppStore((s) => s.activePlatform);
     const [showRecommended, setShowRecommended] = useState(() => {
         const settings = getSidebarSettings();
         return settings.showRecommended;
@@ -317,8 +352,6 @@ const Sidebar = ({ side = 'left' }: { side?: 'left' | 'right' }) => {
     const [animatingHearts, setAnimatingHearts] = useState<Set<string>>(new Set());
 
     // Cache for profile images fetched from Twitch Helix API
-    const [profileImages, setProfileImages] = useState<Map<string, string>>(new Map());
-    const fetchingProfilesRef = useRef<Set<string>>(new Set());
 
     // Drops-enabled games tracking (by game_name lowercase)
     const [dropsGameNames, setDropsGameNames] = useState<Set<string>>(new Set());
@@ -509,71 +542,19 @@ const Sidebar = ({ side = 'left' }: { side?: 'left' | 'right' }) => {
 
         const handleScroll = () => {
             const { scrollTop, scrollHeight, clientHeight } = scrollContainer;
-            if (showRecommended && scrollHeight - scrollTop - clientHeight < 100 && hasMoreRecommended && !isLoadingMore) {
+            // Paging applies to Twitch's recommendations only. Scoped to another
+            // platform this would fetch Twitch rows that the list will never
+            // show — its directory arrives as one ranked page.
+            const paginates = activePlatform === 'all' || activePlatform === 'twitch';
+            if (paginates && showRecommended && scrollHeight - scrollTop - clientHeight < 100 && hasMoreRecommended && !isLoadingMore) {
                 loadMoreRecommendedStreams();
             }
         };
 
         scrollContainer.addEventListener('scroll', handleScroll);
         return () => scrollContainer.removeEventListener('scroll', handleScroll);
-    }, [showRecommended, hasMoreRecommended, isLoadingMore, loadMoreRecommendedStreams]);
+    }, [showRecommended, hasMoreRecommended, isLoadingMore, loadMoreRecommendedStreams, activePlatform]);
 
-    // Fetch profile images from Twitch Helix API
-    useEffect(() => {
-        const fetchProfileImages = async () => {
-            const allStreams = [...followedStreams, ...recommendedStreams];
-
-            const streamsNeedingImages = allStreams.filter(stream =>
-                !stream.profile_image_url &&
-                !profileImages.has(stream.user_id) &&
-                !fetchingProfilesRef.current.has(stream.user_id)
-            );
-
-            if (streamsNeedingImages.length === 0) return;
-
-            const userIds = streamsNeedingImages.map(s => s.user_id);
-            const uniqueUserIds = [...new Set(userIds)];
-
-            uniqueUserIds.forEach(id => fetchingProfilesRef.current.add(id));
-
-            try {
-                const [clientId, token] = await invoke<[string, string]>('get_twitch_credentials');
-
-                for (let i = 0; i < uniqueUserIds.length; i += 100) {
-                    const batch = uniqueUserIds.slice(i, i + 100);
-                    const queryParams = batch.map(id => `id=${id}`).join('&');
-
-                    const response = await fetch(`https://api.twitch.tv/helix/users?${queryParams}`, {
-                        headers: {
-                            'Client-ID': clientId,
-                            'Authorization': `Bearer ${token}`
-                        }
-                    });
-
-                    if (response.ok) {
-                        const data = await response.json();
-                        if (data.data && Array.isArray(data.data)) {
-                            setProfileImages(prev => {
-                                const newMap = new Map(prev);
-                                data.data.forEach((user: { id: string; profile_image_url: string }) => {
-                                    if (user.profile_image_url) {
-                                        newMap.set(user.id, user.profile_image_url);
-                                    }
-                                });
-                                return newMap;
-                            });
-                        }
-                    }
-                }
-            } catch (error) {
-                Logger.error('[Sidebar] Failed to fetch profile images from Twitch:', error);
-            } finally {
-                uniqueUserIds.forEach(id => fetchingProfilesRef.current.delete(id));
-            }
-        };
-
-        fetchProfileImages();
-    }, [followedStreams, recommendedStreams]);
 
     // Handle resize drag
     useEffect(() => {
@@ -653,20 +634,32 @@ const Sidebar = ({ side = 'left' }: { side?: 'left' | 'right' }) => {
         setIsResizing(true);
     }, []);
 
+    // Avatars for the rows being rendered, across platforms: Twitch needs a Helix
+    // users lookup, and YouTube CATEGORY rows need a per-channel resolve (search
+    // and the subscriptions feed already ship theirs on the row).
+    // Declared here rather than beside its fetch below so the avatar hook can see
+    // it: the platform directory is the surface whose rows lack an avatar.
+    const [platformTopLive, setPlatformTopLive] = useState<TwitchStream[]>([]);
+    const providerRows = useMemo(
+        () => [...followedStreams, ...recommendedStreams, ...platformTopLive],
+        [followedStreams, recommendedStreams, platformTopLive],
+    );
+    const rowAvatars = useStreamAvatars(providerRows);
+
     // Get profile image - must be defined before early return to maintain hook order
     const getProfileImage = useCallback((stream: TwitchStream): string => {
         if (stream.profile_image_url) {
             return stream.profile_image_url;
         }
-        const cachedImage = profileImages.get(stream.user_id);
-        if (cachedImage) {
-            return cachedImage;
+        const resolved = rowAvatars[streamKey(stream)];
+        if (resolved) {
+            return resolved;
         }
         if (stream.thumbnail_url) {
             return stream.thumbnail_url.replace('{width}', '150').replace('{height}', '150');
         }
         return `https://static-cdn.jtvnw.net/user-default-pictures-uv/75305d54-c7cc-40d1-bb9c-91c46bf27829-profile_image-70x70.png`;
-    }, [profileImages]);
+    }, [rowAvatars]);
 
     // Stable across renders (defined before the early return to keep hook order
     // constant) so memoized StreamItem rows aren't invalidated by a new callback
@@ -678,6 +671,12 @@ const Sidebar = ({ side = 'left' }: { side?: 'left' | 'right' }) => {
         // matches the right-click context-menu "Add to MultiNook" action.
         if (e.ctrlKey || e.metaKey) {
             e.preventDefault();
+            // The grid resolves twitch.tv URLs per tile, so it stays Twitch-only
+            // for now rather than failing silently on a provider row.
+            if (streamProvider(stream) !== 'twitch') {
+                useAppStore.getState().addToast('MultiNook supports Twitch channels for now', 'info');
+                return;
+            }
             usemultiNookStore.getState().triggerAddAnimation(e.clientX, e.clientY, stream.user_login);
             usemultiNookStore.getState().addSlot(stream.user_login);
             return;
@@ -688,6 +687,7 @@ const Sidebar = ({ side = 'left' }: { side?: 'left' | 'right' }) => {
         if (isHomeActive) {
             toggleHome();
         }
+        // The row carries its platform, so startStream routes correctly.
         startStream(stream.user_login, stream);
     }, []);
 
@@ -727,6 +727,59 @@ const Sidebar = ({ side = 'left' }: { side?: 'left' | 'right' }) => {
         setBlurReady(false);
     }, [showExpanded]);
 
+    // Live channels followed on other platforms. The backend poller keeps this
+    // fresh via `provider-live-update` (subscribed once in App), so the sidebar
+    // just reads the snapshot.
+    const providerFollowsLive = useFollowsStore((s) => s.liveByKey);
+    // Composite keys the user subscribes to, imported alongside the follow list.
+    const providerFollows = useFollowsStore((s) => s.follows);
+
+    // The other platforms' directories. On a single platform this is that
+    // platform's ranked list, standing in for Twitch's recommendations. On
+    // `all` it is EVERY non-Twitch platform's, which then gets merged with the
+    // Twitch picks below: the second section used to stay Twitch-only there,
+    // so the sidebar said "all platforms" while recommending one.
+    useEffect(() => {
+        if (activePlatform === 'twitch') {
+            setPlatformTopLive([]);
+            return;
+        }
+        const onAllPlatforms = activePlatform === 'all';
+        const targets = onAllPlatforms
+            ? WATCHABLE_PROVIDERS.filter((p) => p !== 'twitch')
+            : [activePlatform];
+        let cancelled = false;
+        // Settled per platform, not all-or-nothing: one platform being down
+        // must not empty the section for the others.
+        Promise.all(
+            targets.map((provider) =>
+                invoke<{ streams: TwitchStream[] }>('provider_directory', {
+                    provider,
+                    // One ranked page: the sorted endpoint has no cursor, so a
+                    // short list could never grow. Smaller when merging, since
+                    // the Twitch picks are carrying most of the section.
+                    limit: onAllPlatforms ? 25 : 50,
+                })
+                    .then((page) => page.streams ?? [])
+                    .catch(() => [] as TwitchStream[]),
+            ),
+        ).then((pages) => {
+            if (!cancelled) setPlatformTopLive(pages.flat());
+        });
+        return () => {
+            cancelled = true;
+        };
+    }, [activePlatform]);
+    const subscribedKeys = useMemo(
+        () =>
+            new Set(
+                providerFollows
+                    .filter((f) => f.subscribed)
+                    .map((f) => `${f.provider}:${f.channel}`),
+            ),
+        [providerFollows],
+    );
+
     // If sidebar is completely disabled, render nothing
     if (sidebarMode === 'disabled') {
         return null;
@@ -736,23 +789,73 @@ const Sidebar = ({ side = 'left' }: { side?: 'left' | 'right' }) => {
     // its own labeled section — mirroring how Followed is separated from
     // Recommended. The sidebar only ever lists live channels, so these are the
     // live favorites vs. the live non-favorite follows.
-    const favoriteStreams = followedStreams.filter(s => isFavoriteStreamer(s.user_id));
-    const followedNonFavoriteStreams = followedStreams.filter(s => !isFavoriteStreamer(s.user_id));
+    // The sidebar answers "who can I watch" for the platform the app is scoped
+    // to. On `all` it merges everything, sorted by viewers rather than grouped
+    // by service; on a platform it becomes that platform's sidebar entirely.
+    const onTwitch = activePlatform === 'twitch';
+    const onAll = activePlatform === 'all';
+    const providerLiveStreams = Object.values(providerFollowsLive)
+        .filter((row) => row.is_live && (onAll || row.provider === activePlatform))
+        .sort((a, b) => b.viewer_count - a.viewer_count);
+
+    const twitchFollowed = onAll || onTwitch ? followedStreams : [];
+    const favoriteStreams = twitchFollowed.filter(s => isFavoriteStreamer(s.user_id));
+    const followedNonFavoriteStreams = [
+        ...twitchFollowed.filter(s => !isFavoriteStreamer(s.user_id)),
+        ...providerLiveStreams,
+    ];
+
+    // Second section: Twitch has real personalized recommendations; the other
+    // platforms don't, so they show their viewer-ranked directory instead. The
+    // label changes with it rather than calling a directory "Recommended".
+    //
+    // On `all` the two are merged and ranked together, the same way the Followed
+    // section above merges. Leaving it as Twitch's picks alone was the sidebar
+    // claiming every platform in one section and exactly one in the next.
+    const rawSecondSection = onAll
+        ? {
+              label: 'Recommended',
+              streams: [...recommendedStreams, ...platformTopLive].sort(
+                  (a, b) => (b.viewer_count ?? 0) - (a.viewer_count ?? 0),
+              ),
+          }
+        : onTwitch
+          ? { label: 'Recommended', streams: recommendedStreams }
+          : { label: 'Top live', streams: platformTopLive };
+
+    // Nothing already listed above gets recommended below it. Twitch's own
+    // recommendations already exclude your follows, but a platform DIRECTORY is
+    // just "who is live, ranked", so a Kick channel you follow was appearing in
+    // Followed and again three rows down. Deduping against what is actually
+    // rendered rather than against the follow list also covers a favourite,
+    // which is the same channel in a third section.
+    const shownKeys = new Set(
+        [...favoriteStreams, ...followedNonFavoriteStreams].map((s) => streamKey(s)),
+    );
+    const secondSection = {
+        label: rawSecondSection.label,
+        streams: rawSecondSection.streams.filter((s) => !shownKeys.has(streamKey(s))),
+    };
 
     // Section-presence flags drive both the headers and the dividers between them.
-    const hasFavorites = isAuthenticated && favoriteStreams.length > 0;
-    const hasFollowed = isAuthenticated && followedNonFavoriteStreams.length > 0;
-    const hasRecommended = showRecommended && recommendedStreams.length > 0;
+    const hasFavorites = (onAll || onTwitch) && isAuthenticated && favoriteStreams.length > 0;
+    // Only Twitch's list needs a Twitch login; the others browse signed out.
+    const hasFollowed = followedNonFavoriteStreams.length > 0 && (isAuthenticated || providerLiveStreams.length > 0);
+    const hasRecommended = showRecommended && secondSection.streams.length > 0;
 
     // Shared row renderer so Favorites / Followed / Recommended stay identical.
     const renderStreamItem = (stream: TwitchStream, showFavorite: boolean) => (
         <StreamItem
-            key={stream.id}
+            // Composite provider:channel key. Bare platform ids collide across
+            // platforms in the mixed list, and provider rows may carry none.
+            key={streamKey(stream)}
             stream={stream}
             showFavorite={showFavorite}
             showExpanded={showExpanded}
             isCurrentStream={currentStream?.user_login === stream.user_login}
             isFavorite={isFavoriteStreamer(stream.user_id)}
+            isSubscribed={subscribedKeys.has(streamKey(stream))}
+            showPlatformBadge={onAll}
             hasDrops={stream.game_name ? dropsGameNames.has(stream.game_name.toLowerCase()) : false}
             hypeTrainStatus={activeHypeTrainChannels.get(stream.user_id)}
             watchStreak={watchStreaks[stream.user_id] ?? 0}
@@ -973,13 +1076,15 @@ const Sidebar = ({ side = 'left' }: { side?: 'left' | 'right' }) => {
                     {/* Recommended Streams Section */}
                     {hasRecommended && (
                         <div>
-                            <SectionHeader icon={Sparkles} label="Recommended" count={recommendedStreams.length} showExpanded={showExpanded} />
+                            <SectionHeader icon={Sparkles} label={secondSection.label} count={secondSection.streams.length} showExpanded={showExpanded} />
                             <div className="space-y-0.5">
-                                {recommendedStreams.map(stream => renderStreamItem(stream, false))}
+                                {secondSection.streams.map(stream => renderStreamItem(stream, false))}
                             </div>
 
-                            {/* Loading more indicator */}
-                            {isLoadingMore && (
+                            {/* Loading more indicator. Infinite scroll is Twitch's
+                                paginated recommendations; the platform directory
+                                is a single ranked page. */}
+                            {isLoadingMore && (onAll || onTwitch) && (
                                 <div className="flex justify-center py-2">
                                     <div className="animate-spin rounded-full h-5 w-5 border-2 border-borderSubtle border-t-accent" />
                                 </div>
@@ -987,7 +1092,9 @@ const Sidebar = ({ side = 'left' }: { side?: 'left' | 'right' }) => {
                         </div>
                     )}
 
-                    {/* Empty state */}
+                    {/* Empty state. Names the platform the sidebar is actually
+                        scoped to — it used to say "log in" on a Kick or YouTube
+                        view, where a Twitch login would change nothing. */}
                     {!isAuthenticated && !hasRecommended && (
                         <div className={`
                             flex items-center justify-center text-center p-4
@@ -995,7 +1102,9 @@ const Sidebar = ({ side = 'left' }: { side?: 'left' | 'right' }) => {
                         `}>
                             {showExpanded ? (
                                 <p className="text-xs text-textMuted">
-                                    Log in to see followed streams
+                                    {activePlatform === 'all' || activePlatform === 'twitch'
+                                        ? 'Log in to see followed streams'
+                                        : `Connect ${providerLabel(activePlatform as ProviderId)} to see followed streams`}
                                 </p>
                             ) : (
                                 <Users size={16} className="text-textMuted" />

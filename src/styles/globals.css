@@ -148,6 +148,101 @@ html[data-motion="off"] .update-pill { animation: none; }
     0 1px 2px rgba(0, 0, 0, 0.15);
 }
 
+/* The platform anchor. Three treatments were tried and rejected before this
+   one: nothing at all (a label that happened to be clickable), the icon group's
+   raised bevel (it just looked like another icon button), and a recessed
+   trench. What is left is the quietest thing that still has a shape: a flat
+   neutral fill and no depth cue whatsoever. No bevel, no border, no inset
+   shadow, nothing that claims to be raised or sunken. It reads as a control
+   because it has a body, and it cannot be confused with the cluster beside it
+   because that cluster's whole identity is the bevel this deliberately lacks. */
+.titlebar-select {
+  /* A hairline under the content and nothing else: no fill, no pill, no depth.
+     This is form-field language rather than button language, which is the right
+     register for a control whose job is to disclose a list. Square by
+     definition, because a rounded corner on a single-sided border has nothing
+     to round against. */
+  border-bottom: 1px solid rgba(255, 255, 255, 0.14);
+  transition: border-color 0.15s ease;
+}
+/* The open twin holds the hover state while the flyout is up, so the anchor
+   does not go quiet the moment the pointer moves down into the menu. */
+.titlebar-select:hover,
+.titlebar-select.is-open {
+  border-bottom-color: rgba(255, 255, 255, 0.34);
+}
+
+/* The platform anchor as a glass pill.
+   Deliberately lighter than .glass-flyout. That recipe keeps a near-opaque base
+   because it hangs OVER LIVE VIDEO and has to stay readable there. This sits on
+   the title bar, where the surface behind it is already the app's own chrome, so
+   a near-opaque plate reads as a button stuck onto the bar rather than part of
+   it. A low tint that picks up what is behind it, one specular hairline for the
+   light, and no ring: a lit outline here would be the bordered-chip look, which
+   is the opposite of glass.
+   Tinted from theme vars rather than flat white, so it does not invert into a
+   glowing lozenge on a light theme. */
+.titlebar-pill {
+  border-radius: 9999px;
+  background-color: color-mix(in srgb, var(--color-background-tertiary) 46%, transparent);
+  background-image: linear-gradient(180deg, rgba(255, 255, 255, 0.055), transparent 62%);
+  -webkit-backdrop-filter: blur(calc(6px + 12px * var(--glass-strength))) saturate(135%);
+  backdrop-filter: blur(calc(6px + 12px * var(--glass-strength))) saturate(135%);
+  /* Light from above, weight below. Both insets, so the silhouette stays a clean
+     pill instead of gaining a drawn edge. */
+  box-shadow:
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.10),
+    inset 0 -1px 0 0 rgba(0, 0, 0, 0.20);
+  transition: background-color 0.16s ease, box-shadow 0.16s ease;
+}
+.titlebar-pill:hover,
+.titlebar-pill.is-open {
+  background-color: color-mix(in srgb, var(--color-background-tertiary) 66%, transparent);
+  box-shadow:
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.16),
+    inset 0 -1px 0 0 rgba(0, 0, 0, 0.24);
+}
+
+/* A row in the platform flyout.
+   Selection here is a lit SURFACE, not a grey plate. A flat white-alpha fill is
+   the same material as a disabled control, which is why the selected row read as
+   "greyed" rather than "chosen": nothing about it said light was falling on it.
+   Two earlier attempts are deliberately not repeated — a brand wash per row (the
+   marks are already three saturated colours, and tinting under them made the menu
+   read as a toy) and a left accent bar (it became the loudest thing in the menu
+   and made every other row look indented). So the state is carried by the same
+   grammar as the rest of the app's glass: a top-lit gradient, a specular hairline
+   along the top edge, and a soft floor under it. */
+.platform-row {
+  border-radius: 8px;
+  transition: background-color 0.15s ease, box-shadow 0.15s ease;
+}
+.platform-row:hover,
+.platform-row:focus-visible {
+  background-color: rgba(255, 255, 255, 0.045);
+}
+.platform-row.is-selected {
+  /* Gradient rather than a flat fill: the row is brightest where the light hits
+     it and settles toward the bottom, so it sits IN the panel instead of on it. */
+  background-image: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.13),
+    rgba(255, 255, 255, 0.06) 55%,
+    rgba(255, 255, 255, 0.045)
+  );
+  box-shadow:
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.16),
+    inset 0 -1px 0 0 rgba(0, 0, 0, 0.22);
+}
+.platform-row.is-selected:hover {
+  background-image: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.16),
+    rgba(255, 255, 255, 0.075) 55%,
+    rgba(255, 255, 255, 0.055)
+  );
+}
+
 .titlebar-icon-btn {
   display: inline-flex;
   align-items: center;
@@ -737,6 +832,41 @@ body {
     border-color 0.3s cubic-bezier(0.2, 0.8, 0.2, 1),
     transform 0.3s cubic-bezier(0.2, 0.8, 0.2, 1),
     opacity 0.3s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+/* Small floating flyout (the title bar's platform switcher menu). A popover
+   this small hangs over live video, where .glass-panel does not work: its blur
+   AND its base both ride the Glassiness slider, so at low settings it stops
+   being a material and becomes a ghost you can read the stream straight
+   through. The recipe here separates the two. The base is near-opaque and
+   fixed (see below), which is what makes the text legible; the frost keeps a
+   deterministic floor with only the upper half riding the slider, and
+   saturating what little bleeds through keeps the backdrop glowing rather than
+   greying. Light comes from above: a top specular inset and a hairline border
+   that dims toward the bottom, grounded by a tight contact shadow plus a deep
+   soft one. At Glassiness 0% the global data-glass override strips the blur and
+   the flyout degrades to a plain solid panel like everything else. */
+.glass-flyout {
+  /* Readability does NOT ride the Glassiness slider, the same call .stats-hud
+     makes for the telemetry panel: this menu opens over live video, and a menu
+     you cannot read is not a minimal menu, it is a broken one. Fading the base
+     out with the slider is exactly what left it a ghost over a bright stream.
+     So the base stays a near-opaque theme surface at every slider position and
+     the frost, the tint and the top light are what make it read as glass. */
+  background-color: color-mix(in srgb, var(--color-background-tertiary) 92%, transparent);
+  background-image:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0.012) 45%, transparent),
+    linear-gradient(var(--color-background-secondary), var(--color-background-secondary));
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-bottom-color: rgba(255, 255, 255, 0.03);
+  border-radius: 12px;
+  -webkit-backdrop-filter: blur(calc(16px + 26px * var(--glass-strength))) saturate(140%);
+  backdrop-filter: blur(calc(16px + 26px * var(--glass-strength))) saturate(140%);
+  box-shadow:
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.12),
+    inset 0 -1px 0 0 rgba(0, 0, 0, 0.28),
+    0 1px 2px rgba(0, 0, 0, 0.3),
+    0 16px 40px -12px rgba(0, 0, 0, 0.65);
 }
 
 /* Glassiness floor. At 0% the slider sets html[data-glass="off"]; strip every
@@ -2160,6 +2290,16 @@ html[data-motion="reduced"] .animate-shimmer {
      other tiles regardless of DOM order. Only applies while a tile is fullscreen;
      harmless for the single player, which has no sibling tiles. */
   z-index: 2147483646 !important;
+}
+
+/* The wheel/middle-click volume readout. It normally sits inside the player box,
+   but Plyr's CSS fullscreen pins .plyr to the viewport at z-index 10000000 with
+   an opaque background, which would paint straight over it. Match that geometry
+   and clear that z-index while a player in this container is fullscreen. */
+.video-player-container:has(.plyr--fullscreen-fallback) .player-volume-osd {
+  position: fixed;
+  inset: 0;
+  z-index: 10000001;
 }
 
 /* Custom overlay positioning for Plyr fullscreen mode */

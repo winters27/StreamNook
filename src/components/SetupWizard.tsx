@@ -38,6 +38,8 @@ import { getSidebarSettings, saveSidebarSettings, type SidebarMode } from './set
 
 import { Logger } from '../utils/logger';
 import { ANNOUNCEMENTS_BASELINE_PENDING_KEY } from './AnnouncementsBanner';
+import PlatformAccountRows from './settings/PlatformAccountRows';
+import { usePlatformAccountStore } from '../stores/platformAccountStore';
 
 const STEP_EASE: [number, number, number, number] = [0.16, 1, 0.3, 1];
 const STEP_DURATION = 0.4;
@@ -109,6 +111,11 @@ const SetupWizard = ({ isOpen, onClose }: SetupWizardProps) => {
         mainAuthenticated: false,
     });
     const [error, setError] = useState<string | null>(null);
+    // How many of the other platforms are connected, for the summary row. Field
+    // selector so an unrelated account field doesn't re-render the wizard.
+    const platformsConnected = usePlatformAccountStore(
+        (s) => (s.kick.connected ? 1 : 0) + (s.youtube.connected ? 1 : 0),
+    );
 
     const { addToast, settings, updateSettings, isAuthenticated, checkAuthStatus, loginToTwitch, whisperImportState, setWhisperImportState, resetWhisperImportState } = useAppStore();
     const [whisperImportStarted, setWhisperImportStarted] = useState(false);
@@ -514,12 +521,12 @@ const SetupWizard = ({ isOpen, onClose }: SetupWizardProps) => {
                             <User size={56} strokeWidth={1.4} className="text-accent mb-10" />
                         )}
                         <h1 className="text-4xl font-medium text-textPrimary tracking-tight mb-4">
-                            {status.mainAuthenticated ? "You're signed in" : 'Sign in to Twitch'}
+                            {status.mainAuthenticated ? "You're signed in" : 'Connect your accounts'}
                         </h1>
                         <p className="text-textSecondary text-base max-w-md mb-8">
                             {status.mainAuthenticated
                                 ? 'Your follows, chat, and channel actions are connected.'
-                                : 'Connect your account to see your follows, chat, and use channel features.'}
+                                : 'Connect the platforms you watch on to see your follows, chat, and use channel features.'}
                         </p>
 
                         {error && (
@@ -548,6 +555,14 @@ const SetupWizard = ({ isOpen, onClose }: SetupWizardProps) => {
                                 )}
                             </button>
                         )}
+
+                        {/* Kick and YouTube sit on the SAME step as Twitch, not a
+                            later one. Every platform here is optional and none is
+                            gated on another — someone who only watches Kick should
+                            be able to connect Kick and go. */}
+                        <div className="mt-8 w-full max-w-sm text-left">
+                            <PlatformAccountRows />
+                        </div>
                     </>
                 );
 
@@ -736,6 +751,7 @@ const SetupWizard = ({ isOpen, onClose }: SetupWizardProps) => {
                 const rows: Array<{ ok: boolean; pending?: boolean; label: string }> = [
                     { ok: status.dropsAuthenticated, label: 'Drops sign-in' },
                     { ok: status.mainAuthenticated, label: 'Twitch sign-in' },
+                    { ok: platformsConnected > 0, label: 'Other platforms' },
                     {
                         ok: !!whisperImportState.result,
                         pending: whisperImportState.isImporting,

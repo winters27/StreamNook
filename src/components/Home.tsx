@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useState, useRef, useCallback, useMemo } from 'react';
 import { useAppStore, clipSourceOf, HomeTab } from '../stores/AppStore';
 import { createPortal } from 'react-dom';
-import { Search, ArrowLeft, Heart, Maximize2, X, Gift, Pickaxe, LayoutGrid, Flame, ArrowUpRight, Undo2, Users, User, Loader2, Clock, Play } from 'lucide-react';
+import { Search, ArrowLeft, Heart, X, Gift, Pickaxe, LayoutGrid, Flame, ArrowUpRight, Undo2, Users, User, Loader2, Clock, Play, Check, Plus } from 'lucide-react';
 import { motion, LayoutGroup, AnimatePresence } from 'framer-motion';
 import { usemultiNookStore } from '../stores/multiNookStore';
 
@@ -12,6 +12,13 @@ import StreamTitleWithEmojis from './StreamTitleWithEmojis';
 import { StreamTileTags } from './StreamTileTags';
 import { useContextMenuStore } from '../stores/contextMenuStore';
 import { Tooltip } from './ui/Tooltip';
+import { ProviderLogo } from './ProviderLogo';
+import { usePlatformAccountStore } from '../stores/platformAccountStore';
+import { PlatformLoginButton } from './PlatformLoginButton';
+import { WATCHABLE_PROVIDERS, PROVIDER_WATCH, providerLabel, type ProviderId, type ProviderCategory } from '../types/providers';
+import { useFollowsStore } from '../stores/followsStore';
+import { streamProvider, streamKey, followIdentifier } from '../utils/streamProvider';
+import { makeKey } from '../utils/providerKey';
 import { GlassSelect } from './ui/GlassSelect';
 import { CategorySearchBox } from './ui/CategorySearchBox';
 import {
@@ -23,6 +30,9 @@ import {
     type SearchMode,
 } from '../utils/searchHistory';
 
+import { formatViewerCount } from '../utils/streamStats';
+import { useStreamAvatars } from '../hooks/useStreamAvatars';
+import { useVisibleAvatarKeys } from '../hooks/useVisibleAvatarKeys';
 import { Logger } from '../utils/logger';
 import { useVisibleInterval } from '../utils/useVisibleInterval';
 // Types for drops data
@@ -311,7 +321,6 @@ const Home = () => {
         loginToTwitch,
         isLoading,
         streamUrl,
-        toggleHome,
         // Navigation state from AppStore
         homeActiveTab,
         homeSelectedCategory,
@@ -468,6 +477,53 @@ const Home = () => {
     const gamesCursor = cachedGamesCursor;
     const hasMoreGames = cachedHasMoreGames;
     const [isLoadingMoreGames, setIsLoadingMoreGames] = useState(false);
+    // --- Platform filter ----------------------------------------------------
+    // Which platform the grid is showing. 'all' is Twitch's own tabs exactly as
+    // before; picking a platform swaps the grid to that platform's directory (or
+    // its followed channels on the Following tab). Only platforms whose watch
+    // adapter has shipped appear, so this row is invisible until one has.
+    // Follows the app-wide platform context set by the sidebar's switcher, so
+    // Home and the sidebar can never disagree about which platform you're on.
+    const providerFilter = useAppStore((s) => s.activePlatform);
+    const [providerStreams, setProviderStreams] = useState<TwitchStream[]>([]);
+    const [isLoadingProvider, setIsLoadingProvider] = useState(false);
+    const [providerError, setProviderError] = useState<string | null>(null);
+    const providerFollowsLive = useFollowsStore((s) => s.liveByKey);
+    const providerFollows = useFollowsStore((s) => s.follows);
+    // Scoped to one non-Twitch platform: the grid is entirely that platform's.
+    const isProviderView = providerFilter !== 'all' && providerFilter !== 'twitch';
+    // Connection state, read from the account store rather than inferred from
+    // "has this platform any follows". Those are different questions, and
+    // answering the first with the second told a connected user with an empty
+    // list to go and connect.
+    // Field selectors, not a whole-store subscription: Home is expensive to
+    // re-render and must not do it whenever an unrelated account field changes.
+    // Twitch and the unified view answer `true` — they have their own gate.
+    const providerConnected = usePlatformAccountStore((s) =>
+        providerFilter === 'kick'
+            ? s.kick.connected
+            : providerFilter === 'youtube'
+              ? s.youtube.connected
+              : true,
+    );
+    const providerConnecting = usePlatformAccountStore((s) =>
+        providerFilter === 'kick'
+            ? s.kick.busy
+            : providerFilter === 'youtube'
+              ? s.youtube.busy
+              : false,
+    );
+    const connectPlatformAccount = usePlatformAccountStore((s) => s.connect);
+    // The unified view. Twitch's own surfaces still render (they're the richest),
+    // and every other platform's live rows are folded in alongside them, ranked
+    // together by viewers. Anything with no cross-platform equivalent — drops,
+    // hype trains, watch streaks — simply stays absent from the provider rows.
+    const isUnifiedView = providerFilter === 'all' && WATCHABLE_PROVIDERS.length > 1;
+    // Categories for the selected platform, and which one is drilled into. The
+    // Categories tab shows tiles like Twitch's; picking one lists its streams.
+    const [providerCategories, setProviderCategories] = useState<ProviderCategory[]>([]);
+    const [providerCategory, setProviderCategory] = useState<ProviderCategory | null>(null);
+
     const [categoryStreams, setCategoryStreams] = useState<TwitchStream[]>([]);
     const [categoryStreamsCursor, setCategoryStreamsCursor] = useState<string | null>(null);
     const [hasMoreCategoryStreams, setHasMoreCategoryStreams] = useState(true);
@@ -1342,12 +1398,41 @@ const Home = () => {
 
                 setSearchResults(filtered);
                 setCategorySearchResults([]);
+            } else if (isProviderView) {
+                // Scoped to one platform: search THAT platform. Without this the
+                // search tab fell through to rendering the whole directory, so a
+                // name search returned everything that was live.
+                usedMode = 'streamers';
+                setSearchMode('streamers');
+                setActiveTab('search');
+                const page = await invoke<{ streams: TwitchStream[] }>('provider_search', {
+                    provider: providerFilter,
+                    query: q,
+                });
+                setSearchResults(page.streams ?? []);
+                setCategorySearchResults([]);
             } else {
                 usedMode = 'streamers';
                 setSearchMode('streamers');
                 setActiveTab('search');
-                const results = await invoke('search_channels', { query: q }) as TwitchStream[];
-                setSearchResults(results);
+                // Unified: Twitch plus every platform that advertises search, the
+                // same way unified Discover merges directories. Each platform is
+                // settled INDEPENDENTLY so one failing never empties the results.
+                const others = isUnifiedView
+                    ? WATCHABLE_PROVIDERS.filter((pv) => pv !== 'twitch' && PROVIDER_WATCH[pv].search)
+                    : [];
+                const [twitchResults, ...providerPages] = await Promise.all([
+                    (invoke('search_channels', { query: q }) as Promise<TwitchStream[]>).catch(() => []),
+                    ...others.map((pv) =>
+                        invoke<{ streams: TwitchStream[] }>('provider_search', { provider: pv, query: q })
+                            .then((page) => page.streams ?? [])
+                            .catch(() => [] as TwitchStream[]),
+                    ),
+                ]);
+                setSearchResults([
+                    ...(twitchResults ?? []),
+                    ...providerPages.flat(),
+                ]);
                 setCategorySearchResults([]);
             }
             setRecentSearches(addRecentSearch(searchScope, q, usedMode));
@@ -1390,11 +1475,17 @@ const Home = () => {
     };
 
     const handleStreamClick = (e: React.MouseEvent, stream: TwitchStream) => {
+        const provider = streamProvider(stream);
         // Ctrl/Cmd+click adds the stream to multinook instead of switching to it.
         // The flying-card animation originates from the click point so it visually
         // matches the right-click context-menu "Add to MultiNook" action.
         if (e.ctrlKey || e.metaKey) {
             e.preventDefault();
+            // The grid is Twitch-only for now (its tiles resolve twitch.tv URLs).
+            if (provider !== 'twitch') {
+                useAppStore.getState().addToast(`MultiNook supports Twitch channels for now`, 'info');
+                return;
+            }
             usemultiNookStore.getState().triggerAddAnimation(e.clientX, e.clientY, stream.user_login);
             usemultiNookStore.getState().addSlot(stream.user_login);
             return;
@@ -1403,7 +1494,41 @@ const Home = () => {
         useAppStore.getState().setStreamOriginCategory(
             activeTab === 'category' && selectedCategory ? selectedCategory : null
         );
+        // `stream.provider` rides along, so startStream routes to the right
+        // platform without the caller having to know which one it is.
         startStream(stream.user_login, stream);
+    };
+
+    // What identifies a channel in the favourites list. Twitch rows keep their
+    // numeric user id (every existing favourite is stored that way); provider
+    // rows use the composite key, which is stable and can't collide with one.
+    const favoriteIdOf = (stream: TwitchStream) =>
+        streamProvider(stream) === 'twitch' ? stream.user_id : streamKey(stream);
+
+    // Follows for platforms that expose no follow list to us: the channel goes
+    // into StreamNook's own list, and the backend poller starts reporting it.
+    // Read from the subscribed list (not getState) so the heart fills the moment
+    // it is toggled rather than on the next unrelated render.
+    const isProviderFollowed = (stream: TwitchStream) => {
+        const provider = streamProvider(stream);
+        const channel = stream.user_login.toLowerCase();
+        return providerFollows.some((f) => f.provider === provider && f.channel === channel);
+    };
+
+    const handleProviderFollowClick = (e: React.MouseEvent, stream: TwitchStream) => {
+        e.stopPropagation();
+        const provider = streamProvider(stream);
+        const follows = useFollowsStore.getState();
+        // The CHANNEL, not the broadcast. A YouTube grid row is addressed by video
+        // id, so following `user_login` here followed a single stream — and could
+        // never match the `UC` ids the subscriptions import writes, which is why
+        // the heart and the player disagreed about the same channel.
+        const target = followIdentifier(stream);
+        if (follows.isFollowed(provider, target)) {
+            void follows.unfollow(provider, target);
+        } else {
+            void follows.follow(provider, target, stream.user_name);
+        }
     };
 
     const handleFavoriteClick = (e: React.MouseEvent, userId: string) => {
@@ -1533,13 +1658,237 @@ const Home = () => {
         }
     }, [activeTab, recommendedStreams.length, hasMoreRecommended, isLoadingMore, loadMoreRecommendedStreams]);
 
-    const displayStreams = activeTab === 'following'
-        ? sortStreamsByFavorites(followedStreams)
+    // How many live rows to pull PER PLATFORM for the unified Discover grid. The
+    // old value of 20 was one YouTube search page, which made Discover look nearly
+    // empty next to Twitch's recommendations. YouTube now follows its search
+    // continuations to fill this, so the cost is a few requests, not one per row.
+    const DISCOVER_PER_PROVIDER = 100;
+
+    // Every other platform's live streams + categories, loaded for the unified
+    // view so Discover and Categories aren't silently Twitch-only there.
+    const [unifiedProviderStreams, setUnifiedProviderStreams] = useState<TwitchStream[]>([]);
+    const [unifiedCategories, setUnifiedCategories] = useState<ProviderCategory[]>([]);
+    useEffect(() => {
+        if (!isUnifiedView) {
+            setUnifiedProviderStreams([]);
+            setUnifiedCategories([]);
+            return;
+        }
+        let cancelled = false;
+        const others = WATCHABLE_PROVIDERS.filter((p) => p !== 'twitch');
+        // Per-platform failures must not empty the merged view, so each is
+        // settled independently and a rejection contributes nothing.
+        Promise.all(
+            others.map((p) =>
+                invoke<{ streams: TwitchStream[] }>('provider_directory', { provider: p, limit: DISCOVER_PER_PROVIDER })
+                    .then((page) => page.streams ?? [])
+                    .catch(() => [] as TwitchStream[]),
+            ),
+        ).then((pages) => {
+            if (!cancelled) setUnifiedProviderStreams(pages.flat());
+        });
+        Promise.all(
+            others.map((p) =>
+                invoke<{ categories: ProviderCategory[] }>('provider_categories', { provider: p, limit: 20 })
+                    .then((page) => page.categories ?? [])
+                    .catch(() => [] as ProviderCategory[]),
+            ),
+        ).then((pages) => {
+            if (!cancelled) setUnifiedCategories(pages.flat());
+        });
+        return () => {
+            cancelled = true;
+        };
+    }, [isUnifiedView]);
+
+    // The Categories tab shows category TILES until one is picked; every other
+    // tab (and a drilled-into category) shows a stream grid.
+    const showsProviderCategories =
+        isProviderView && activeTab === 'browse' && !providerCategory;
+
+    // Load the platform's categories for the tile grid.
+    useEffect(() => {
+        if (!showsProviderCategories) return;
+        const provider = providerFilter as ProviderId;
+        let cancelled = false;
+        setIsLoadingProvider(true);
+        setProviderError(null);
+        invoke<{ categories: ProviderCategory[] }>('provider_categories', { provider, limit: 40 })
+            .then((page) => {
+                if (!cancelled) setProviderCategories(page.categories ?? []);
+            })
+            .catch((e) => {
+                if (cancelled) return;
+                Logger.warn(`[Home] ${provider} categories failed:`, e);
+                setProviderCategories([]);
+                setProviderError(String(e));
+            })
+            .finally(() => {
+                if (!cancelled) setIsLoadingProvider(false);
+            });
+        return () => {
+            cancelled = true;
+        };
+    }, [showsProviderCategories, providerFilter]);
+
+    // Leaving the platform view (or switching platform) drops the drill-down so
+    // the tab reopens on the tile grid rather than a stale category.
+    useEffect(() => {
+        setProviderCategory(null);
+    }, [providerFilter]);
+
+    // The provider category drill-down lives INSIDE the Categories tab: it is
+    // `providerCategory` being set while `activeTab === 'browse'`. Leaving that tab
+    // has to clear it.
+    //
+    // Without this, Discover kept fetching the drilled-in category, because the
+    // directory request passes `providerCategory?.id` and BOTH tabs render the same
+    // `providerStreams` list on a provider view. Discover and the category view
+    // showed an identical grid, and the "All categories" header that would have
+    // explained it is itself gated to the Categories tab, so nothing on screen
+    // hinted at why. Done as an effect rather than in the tab's onClick so every
+    // route out of the tab clears it, not just the one button.
+    useEffect(() => {
+        if (activeTab !== 'browse' && providerCategory) setProviderCategory(null);
+    }, [activeTab, providerCategory]);
+
+    // The drill-down only applies on the Categories tab. Derived rather than read
+    // straight from state because the clearing effect above runs AFTER render, so
+    // for one render the stale category would still be live and the directory would
+    // fire a request for it that is immediately thrown away.
+    const activeProviderCategory = activeTab === 'browse' ? providerCategory : null;
+
+    // Fetch the selected platform's directory. Deliberately does NOT depend on
+    // the followed-live snapshot: that object changes identity on every poller
+    // tick, which would re-request the directory every minute.
+    const showsProviderDirectory =
+        isProviderView
+        && activeTab !== 'following'
+        && activeTab !== 'search'
+        && !showsProviderCategories;
+    useEffect(() => {
+        if (!showsProviderDirectory) {
+            setProviderStreams([]);
+            setProviderError(null);
+            // Clear the spinner too. Leaving it set on this path is what made the
+            // Following tab load forever until you switched tabs and back — the
+            // flag was raised by a previous tab and nothing ever lowered it.
+            setIsLoadingProvider(false);
+            return;
+        }
+        const provider = providerFilter as ProviderId;
+        let cancelled = false;
+        setIsLoadingProvider(true);
+        setProviderError(null);
+        invoke<{ streams: TwitchStream[] }>('provider_directory', {
+            provider,
+            category: activeProviderCategory?.id || null,
+            // Kick's sorted directory endpoint has no cursor and caps at 100, so
+            // there is no second page to fetch — take the whole thing at once
+            // rather than showing 40 and silently never loading more.
+            limit: 100,
+        })
+            .then((page) => {
+                if (cancelled) return;
+                setProviderStreams(page.streams ?? []);
+            })
+            .catch((e) => {
+                if (cancelled) return;
+                Logger.warn(`[Home] ${provider} directory failed:`, e);
+                setProviderStreams([]);
+                setProviderError(String(e));
+            })
+            .finally(() => {
+                if (!cancelled) setIsLoadingProvider(false);
+            });
+        return () => {
+            cancelled = true;
+        };
+    }, [showsProviderDirectory, providerFilter, activeProviderCategory]);
+
+    // The platform's Following tab reads the poller's snapshot directly, so it
+    // needs no request of its own and stays in step with the sidebar. Scoped to
+    // one platform it filters to that one; unified, it takes them all.
+    // Not gated on the active tab: the Following badge needs this count while
+    // you're standing on Discover. It's a filter over an in-memory snapshot, so
+    // computing it always is free.
+    const providerFollowedLive = useMemo(
+        () =>
+            !(isProviderView || isUnifiedView)
+                ? []
+                : Object.values(providerFollowsLive)
+                      .filter((row) => row.is_live && (isUnifiedView || row.provider === providerFilter))
+                      .sort((a, b) => b.viewer_count - a.viewer_count),
+        [isProviderView, isUnifiedView, providerFilter, providerFollowsLive],
+    );
+
+    // Composite keys of the provider channels the Following tab is showing, so
+    // Discover can leave them out instead of listing the same channel twice.
+    const followedProviderKeys = useMemo(
+        () => new Set(providerFollowedLive.map((s) => streamKey(s))),
+        [providerFollowedLive],
+    );
+
+    const rawDisplayStreams = isProviderView
+        ? (activeTab === 'following'
+            ? providerFollowedLive
+            // Without this the search tab rendered the platform DIRECTORY, which is
+            // why searching a name appeared to return everything.
+            : activeTab === 'search'
+              ? searchResults
+              : providerStreams)
+        : activeTab === 'following'
+        // Unified: your Twitch follows and every other platform's live follows in
+        // one list. Favorites still float to the top; the rest rank by viewers.
+        ? sortStreamsByFavorites([...followedStreams, ...providerFollowedLive])
         : activeTab === 'recommended'
-            ? recommendedStreams
+            // Unified Discover: Twitch's personalized picks plus what's big on the
+            // other platforms right now, ranked together.
+            // Unified Discover: Twitch's picks plus the other platforms' live
+            // streams, ranked together by viewers, same as the Twitch-only list.
+            ? (isUnifiedView
+                // Minus anything the Following tab is already showing you.
+                // Twitch's recommendations exclude your follows upstream, but a
+                // platform DIRECTORY is just "who is live, ranked", so a Kick
+                // channel you follow was turning up on both tabs.
+                ? [
+                    ...recommendedStreams,
+                    ...unifiedProviderStreams.filter((s) => !followedProviderKeys.has(streamKey(s))),
+                  ].sort((a, b) => b.viewer_count - a.viewer_count)
+                : recommendedStreams)
             : activeTab === 'category'
                 ? categoryStreams
                 : searchResults.filter(s => s.viewer_count > 0 || s.is_live);
+
+    // Deduplicate on the SAME key the grid renders with, so a channel that
+    // arrives from two sources (a paginated page overlapping the previous one, or
+    // a stream present in both a follow list and a directory) can never mount
+    // twice. React's duplicate-key warning is the visible symptom; the real
+    // hazard is rows sharing identity and swapping content during updates.
+    const displayStreams = useMemo(() => {
+        const seen = new Set<string>();
+        return rawDisplayStreams.filter((s) => {
+            // The COMPOSITE key, never the bare platform id: Twitch and Kick both
+            // use numeric ids, so `id` alone collides across platforms in the
+            // mixed view (which is exactly where the duplicate-key warning fired).
+            const key = streamKey(s);
+            if (seen.has(key)) return false;
+            seen.add(key);
+            return true;
+        });
+    }, [rawDisplayStreams]);
+
+    // Channel avatars for the cards on screen. A stream row does not reliably carry
+    // one: Twitch needs a Helix users lookup, and YouTube category rows need a
+    // per-channel resolve (search and the subscriptions feed already ship theirs).
+
+
+    // How many live channels the Following tab holds for the CURRENT platform.
+    const followingCount = isProviderView
+        ? providerFollowedLive.length
+        : isUnifiedView
+            ? followedStreams.length + providerFollowedLive.length
+            : followedStreams.length;
 
     const offlineSearchResults = activeTab === 'search' ? searchResults.filter(s => s.viewer_count === 0 && !s.is_live) : [];
 
@@ -1580,6 +1929,72 @@ const Home = () => {
     // search box only picks tags (it doesn't fuzzy-filter the visible streams).
     const tagMode = selectedCategoryTags.length > 0;
     const baseLiveStreams = tagMode ? tagStreams : categoryStreams;
+
+    // Followed provider channels that are NOT live, so the Following tab shows an
+    // offline roster for them the way it already does for Twitch.
+    //
+    // Matching "which follows are live" cannot be done on the composite key: a
+    // YouTube live row is keyed by its VIDEO id while a follow is stored under the
+    // channel's UC id, so the keys never line up. Both shapes DO agree on the
+    // channel though, which is what this compares.
+    const offlineProviderFollows = useMemo<TwitchStream[]>(() => {
+        if (!(isProviderView || isUnifiedView)) return [];
+        const liveChannels = new Set<string>();
+        for (const row of Object.values(providerFollowsLive)) {
+            if (row.user_id) liveChannels.add(`${row.provider}:${row.user_id.toLowerCase()}`);
+            if (row.user_login) liveChannels.add(`${row.provider}:${row.user_login.toLowerCase()}`);
+        }
+        return providerFollows
+            .filter((f) => isUnifiedView || f.provider === providerFilter)
+            .filter((f) => !liveChannels.has(`${f.provider}:${f.channel.toLowerCase()}`))
+            .map((f) => ({
+                id: f.channel,
+                // The channel id doubles as the user id so the avatar resolver,
+                // which keys off `user_id`, can look it up like any other row.
+                user_id: f.channel,
+                user_login: f.channel,
+                user_name: f.display_name || f.channel,
+                provider: f.provider,
+                key: makeKey(f.provider, f.channel),
+                title: '',
+                viewer_count: 0,
+                game_id: '',
+                game_name: '',
+                thumbnail_url: '',
+                started_at: '',
+                is_live: false,
+                // Captured when the follow was imported, so the roster paints
+                // immediately instead of resolving each face on every app start.
+                // Rows imported before this existed have none and fall through to
+                // the per-card resolver as before.
+                profile_image_url: f.avatar,
+            } as unknown as TwitchStream));
+    }, [isProviderView, isUnifiedView, providerFilter, providerFollows, providerFollowsLive]);
+
+    // The offline roster: Twitch's own list (only meaningful when Twitch is in
+    // view) plus followed provider channels that aren't live.
+    const offlineChannels = useMemo<TwitchStream[]>(
+        () => [
+            ...(isProviderView ? [] : offlineFollowedChannels),
+            ...offlineProviderFollows,
+        ],
+        [isProviderView, offlineFollowedChannels, offlineProviderFollows],
+    );
+
+    // Both grids: the main list and the category-detail list.
+    const avatarCandidates = useMemo(
+        () => [...displayStreams, ...baseLiveStreams, ...offlineProviderFollows],
+        [displayStreams, baseLiveStreams, offlineProviderFollows],
+    );
+    // Only the cards actually on screen get resolved. A YouTube avatar costs a
+    // channel lookup each, and a large subscription list would otherwise fire
+    // hundreds of requests for rows the user never scrolls to.
+    const visibleAvatarKeys = useVisibleAvatarKeys([avatarCandidates]);
+    const avatarTargets = useMemo(
+        () => avatarCandidates.filter((s) => visibleAvatarKeys.has(streamKey(s))),
+        [avatarCandidates, visibleAvatarKeys],
+    );
+    const cardAvatars = useStreamAvatars(avatarTargets);
 
     const toggleCategoryTag = (label: string) => {
         const key = label.toLowerCase();
@@ -1766,6 +2181,11 @@ const Home = () => {
                         {/* Navigation buttons - fade out when search is expanded */}
                         <LayoutGroup>
                         <div className={`flex items-center gap-1 transition-opacity duration-300 ${isSearchExpanded ? 'opacity-0' : 'opacity-100'}`}>
+                            {/* The platform switcher used to sit here. It moved to
+                                the title bar (PlatformSwitcher): this toolbar unmounts
+                                on a category drill-down and is gone entirely while
+                                watching, so it could never answer "which platform
+                                am I in" for more than one screen. */}
                             <MultiNookToggle />
                             <MultiChatButton />
                             <div className="border-l border-borderSubtle h-5 mx-0.5" />
@@ -1786,9 +2206,12 @@ const Home = () => {
                                     )}
                                     <span className={`relative z-10 flex items-center transition-all duration-300 ${activeTab !== 'following' ? 'group-hover:drop-shadow-[0_2px_4px_rgba(0,0,0,0.8)]' : ''}`}>
                                         Following
-                                        {followedStreams.length > 0 && (
+                                        {/* Counts what this tab will actually show, which
+                                            changes with the platform — the Twitch number
+                                            beside a Kick list was just wrong. */}
+                                        {followingCount > 0 && (
                                             <span className="ml-1.5 text-xs opacity-80">
-                                                {followedStreams.length}
+                                                {followingCount}
                                             </span>
                                         )}
                                     </span>
@@ -1983,18 +2406,9 @@ const Home = () => {
                             );
                         })()}
                     </div>
-                {/* Return to Stream Button - absolute right */}
-                {streamUrl && (
-                    <Tooltip content="Return to Stream" side="bottom">
-                    <button
-                        onClick={toggleHome}
-                        className="absolute right-4 flex items-center gap-1.5 px-3 py-1.5 glass-button text-accent shadow-[0_0_15px_rgba(var(--color-accent-rgb),0.2)] text-sm font-medium rounded-lg transition-all hover:text-textPrimary"
-                    >
-                        <Maximize2 size={14} />
-                        <span className="hidden sm:inline">Return</span>
-                    </button>
-                    </Tooltip>
-                )}
+                {/* Returning to the stream is the title bar's Home/Return
+                    toggle now, so it stays in one place instead of jumping
+                    across the window depending on which view you are in. */}
             </div>
 
         </div>
@@ -2032,18 +2446,6 @@ const Home = () => {
                             </div>
                         </div>
                         
-                        {/* Return to Stream Button (In Category Mode) */}
-                        {streamUrl && (
-                            <Tooltip content="Return to Stream" side="left">
-                                <button
-                                    onClick={toggleHome}
-                                    className="flex items-center gap-1.5 px-3 h-[44px] glass-button text-accent shadow-[0_0_15px_rgba(var(--color-accent-rgb),0.2)] text-sm font-medium rounded-xl transition-colors hover:text-textPrimary pointer-events-auto backdrop-blur-md"
-                                >
-                                    <Maximize2 size={14} />
-                                    <span className="hidden sm:inline">Return</span>
-                                </button>
-                            </Tooltip>
-                        )}
                     </div>
                 )}
                 
@@ -2182,9 +2584,60 @@ const Home = () => {
                     <LoadingWidget useFunnyMessages={true} />
                 )}
 
+                {/* Platform categories — the same tile grid Twitch gets, so the
+                    Categories tab means the same thing on every platform.
+                    Picking one drills into its live streams below. */}
+                {showsProviderCategories && !isLoadingProvider && providerCategories.length > 0 && (
+                    <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 xl:grid-cols-7 2xl:grid-cols-8 gap-3">
+                        {providerCategories.map((cat) => (
+                            <div
+                                key={cat.id || cat.name}
+                                className={`glass-panel media-card cursor-pointer hover:bg-glass-hover transition-all duration-200 group overflow-hidden relative ${isOverlayMode ? '!bg-black/40 !border-white/5' : ''}`}
+                                onClick={() => setProviderCategory(cat)}
+                            >
+                                <div className="relative overflow-hidden">
+                                    <img
+                                        loading="lazy"
+                                        src={cat.thumbnail}
+                                        alt={cat.name}
+                                        className="w-full aspect-[3/4] object-cover group-hover:scale-105 transition-transform duration-200"
+                                        onError={(e) => { (e.target as HTMLImageElement).style.visibility = 'hidden'; }}
+                                    />
+                                </div>
+                                <div className="p-2">
+                                    <h3 className="text-textPrimary font-medium text-sm line-clamp-1 group-hover:text-accent transition-colors">
+                                        {cat.name}
+                                    </h3>
+                                    <p className="text-textSecondary text-xs mt-0.5">
+                                        {formatViewerCount(cat.viewer_count)} viewers
+                                    </p>
+                                </div>
+                            </div>
+                        ))}
+                    </div>
+                )}
+
+                {/* Drill-down header: which category the stream grid below is showing. */}
+                {isProviderView && activeTab === 'browse' && providerCategory && (
+                    <div className="mb-3 flex items-center gap-2">
+                        <button
+                            onClick={() => setProviderCategory(null)}
+                            className="glass-button-secondary px-2.5 py-1.5 text-[13px] text-textSecondary hover:text-textPrimary rounded-lg transition-colors"
+                        >
+                            ← All categories
+                        </button>
+                        <h2 className="text-textPrimary font-semibold text-[15px]">{providerCategory.name}</h2>
+                        <span className="text-textSecondary text-xs">
+                            {providerCategory.viewer_count.toLocaleString()} viewers
+                        </span>
+                    </div>
+                )}
+
                 {/* Progressive Scroll Category Profile is now perfectly enclosed within the Top Navigation Frame! */}
-                {/* Browse View - Game Categories */}
-                {activeTab === 'browse' && (
+                {/* Browse View - Game Categories. Twitch-only: the category grid
+                    is built from Helix top-games. With a platform filter active
+                    the platform's own category tiles render above instead. */}
+                {activeTab === 'browse' && !isProviderView && (
                     <>
                         {isLoadingGames ? (
                             <div className="relative h-full min-h-[400px] flex items-center justify-center">
@@ -2202,6 +2655,54 @@ const Home = () => {
                                 <div className="grid grid-cols-3 sm:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 2xl:grid-cols-8 gap-3">
                                     {topGames.map(game => renderCategoryCard(game))}
                                 </div>
+                                {/* Unified view: the other platforms' categories,
+                                    kept in their own labelled row rather than
+                                    interleaved — a Twitch game id and a Kick
+                                    category id are different taxonomies, and
+                                    mixing them would make the grid lie about
+                                    which one a tile belongs to. */}
+                                {isUnifiedView && unifiedCategories.length > 0 && (
+                                    <div className="mt-6 border-t border-borderSubtle/40 pt-4">
+                                        <h3 className="mb-3 text-sm font-semibold text-textSecondary">
+                                            On other platforms
+                                        </h3>
+                                        <div className="grid grid-cols-3 sm:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 2xl:grid-cols-8 gap-3">
+                                            {unifiedCategories.map((cat) => (
+                                                <div
+                                                    key={`${cat.provider}:${cat.id || cat.name}`}
+                                                    className={`glass-panel media-card cursor-pointer hover:bg-glass-hover transition-all duration-200 group overflow-hidden relative ${isOverlayMode ? '!bg-black/40 !border-white/5' : ''}`}
+                                                    onClick={() => {
+                                                        // Jump into that platform's context, then open the category.
+                                                        useAppStore.getState().setActivePlatform(cat.provider);
+                                                        setProviderCategory(cat);
+                                                        setActiveTab('browse');
+                                                    }}
+                                                >
+                                                    <div className="relative overflow-hidden">
+                                                        <img
+                                                            loading="lazy"
+                                                            src={cat.thumbnail}
+                                                            alt={cat.name}
+                                                            className="w-full aspect-[3/4] object-cover group-hover:scale-105 transition-transform duration-200"
+                                                            onError={(e) => { (e.target as HTMLImageElement).style.visibility = 'hidden'; }}
+                                                        />
+                                                    </div>
+                                                    <div className="p-2">
+                                                        <h3 className="text-textPrimary font-medium text-sm line-clamp-1 group-hover:text-accent transition-colors">{cat.name}</h3>
+                                                        {/* Same rule as the stream cards: a bare mark in the
+                                                            tile's bottom-right, never over the artwork. */}
+                                                        <div className="mt-0.5 flex items-center justify-between gap-1">
+                                                            <span className="text-textSecondary text-xs truncate">{formatViewerCount(cat.viewer_count)} viewers</span>
+                                                            <span className="flex flex-shrink-0 items-center opacity-80">
+                                                                <ProviderLogo provider={cat.provider} size={12} />
+                                                            </span>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    </div>
+                                )}
                                 {/* Loading indicator for infinite scroll */}
                                 {isLoadingMoreGames && (
                                     <div className="flex justify-center items-center py-6">
@@ -2386,6 +2887,7 @@ const Home = () => {
                                                         layout
                                                         transition={{ type: "spring", stiffness: 350, damping: 25 }}
                                                         key={stream.id}
+                                                        data-avatar-key={streamKey(stream)}
                                                         className={`p-2.5 transition-all duration-200 group relative ${
                                                             isQueued && !isSuckingUp
                                                                 ? 'ghost-card rounded-lg cursor-default'
@@ -2476,6 +2978,14 @@ const Home = () => {
                                                                     </h3>
                                                                     <div className="flex items-center justify-between">
                                                                         <div className="flex items-center gap-1">
+                                                                            {(stream.profile_image_url || cardAvatars[streamKey(stream)]) && (
+                                                                                <img
+                                                                                    loading="lazy"
+                                                                                    src={stream.profile_image_url || cardAvatars[streamKey(stream)]}
+                                                                                    alt=""
+                                                                                    className="w-4 h-4 rounded-full object-cover flex-shrink-0 ring-1 ring-borderSubtle"
+                                                                                />
+                                                                            )}
                                                                             <p className="text-textSecondary text-[11px] font-medium">{stream.user_name}</p>
                                                                             {stream.broadcaster_type === 'partner' && (
                                                                                 <svg className="w-3 h-3 flex-shrink-0" viewBox="0 0 16 16" fill="#9146FF">
@@ -2637,70 +3147,133 @@ const Home = () => {
                     </div>
                 )}
 
-                {/* Following/Recommended/Search Views */}
-                {(activeTab === 'following' || activeTab === 'recommended' || activeTab === 'search') && (
+                {/* Following/Recommended/Search Views. With a platform filter
+                    active the Categories tab shows that platform's directory
+                    here too, since it has no Twitch-style category grid. */}
+                {(activeTab === 'following' || activeTab === 'recommended' || activeTab === 'search' || (showsProviderDirectory && activeTab === 'browse')) && (
                     <>
-                        {isSearching ? (
+                        {isSearching || isLoadingProvider ? (
                             <div className="flex items-center justify-center h-full">
                                 <div className="text-center">
                                     <div className="animate-spin rounded-full h-12 w-12 border-4 border-glass border-t-accent mx-auto mb-3" />
-                                    <p className="text-textSecondary text-xs">Searching...</p>
+                                    <p className="text-textSecondary text-xs">{isLoadingProvider ? 'Loading streams...' : 'Searching...'}</p>
                                 </div>
                             </div>
-                        ) : !isAuthenticated && activeTab === 'following' ? (
+                        ) : /* The Twitch login prompt is Twitch's own: other platforms browse signed out. */
+                        !isAuthenticated && activeTab === 'following' && !isProviderView ? (
                             <div className="flex items-center justify-center h-full">
                                 <div className="text-center glass-panel p-6 max-w-sm">
                                     <h3 className="text-base font-bold text-textPrimary mb-1">Not Logged In</h3>
                                     <p className="text-textSecondary text-sm mb-4">
                                         Log in to see your followed streams.
                                     </p>
-                                    <button
-                                        onClick={loginToTwitch}
-                                        disabled={isLoading}
-                                        className="flex items-center justify-center gap-2 px-4 py-2 bg-[#9146FF] hover:bg-[#772CE8] text-white text-sm font-medium rounded-lg transition-all disabled:opacity-50 disabled:cursor-not-allowed mx-auto"
-                                    >
-                                        <svg fill="currentColor" viewBox="0 0 512 512" className="w-4 h-4">
-                                            <path d="M80,32,48,112V416h96v64h64l64-64h80L464,304V32ZM416,288l-64,64H256l-64,64V352H112V80H416Z" />
-                                            <rect x="320" y="143" width="48" height="129" />
-                                            <rect x="208" y="143" width="48" height="129" />
-                                        </svg>
-                                        <span>{isLoading ? 'Logging in...' : 'Login with Twitch'}</span>
-                                    </button>
+                                    <div className="flex justify-center">
+                                        <PlatformLoginButton
+                                            provider="twitch"
+                                            onClick={loginToTwitch}
+                                            busy={isLoading}
+                                            busyLabel="Logging in…"
+                                        />
+                                    </div>
+                                </div>
+                            </div>
+                        ) : /* The same wall, for the platform you're actually looking at.
+                               Following is the one tab that is meaningless signed out —
+                               there is no list to show — so it asks for the account
+                               instead of falling through to an anonymous grid. */
+                        isProviderView && activeTab === 'following' && !providerConnected ? (
+                            <div className="flex items-center justify-center h-full">
+                                <div className="text-center glass-panel p-6 max-w-sm">
+                                    <h3 className="text-base font-bold text-textPrimary mb-1">Not Connected</h3>
+                                    <p className="text-textSecondary text-sm mb-4">
+                                        Connect your {providerLabel(providerFilter as ProviderId)} account to see the channels you follow.
+                                    </p>
+                                    <div className="flex justify-center">
+                                        <PlatformLoginButton
+                                            provider={providerFilter as ProviderId}
+                                            onClick={() => void connectPlatformAccount(providerFilter as 'kick' | 'youtube')}
+                                            busy={providerConnecting}
+                                        />
+                                    </div>
                                 </div>
                             </div>
                         ) : displayStreams.length === 0 && categorySearchResults.length === 0 && (activeTab !== 'search' || offlineSearchResults.length === 0) ? (
                             <div className="flex items-center justify-center h-full">
                                 <div className="text-center glass-panel p-6 max-w-sm">
                                     <h3 className="text-base font-bold text-textPrimary mb-1">
-                                        {activeTab === 'following' ? 'No Live Streams' : activeTab === 'recommended' ? 'No Streams' : 'No Results'}
+                                        {providerError
+                                            ? 'Could Not Load Streams'
+                                            : isProviderView && activeTab === 'following' && providerFollows.every((f) => f.provider !== providerFilter)
+                                                ? `No ${providerLabel(providerFilter as ProviderId)} Channels Yet`
+                                                : activeTab === 'following' ? 'No Live Streams' : activeTab === 'recommended' ? 'No Streams' : 'No Results'}
                                     </h3>
                                     <p className="text-textSecondary text-sm">
-                                        {activeTab === 'following'
+                                        {isProviderView
+                                            ? providerError
+                                                ? `${providerLabel(providerFilter as ProviderId)} could not be reached right now.`
+                                                : activeTab === 'following'
+                                                    ? providerFollows.every((f) => f.provider !== providerFilter)
+                                                        // Nothing here yet because the account isn't connected —
+                                                        // say that, rather than implying we checked and found
+                                                        // nobody live.
+                                                        ? `Connect your ${providerLabel(providerFilter as ProviderId)} account in Settings to see the channels you follow.`
+                                                        : `None of the ${providerLabel(providerFilter as ProviderId)} channels you follow are live.`
+                                                    : `Nothing live on ${providerLabel(providerFilter as ProviderId)} right now.`
+                                            : activeTab === 'following'
                                             ? 'None of your followed channels are live.'
                                             : activeTab === 'recommended'
                                                 ? 'Could not load streams.'
-                                                : searchMode === 'categories' 
+                                                : searchMode === 'categories'
                                                     ? `No categories found for "${searchQuery}".`
                                                     : `No channels found for "${searchQuery}".`}
                                     </p>
-                                    {/* Login prompt for unauthenticated users when streams fail to load */}
-                                    {!isAuthenticated && activeTab === 'recommended' && (
+                                    {/* Somewhere to go instead of a dead end: the platform's
+                                        directory works whether or not an account is connected.
+                                        Only shown once CONNECTED — otherwise it competed with
+                                        the login panel above, offering to browse away from the
+                                        thing the user was being asked to do. */}
+                                    {isProviderView && activeTab === 'following' && !providerError && providerConnected && (
+                                        <button
+                                            onClick={() => setActiveTab('browse')}
+                                            className="glass-button mt-4 px-4 py-2 text-sm font-medium rounded-lg transition-all hover:scale-105 mx-auto"
+                                        >
+                                            Browse {providerLabel(providerFilter as ProviderId)}
+                                        </button>
+                                    )}
+                                    {/* Connect prompt for the platform being VIEWED. Browse and
+                                        search do still load signed out — the catalog is real and
+                                        hiding it would remove working product — but they must not
+                                        be silent about the account, and must never offer Twitch's
+                                        login on a Kick or YouTube surface. */}
+                                    {isProviderView && !providerConnected && activeTab !== 'following' && (
+                                        <div className="mt-4 pt-4 border-t border-borderSubtle">
+                                            <p className="text-textSecondary text-xs mb-3">
+                                                Connect {providerLabel(providerFilter as ProviderId)} to follow channels and chat
+                                            </p>
+                                            <div className="flex justify-center">
+                                                <PlatformLoginButton
+                                                    provider={providerFilter as ProviderId}
+                                                    onClick={() => void connectPlatformAccount(providerFilter as 'kick' | 'youtube')}
+                                                    busy={providerConnecting}
+                                                />
+                                            </div>
+                                        </div>
+                                    )}
+                                    {/* Twitch's own prompt, gated to Twitch surfaces. It used to
+                                        render on a Kick or YouTube empty state too. */}
+                                    {!isAuthenticated && !isProviderView && activeTab === 'recommended' && (
                                         <div className="mt-4 pt-4 border-t border-borderSubtle">
                                             <p className="text-textSecondary text-xs mb-3">
                                                 Log in for a better experience
                                             </p>
-                                            <button
-                                                onClick={loginToTwitch}
-                                                disabled={isLoading}
-                                                className="glass-button flex items-center justify-center gap-2 px-4 py-2.5 text-white text-sm font-medium rounded-lg transition-all hover:scale-105 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100 mx-auto"
-                                            >
-                                                <svg fill="currentColor" viewBox="0 0 512 512" className="w-4 h-4">
-                                                    <path d="M80,32,48,112V416h96v64h64l64-64h80L464,304V32ZM416,288l-64,64H256l-64,64V352H112V80H416Z" />
-                                                    <rect x="320" y="143" width="48" height="129" />
-                                                    <rect x="208" y="143" width="48" height="129" />
-                                                </svg>
-                                                <span>{isLoading ? 'Logging in...' : 'Login with Twitch'}</span>
-                                            </button>
+                                            <div className="flex justify-center">
+                                                <PlatformLoginButton
+                                                    provider="twitch"
+                                                    onClick={loginToTwitch}
+                                                    busy={isLoading}
+                                                    busyLabel="Logging in…"
+                                                />
+                                            </div>
                                         </div>
                                     )}
                                 </div>
@@ -2714,8 +3287,20 @@ const Home = () => {
                                 )}
                                 {displayStreams.length > 0 && !(activeTab === 'search' && searchMode === 'categories') && (
                                     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-3">
+                                    {/* Switching platforms replaces most of this grid, and
+                                        without exits the old set vanished on the same frame the
+                                        new one appeared. `popLayout` pulls a leaving card out of
+                                        flow immediately, so the cards that survive the switch
+                                        (every Twitch card when you go from All to Twitch) glide
+                                        into their new positions on the layout spring each card
+                                        already carries, instead of jumping.
+
+                                        `initial={false}` so a cold start paints the first grid
+                                        instantly: the entrance is for cards arriving into a grid
+                                        that is already on screen, not for the first one. */}
+                                    <AnimatePresence mode="popLayout" initial={false}>
                                         {displayStreams.map(stream => {
-                                        const isFavorite = isFavoriteStreamer(stream.user_id);
+                                        const isFavorite = isFavoriteStreamer(favoriteIdOf(stream));
                                         // Check if stream's game has active drops
                                         const streamDropsCampaign = stream.game_name ? dropsGameNames.get(stream.game_name.toLowerCase()) : undefined;
                                         const hasDrops = !!streamDropsCampaign;
@@ -2727,8 +3312,25 @@ const Home = () => {
                                             return (
                                                 <motion.div
                                                     layout
-                                                    transition={{ type: "spring", stiffness: 350, damping: 25 }}
-                                                    key={stream.id}
+                                                    // Opacity and a short lift, never scale: a
+                                                    // scaling element fights `layout`'s own scale
+                                                    // correction and the card's text and rounded
+                                                    // corners smear while it settles.
+                                                    initial={{ opacity: 0, y: 8 }}
+                                                    animate={{ opacity: 1, y: 0 }}
+                                                    exit={{ opacity: 0, y: -4 }}
+                                                    transition={{
+                                                        type: "spring",
+                                                        stiffness: 350,
+                                                        damping: 25,
+                                                        opacity: { duration: 0.16, ease: 'easeOut' },
+                                                        y: { duration: 0.2, ease: [0.2, 0.9, 0.25, 1] },
+                                                    }}
+                                                    // Composite provider:channel key. Not `stream.id` — provider rows
+                                                    // may carry none, and where they do the numeric ids collide with
+                                                    // Twitch's in the mixed view.
+                                                    key={streamKey(stream)}
+                                                    data-avatar-key={streamKey(stream)}
                                                     className={`p-2.5 transition-all duration-200 group relative ${
                                                         isQueued && !isSuckingUp
                                                             ? 'ghost-card rounded-lg cursor-default'
@@ -2801,19 +3403,23 @@ const Home = () => {
                                                                         </div>
                                                                     )}
                                                                 </div>
-                                                                <div className="absolute bottom-1.5 left-1.5 px-2 py-0.5 glass-badge text-white text-xs font-medium rounded">
-                                                                    {stream.viewer_count.toLocaleString()} viewers
+                                                                <div className="absolute bottom-1.5 left-1.5 flex items-center gap-1">
+                                                                    <div className="px-2 py-0.5 glass-badge text-white text-xs font-medium rounded">
+                                                                        {stream.viewer_count.toLocaleString()} viewers
+                                                                    </div>
                                                                 </div>
-                                                                {watchStreaks[stream.user_id] > 0 && (
-                                                                    <div className="absolute bottom-1.5 right-1.5">
+                                                                {/* Bottom-right corner: watch streak and platform mark share
+                                                                    one row so they can never overlap. */}
+                                                                <div className="absolute bottom-1.5 right-1.5 flex items-center gap-1">
+                                                                    {watchStreaks[stream.user_id] > 0 && (
                                                                         <Tooltip content={`${watchStreaks[stream.user_id]} Stream Watch Streak`} side="top">
                                                                         <div className="flex items-center gap-1 font-bold text-[10px] leading-tight px-1.5 py-0.5 rounded shadow-[0_0_10px_color-mix(in_srgb,var(--color-warning)_25%,transparent)] bg-amber-500/10 text-amber-400 border border-amber-500/30 backdrop-blur-md">
                                                                             <Flame size={10} className="stroke-[2.5]" />
                                                                             <span>{watchStreaks[stream.user_id]}</span>
                                                                         </div>
                                                                         </Tooltip>
-                                                                    </div>
-                                                                )}
+                                                                    )}
+                                                                </div>
                                                             </div>
                                                             <div className="flex items-end justify-between mt-1">
                                                                 <div className="space-y-0.5 flex-1 min-w-0 pr-2 pb-1">
@@ -2827,6 +3433,19 @@ const Home = () => {
                                                                         }}
                                                                         className="flex items-center gap-1 text-textSecondary text-xs hover:text-textPrimary hover:bg-glass-hover px-1.5 py-0.5 -mx-1.5 -my-0.5 rounded transition-all cursor-pointer text-left focus:outline-none w-max max-w-full"
                                                                     >
+                                                                        {/* Channel avatar. Resolved per platform; falls back to a
+                                                                            monogram rather than a broken image or a foreign
+                                                                            platform's default picture. */}
+                                                                        {/* No placeholder when a platform ships no avatar: a row of
+                                                                            identical grey monograms is noise, not information. */}
+                                                                        {(stream.profile_image_url || cardAvatars[streamKey(stream)]) && (
+                                                                            <img
+                                                                                loading="lazy"
+                                                                                src={stream.profile_image_url || cardAvatars[streamKey(stream)]}
+                                                                                alt=""
+                                                                                className="w-4 h-4 rounded-full object-cover flex-shrink-0 ring-1 ring-borderSubtle"
+                                                                            />
+                                                                        )}
                                                                         <span className="truncate">{stream.user_name}</span>
                                                                         {stream.broadcaster_type === 'partner' && (
                                                                             <svg className="w-3 h-3 flex-shrink-0" viewBox="0 0 16 16" fill="#9146FF">
@@ -2858,10 +3477,34 @@ const Home = () => {
                                                                     </div>
                                                                 </div>
 
+                                                                {/* Follow toggle for platforms with no follow API of
+                                                                    their own — StreamNook keeps the list. Shown on every
+                                                                    tab, since the platform's directory is where you find
+                                                                    channels to follow in the first place. */}
+                                                                {/* FOLLOW, and only where following is the question — a
+                                                                    platform's directory or search. On the Following tab every
+                                                                    row is already followed, so a filled heart on each would
+                                                                    say nothing; that tab gets the favourite toggle instead,
+                                                                    exactly like Twitch's. Plus (not a heart) so it never reads
+                                                                    as the favourite control. */}
+                                                                {isProviderView && activeTab !== 'following' && (
+                                                                    <Tooltip content={isProviderFollowed(stream) ? `Unfollow on ${providerLabel(streamProvider(stream))}` : `Follow on ${providerLabel(streamProvider(stream))}`} side="top">
+                                                                    <button
+                                                                        onClick={(e) => handleProviderFollowClick(e, stream)}
+                                                                        className="p-1 flex items-center justify-center bg-transparent transition-transform duration-300 hover:scale-110 active:scale-95"
+                                                                    >
+                                                                        {isProviderFollowed(stream) ? (
+                                                                            <Check size={16} className="text-accent" strokeWidth={2.5} />
+                                                                        ) : (
+                                                                            <Plus size={16} className="text-textSecondary hover:text-textPrimary opacity-0 group-hover:opacity-100 transition-all duration-300" strokeWidth={2.5} />
+                                                                        )}
+                                                                    </button>
+                                                                    </Tooltip>
+                                                                )}
                                                                 {activeTab === 'following' && (
                                                                     <Tooltip content={isFavorite ? 'Remove from favorites' : 'Add to favorites'} side="top">
                                                                     <button
-                                                                        onClick={(e) => handleFavoriteClick(e, stream.user_id)}
+                                                                        onClick={(e) => handleFavoriteClick(e, favoriteIdOf(stream))}
                                                                         className={`p-1 flex items-center justify-center bg-transparent transition-transform duration-300 hover:scale-110 active:scale-95`}
                                                                     >
                                                                         <Heart
@@ -2869,9 +3512,23 @@ const Home = () => {
                                                                             fill={isFavorite ? "url(#glass-heart-fill)" : "none"}
                                                                             stroke={isFavorite ? "url(#glass-heart-stroke)" : "currentColor"}
                                                                             strokeWidth={isFavorite ? 1.5 : 2}
-                                                                            className={`transition-all duration-300 ${isFavorite ? 'drop-shadow-[0_4px_8px_color-mix(in_srgb,var(--color-highlight-pink)_50%,transparent)]' : 'text-textSecondary hover:text-textPrimary opacity-0 group-hover:opacity-100'} ${animatingHearts.has(stream.user_id) ? 'animate-heart-break' : ''}`}
+                                                                            className={`transition-all duration-300 ${isFavorite ? 'drop-shadow-[0_4px_8px_color-mix(in_srgb,var(--color-highlight-pink)_50%,transparent)]' : 'text-textSecondary hover:text-textPrimary opacity-0 group-hover:opacity-100'} ${animatingHearts.has(favoriteIdOf(stream)) ? 'animate-heart-break' : ''}`}
                                                                         />
                                                                     </button>
+                                                                    </Tooltip>
+                                                                )}
+                                                                {/* Platform, in the card's bottom-right corner — on the card
+                                                                    itself, not over the preview, where it would compete with
+                                                                    the artwork. Bare mark, no chip or button: at this size
+                                                                    these read by colour, and a container would make a passive
+                                                                    label look clickable. Shown ONLY while the grid is mixed,
+                                                                    and then on EVERY card including Twitch, since with
+                                                                    platforms mixed an unmarked card is a guess. */}
+                                                                {isUnifiedView && (
+                                                                    <Tooltip content={providerLabel(streamProvider(stream))} side="top">
+                                                                        <span className="flex flex-shrink-0 items-center pb-1 pl-1 opacity-80">
+                                                                            <ProviderLogo provider={streamProvider(stream)} size={13} />
+                                                                        </span>
                                                                     </Tooltip>
                                                                 )}
                                                             </div>
@@ -2881,11 +3538,15 @@ const Home = () => {
                                             );
                                         })();
                                     })}
+                                    </AnimatePresence>
                                     </div>
                                 )}
 
                                 {/* Offline Followed Channels Section */}
-                                {activeTab === 'following' && offlineFollowedChannels.length > 0 && (
+                                {/* Twitch's offline follows. Hidden while scoped to another
+                                    platform — they are Twitch channels, and listing them
+                                    under a Kick Following tab is simply the wrong list. */}
+                                {activeTab === 'following' && offlineChannels.length > 0 && (
                                     <div className={displayStreams.length > 0 ? "mt-6 pt-4 relative" : "pt-2"}>
                                         {displayStreams.length > 0 && (
                                             <div className="absolute top-0 left-0 right-0 h-px bg-borderSubtle/30" />
@@ -2897,7 +3558,7 @@ const Home = () => {
                                             </h3>
                                         </div>
                                         <div className="flex flex-wrap gap-3 px-2 pb-6 relative z-0 mt-2">
-                                            {[...offlineFollowedChannels].sort((a, b) => {
+                                            {[...offlineChannels].sort((a, b) => {
                                                 const timeA = offlineLastBroadcasts[a.id] ? new Date(offlineLastBroadcasts[a.id]!).getTime() : 0;
                                                 const timeB = offlineLastBroadcasts[b.id] ? new Date(offlineLastBroadcasts[b.id]!).getTime() : 0;
                                                 return timeB - timeA;
@@ -2919,17 +3580,30 @@ const Home = () => {
 
                                                 return (
                                                     <div
-                                                        key={user.id}
+                                                        // Composite key: this list now mixes platforms, and a bare
+                                                        // platform id can collide across them.
+                                                        key={streamKey(user)}
+                                                        // Tags this card for the visibility observer that drives
+                                                        // avatar resolution.
+                                                        data-avatar-key={streamKey(user)}
                                                         className="relative group w-[180px] sm:w-[200px] rounded-xl overflow-hidden glass-panel border border-borderSubtle hover:border-white/20 transition-all shadow-sm"
                                                     >
                                                         {/* Base Card Content */}
                                                         <div className="w-full flex items-center gap-3 px-3 py-2">
                                                             <div className="w-10 h-10 rounded-full bg-glass flex items-center justify-center overflow-hidden ring-1 ring-borderSubtle group-hover:ring-accent/40 flex-shrink-0 relative transition-all">
-                                                                {user.thumbnail_url ? (
-                                                                    <img src={user.thumbnail_url} alt={user.user_name} className="w-full h-full object-cover" />
-                                                                ) : (
-                                                                    <User size={14} className="text-textSecondary" />
-                                                                )}
+                                                                {(() => {
+                                                                    // Twitch rows carry a thumbnail; provider follows carry
+                                                                    // nothing, so their avatar comes from the resolver.
+                                                                    const offlineAvatar =
+                                                                        user.profile_image_url ||
+                                                                        cardAvatars[streamKey(user)] ||
+                                                                        user.thumbnail_url;
+                                                                    return offlineAvatar ? (
+                                                                        <img src={offlineAvatar} alt={user.user_name} className="w-full h-full object-cover" />
+                                                                    ) : (
+                                                                        <User size={14} className="text-textSecondary" />
+                                                                    );
+                                                                })()}
                                                             </div>
                                                             <div className="flex-1 min-w-0 transition-opacity duration-200">
                                                                 <h4 className="text-sm font-semibold text-textPrimary truncate transition-colors">
@@ -2941,7 +3615,11 @@ const Home = () => {
                                                             </div>
                                                         </div>
 
-                                                        {/* Action Overlay (Optimized - No blur on hidden elements) */}
+                                                        {/* Action Overlay (Optimized - No blur on hidden elements).
+                                                            Twitch only: "Watch VOD" starts Twitch's offline-chat mode
+                                                            and the profile modal is Twitch-shaped, so neither works for
+                                                            a provider channel. Better no action than a broken one. */}
+                                                        {streamProvider(user) === 'twitch' && (
                                                         <div className="absolute inset-0 bg-[#0c0c0d]/90 opacity-0 group-hover:opacity-100 transition-all duration-200 flex items-center justify-center gap-2 z-10">
                                                             <button
                                                                 onClick={(e) => {
@@ -2968,6 +3646,7 @@ const Home = () => {
                                                                 </button>
                                                             </Tooltip>
                                                         </div>
+                                                        )}
                                                     </div>
                                                 );
                                             })}
