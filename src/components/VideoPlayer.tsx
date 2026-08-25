@@ -8,8 +8,11 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { Loader2, RefreshCcw, Home, LayoutGrid, Shield, ShieldCheck, ShieldAlert, Clapperboard, Music, Share2, Check } from 'lucide-react';
 import { Heart, HeartBreak, ArrowLeft, X as XIcon } from 'phosphor-react';
 import { useAppStore } from '../stores/AppStore';
+import { streamProvider } from '../utils/streamProvider';
+import { platformTerms } from '../utils/platformTerms';
 import { useContextMenuStore } from '../stores/contextMenuStore';
 import { buildShareUrl } from '../utils/shareLink';
+import { playerOverlayButtonOn } from '../utils/playerOverlayButtons';
 import { usemultiNookStore } from '../stores/multiNookStore';
 import { useChannelSocial } from '../hooks/useChannelSocial';
 import StreamTitleWithEmojis from './StreamTitleWithEmojis';
@@ -21,7 +24,7 @@ import { qualitiesEquivalent } from '../utils/quality';
 
 import { Logger } from '../utils/logger';
 import { syncTauriWindowFullscreen } from '../utils/windowFullscreen';
-import { startLatencyGovernor } from '../utils/liveLatencyGovernor';
+import { startLatencyGovernor, DEFAULT_LATENCY_BAND } from '../utils/liveLatencyGovernor';
 import { LL_DISPLAY_CALIBRATION, LL_TARGET_DEFAULT } from '../utils/latency';
 import { startLLDiagnostics, stopLLDiagnostics, llDiagNote, isLLDiagEnabled } from '../utils/llDiagnostics';
 import {
@@ -35,6 +38,17 @@ import { Fader, Toggle } from './AudioBoostFaders';
 import { open as openExternalUrl } from '@tauri-apps/plugin-shell';
 import { setActiveVideo } from '../utils/activeVideo';
 import { recognizeNowPlaying, announceSong } from '../utils/songId';
+import {
+  ignoresPlayerMouse,
+  createWheelAccumulator,
+  stepVolume,
+  toggleVolumeMute,
+  aboutRevealNeedsShift,
+  scrollVolumeOn,
+  WHEEL_VOLUME_STEP,
+} from '../utils/playerMouseControls';
+import { PlayerVolumeOsd } from './PlayerVolumeOsd';
+import { useVolumeOsd } from '../hooks/useVolumeOsd';
 
 // Paint the Audio Boost toggle that gets injected into Plyr's control bar so it
 // reflects on/off. The `is-active` class lights it up as an accent chip (fill +
@@ -57,24 +71,65 @@ function paintAudioBoostButton(btn: Element | null, on: boolean): void {
 // [base, base + 2] so it never drops below the user's target nor runs away above it.
 // Version the store: when a stall-causing pipeline bug is fixed, cushions learned from
 // those stalls are poisoned lessons; bump to orphan and re-learn.
-const llCushionKey = (channel: string) => `streamnook.ll-cushion.v4.${channel.toLowerCase()}`;
-function learnedLLCushion(channel: string | undefined, base: number): number {
+// Namespaced by PLATFORM: a Kick "xqc" and a Twitch "xqc" are different streams
+// with different segment lengths, and a shared key would hand one the other's
+// learned cushion.
+const llCushionKey = (channel: string, provider = 'twitch') =>
+  `streamnook.ll-cushion.v4.${provider}.${channel.toLowerCase()}`;
+/** Segments back from the live edge to sit on a non-Twitch stream, and the bounds
+ *  that keeps it inside. hls.js's own default is 3, which is the right shape: it
+ *  scales with the platform's segment length instead of assuming Twitch's. */
+// 1.6 segments, not 3. Three segments is hls.js's conservative default and on
+// YouTube's ~5s segments it parked the viewer 15s behind live. A whole segment
+// must exist before it can be fetched at all, so ~1.5 is the practical floor for
+// plain (non-LL) HLS; sitting just past it is the tightest ride that still has
+// something in reserve. The stall ramp below is what makes this safe: a channel
+// that cannot sustain it climbs until it is smooth, and remembers.
+const PROVIDER_LIVE_SYNC_SEGMENTS = 1.6;
+const PROVIDER_LIVE_SYNC_MIN = 4;
+const PROVIDER_LIVE_SYNC_MAX = 30;
+/** How far above its computed base a provider cushion may ramp on stalls. */
+const PROVIDER_LIVE_SYNC_HEADROOM = 6;
+/** Used until the manifest reveals the real segment length. Sized for YouTube's
+ *  ~5s segments, which is the longest of the platforms in play. */
+const PROVIDER_LIVE_SYNC_FALLBACK = 8;
+
+/** The live-edge cushion for a non-Twitch stream, from its real segment length. */
+function providerLiveSync(targetDuration: number | undefined): number {
+  if (!targetDuration || !Number.isFinite(targetDuration) || targetDuration <= 0) {
+    return PROVIDER_LIVE_SYNC_FALLBACK;
+  }
+  const want = targetDuration * PROVIDER_LIVE_SYNC_SEGMENTS;
+  return Math.min(PROVIDER_LIVE_SYNC_MAX, Math.max(PROVIDER_LIVE_SYNC_MIN, want));
+}
+
+function learnedLLCushion(
+  channel: string | undefined,
+  base: number,
+  provider = 'twitch',
+  headroom = 2,
+): number {
   if (!channel) return base;
   try {
-    const raw = localStorage.getItem(llCushionKey(channel));
+    const raw = localStorage.getItem(llCushionKey(channel, provider));
     if (!raw) return base;
     const { c, t } = JSON.parse(raw) as { c: number; t: number };
     if (!Number.isFinite(c) || !Number.isFinite(t)) return base;
+    // Decay back toward the base half a second per day, so a channel that was
+    // once unstable is retried rather than permanently penalised.
     const days = Math.max(0, (Date.now() - t) / 86_400_000);
-    return Math.max(base, Math.min(base + 2, c - 0.5 * days));
+    return Math.max(base, Math.min(base + headroom, c - 0.5 * days));
   } catch {
     return base;
   }
 }
-function rememberLLCushion(channel: string | undefined, cushion: number) {
+function rememberLLCushion(channel: string | undefined, cushion: number, provider = 'twitch') {
   if (!channel) return;
   try {
-    localStorage.setItem(llCushionKey(channel), JSON.stringify({ c: cushion, t: Date.now() }));
+    localStorage.setItem(
+      llCushionKey(channel, provider),
+      JSON.stringify({ c: cushion, t: Date.now() }),
+    );
   } catch {
     /* storage full/blocked: the session keeps its in-memory value */
   }
@@ -115,11 +170,21 @@ const VideoPlayer = () => {
       originalMediaUrl: s.originalMediaUrl,
     })),
   );
+  // Which platform is playing. Twitch runs the full path below; the ad-source
+  // badge, clipping, drops, entitlement and the low-latency origin are all
+  // Twitch-contractual and stay gated on this.
+  const isTwitchStream = streamProvider(currentStream) === 'twitch';
+  // Platform vocabulary. On YouTube the free relationship is "Subscribe" and the
+  // paid one is "Join", the inverse of Twitch's words, so a button labelled
+  // "Subscribe" there would point a viewer at the paid page.
+  const terms = platformTerms(streamProvider(currentStream));
   // Clippable: a live broadcast, or any VOD that's loaded — including the latest
   // VOD auto-loaded into the offline-chat space (still currentMediaType
   // 'offline_chat', but a real VOD is playing, exposed via originalMediaUrl).
+  // Clip creation is a Helix call, so it is Twitch-only.
   const canClip =
-    currentMediaType === 'live' || (!!originalMediaUrl && /\/videos\/\d+/.test(originalMediaUrl));
+    isTwitchStream &&
+    (currentMediaType === 'live' || (!!originalMediaUrl && /\/videos\/\d+/.test(originalMediaUrl)));
   // A clip is playing in the centered overlay modal. The live stream keeps
   // playing underneath, so mute it while the modal is open to avoid two audio
   // tracks at once; restore the prior mute state on close.
@@ -135,6 +200,10 @@ const VideoPlayer = () => {
   // This prevents player recreation when volume/muted settings change
   const playerSettingsRef = useRef(playerSettings);
   playerSettingsRef.current = playerSettings;
+  // Volume readout for mouse-driven changes, and the wheel accumulator that
+  // turns a trackpad's stream of tiny deltas into whole volume steps.
+  const { osd, showOsd } = useVolumeOsd();
+  const wheelAccumRef = useRef(createWheelAccumulator());
   // Store isAutoSwitching in a ref so createPlayer can access the latest value
   // without triggering function recreation (which causes black screen/audio glitch)
   const isAutoSwitchingRef = useRef(isAutoSwitching);
@@ -343,6 +412,9 @@ const VideoPlayer = () => {
     cumulativeMonths,
     subscriberBadgeUrl,
     handleSubscribeClick,
+    offersMembership,
+    membershipTier,
+    membershipDuration,
   } = useChannelSocial({
     userId: currentStream?.user_id,
     userLogin: currentStream?.user_login,
@@ -393,7 +465,7 @@ const VideoPlayer = () => {
   // Which overlay action buttons the user keeps (undefined = all). Each button
   // still respects its own context gate below (clippable, live-only, etc.).
   const overlayButtonOn = (id: string) =>
-    !settings.player_overlay_buttons || settings.player_overlay_buttons.includes(id);
+    playerOverlayButtonOn(settings.player_overlay_buttons, id);
 
   // Share the currently-playing channel. Copies the streamnook.app/w/<channel>
   // link, then flips the button to a check for a beat as confirmation.
@@ -793,10 +865,16 @@ const VideoPlayer = () => {
       // backend origin kill switch, so this single signal already reflects it: when the
       // setting is off (or the channel isn't low-latency) the origin is inactive and this
       // is false, and we use the stable whole-segment path (cushion + governor).
+      // Skipped entirely for non-Twitch streams: the origin keys on Twitch's
+      // prefetch tags, so it is never active for them and the probe would only
+      // cost a round trip to reach the same answer. Read at call time (not from
+      // the render closure) so this can never act on a stale platform.
       let isLowLatencyChannel = false;
-      try {
-        isLowLatencyChannel = await invoke<boolean>('get_stream_low_latency');
-      } catch { /* command unavailable / stream gone */ }
+      if (streamProvider(useAppStore.getState().currentStream) === 'twitch') {
+        try {
+          isLowLatencyChannel = await invoke<boolean>('get_stream_low_latency');
+        } catch { /* command unavailable / stream gone */ }
+      }
       // Superseded while awaiting the probe: a newer invocation (or teardown)
       // owns the element now. Constructing would create the zombie player.
       if (seq !== createSeqRef.current) {
@@ -819,6 +897,14 @@ const VideoPlayer = () => {
         : llTargetDisplayed;
 
       // Create HLS.js instance with optimized settings
+      // Read from the store, not the closure: createPlayer is memoized on
+      // [streamUrl] alone to keep its identity stable, so a captured render value
+      // could go stale. Same pattern as the provider check above.
+      const playbackProvider = streamProvider(useAppStore.getState().currentStream);
+      const isTwitchPlayback = playbackProvider === 'twitch';
+      // Provider cushions are learned per channel exactly like Twitch's. Tracked
+      // here so the LEVEL_LOADED correction and the stall ramp share one base.
+      let providerCushionBase = PROVIDER_LIVE_SYNC_FALLBACK;
       const hls = new Hls({
         // A custom logger sink ONLY when diagnostics are enabled; otherwise
         // `false` so hls.js does zero internal logging (no per-line string
@@ -886,7 +972,27 @@ const VideoPlayer = () => {
         // delivery jitter), so a capable channel/system holds the gap and a jittery one
         // settles where it's smooth. The Low Latency engine (when on) is what lets the
         // lowest gaps stay smooth on supported channels; without it, low gaps self-limit.
-        liveSyncDuration: learnedLLCushion(currentStream?.user_login, llTargetRaw),
+        // Twitch's cushion is a per-channel LEARNED value driven by the viewer's Live
+        // Edge Gap. Neither half of that transfers to another platform: the learning
+        // is keyed by channel and a YouTube stream is addressed by a VIDEO id that
+        // changes every broadcast, and the gap itself is tuned against Twitch's ~2s
+        // segments. Applied to YouTube's ~5s segments it asks the player to sit less
+        // than one segment from the edge, which is why the playhead was observed
+        // riding the buffered end with nothing in reserve.
+        //
+        // Non-Twitch streams get a segment-COUNT cushion instead, refined from the
+        // real target duration once the manifest lands (see LEVEL_LOADED below).
+        // This is also what the latency governor targets: its default `getTarget`
+        // reads `hls.config.liveSyncDuration`, so a too-small value here was being
+        // actively enforced rather than merely allowed.
+        liveSyncDuration: isTwitchPlayback
+          ? learnedLLCushion(currentStream?.user_login, llTargetRaw)
+          : learnedLLCushion(
+              currentStream?.user_login,
+              PROVIDER_LIVE_SYNC_FALLBACK,
+              playbackProvider,
+              PROVIDER_LIVE_SYNC_HEADROOM,
+            ),
         liveMaxLatencyDuration: 60, // Capped to 60s to allow GC. Prevents holding massive 10min TS buffers in RAM. Must stay > liveSyncDuration.
         // 1 = hls.js's latency controller is fully inert on EVERY path (its rate is
         // quantized to 0.05 steps — dist ~32618 — and each abrupt step is audible
@@ -947,6 +1053,9 @@ const VideoPlayer = () => {
       // maxLiveSyncPlaybackRate: 1 — its 0.05-quantized rate steps are audible).
       // LL channels get the gentle Twitch-parity profile: 1.03 ceiling with a
       // gradual ramp, engaging only past the delivery-jitter band.
+      // Real segment length, learned from the first media playlist. Zero until
+      // then, which keeps the governor on its default band.
+      let segmentSeconds = 0;
       latencyGovernorStopRef.current = isLowLatencyChannel
         ? startLatencyGovernor(hls, video, {
             label: 'solo-ll',
@@ -979,8 +1088,54 @@ const VideoPlayer = () => {
           })
         : startLatencyGovernor(hls, video, {
             label: 'solo',
+            // The band has to clear one whole segment. Delivery adds a segment
+            // at a time, so a band narrower than that is overshot on EVERY
+            // arrival: the buffer crosses the threshold, the rate goes up, the
+            // buffer drains back under, the rate goes down, and it never
+            // settles. Observed on a 2s-segment YouTube stream as a 1.000/1.050
+            // flip roughly every two seconds. Segment length is only known once
+            // a playlist lands, so this is read per tick rather than fixed.
+            band: () =>
+              segmentSeconds > 0
+                ? Math.max(DEFAULT_LATENCY_BAND, segmentSeconds * 1.5)
+                : DEFAULT_LATENCY_BAND,
+            // And when it does engage, get there gradually. Without a ramp the
+            // rate steps the whole way in one tick, which on a 2s cadence is a
+            // 5% jump every couple of seconds — the same audible stepping the
+            // low-latency profile above uses `rampStep` to avoid. Left off for
+            // Twitch (segmentSeconds stays 0 there), whose tuning is unchanged.
+            rampStep: () => (segmentSeconds > 0 ? 0.01 : 0),
             log: Logger.debug,
           });
+
+      // A platform's real segment length is only known once a media playlist lands,
+      // so the cushion set at construction is a fallback. Correct it here, and only
+      // for non-Twitch streams: Twitch's is the viewer's learned Live Edge Gap and
+      // must not be overwritten. The governor re-reads this every tick, so raising
+      // it takes effect without restarting anything.
+      if (!isTwitchPlayback) {
+        hls.once(Hls.Events.LEVEL_LOADED, (_e, data) => {
+          const target = data?.details?.targetduration;
+          // Also what the governor's band is sized against; see above.
+          if (typeof target === 'number' && target > 0) segmentSeconds = target;
+          providerCushionBase = providerLiveSync(target);
+          // Anything this channel had to back off to previously wins over the
+          // fresh base, so a known-wobbly stream doesn't re-discover its stalls
+          // from scratch every session.
+          const cushion = learnedLLCushion(
+            currentStream?.user_login,
+            providerCushionBase,
+            playbackProvider,
+            PROVIDER_LIVE_SYNC_HEADROOM,
+          );
+          if (cushion !== hls.config.liveSyncDuration) {
+            hls.config.liveSyncDuration = cushion;
+            Logger.debug(
+              `[player] provider live cushion ${cushion}s (base ${providerCushionBase}s, targetDuration=${target ?? 'unknown'})`,
+            );
+          }
+        });
+      }
 
       // Behind-live recovery watchdog (LL path only). A transient upstream stall
       // (Twitch's CDN pausing the in-progress segment for >cushion seconds) drains the
@@ -1273,22 +1428,34 @@ const VideoPlayer = () => {
             // consumed at the higher target — no seek, no visible action.
             // Session-scoped on purpose: a channel that stalled once will
             // likely wobble again, so the cushion does not decay back.
-            if (isLowLatencyChannel) {
+            // Twitch LL and every provider stream both ride close to the edge, so
+            // both back off the same way: climb on a stall, remember it, and let
+            // it decay back over days. Only Twitch's NON-LL path is excluded,
+            // where the cushion is the viewer's own setting rather than something
+            // we discovered.
+            if (isLowLatencyChannel || !isTwitchPlayback) {
+              const fallbackTarget = isTwitchPlayback ? llTargetRaw : providerCushionBase;
               const cur =
                 typeof hls.config.liveSyncDuration === 'number' &&
                 Number.isFinite(hls.config.liveSyncDuration)
                   ? hls.config.liveSyncDuration
-                  : llTargetRaw;
-              // Never raise more than ~2s above the viewer's chosen target.
-              const cap = llTargetRaw + 2;
+                  : fallbackTarget;
+              // Providers get more headroom than Twitch LL: their segments are
+              // whole (no parts), so recovery needs a bigger reserve.
+              const cap =
+                fallbackTarget + (isTwitchPlayback ? 2 : PROVIDER_LIVE_SYNC_HEADROOM);
               if (cur < cap) {
                 hls.config.liveSyncDuration = Math.min(cap, cur + 0.5);
                 Logger.debug(
-                  `[HLS] LL stall: cushion ${cur.toFixed(1)}s -> ${hls.config.liveSyncDuration.toFixed(1)}s`,
+                  `[HLS] stall: cushion ${cur.toFixed(1)}s -> ${hls.config.liveSyncDuration.toFixed(1)}s`,
                 );
                 // Remember per channel so the next session starts here instead
                 // of re-discovering the wobble one stall at a time.
-                rememberLLCushion(currentStream?.user_login, hls.config.liveSyncDuration);
+                rememberLLCushion(
+                  currentStream?.user_login,
+                  hls.config.liveSyncDuration,
+                  playbackProvider,
+                );
               }
             }
 
@@ -1862,13 +2029,15 @@ const VideoPlayer = () => {
         if (p) p.muted = !p.muted;
       },
       toggleFullscreen: () => playerRef.current?.fullscreen.toggle(),
+      // Shares stepVolume with the wheel so the hotkey and the mouse can't drift
+      // apart on step size or on what happens to mute at the rails.
       volumeUp: () => {
         const p = playerRef.current;
-        if (p) p.volume = Math.min(1, Math.round((p.volume + 0.05) * 100) / 100);
+        if (p) stepVolume(p, 1, WHEEL_VOLUME_STEP);
       },
       volumeDown: () => {
         const p = playerRef.current;
-        if (p) p.volume = Math.max(0, Math.round((p.volume - 0.05) * 100) / 100);
+        if (p) stepVolume(p, -1, WHEEL_VOLUME_STEP);
       },
       seekForward: () => playerRef.current?.forward(10),
       seekBackward: () => playerRef.current?.rewind(10),
@@ -1932,6 +2101,83 @@ const VideoPlayer = () => {
       video.removeEventListener('dblclick', onDblClick);
     };
   }, []);
+
+  // Mouse volume: wheel to change it, middle click to mute. One-handed control
+  // for people who don't want to reach for the keyboard.
+  //
+  // Listeners sit on the player container and nowhere else, so chat, the
+  // sidebar, settings and every menu keep their own scrolling — they aren't in
+  // this subtree at all. Inside the subtree, ignoresPlayerMouse steps aside for
+  // Plyr's menus and its volume slider (which runs its own wheel handler).
+  //
+  // Registered natively with passive: false because React's onWheel is passive
+  // at the root, where preventDefault does nothing. Settings are read from a ref
+  // so this stays mounted for the component's life, like the click handler above.
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+
+    // Plyr for live/VOD; the raw element for clips, which use native controls
+    // and have no Plyr instance.
+    const volumeTarget = () => playerRef.current ?? videoRef.current;
+
+    const onWheel = (e: WheelEvent) => {
+      const s = playerSettingsRef.current;
+      // Shift claims the wheel for the channel About reveal whenever both
+      // gestures are enabled. Return without consuming so the event bubbles up
+      // to ChannelAboutReveal, which owns that half.
+      if (e.shiftKey && aboutRevealNeedsShift(s)) return;
+      if (!scrollVolumeOn(s)) return;
+      // A purely horizontal scroll isn't ours. Chromium turns Shift + wheel into
+      // one, so this also keeps a shift-scroll from being swallowed to no effect
+      // when the About reveal is switched off.
+      if (e.deltaY === 0) return;
+      if (ignoresPlayerMouse(e.target)) return;
+      const target = volumeTarget();
+      if (!target) return;
+
+      // Consume the event even when the accumulator hasn't reached a whole step
+      // yet: a sub-notch trackpad nudge must not fall through to the channel
+      // About reveal listening on the wrapper above us.
+      e.preventDefault();
+      e.stopPropagation();
+
+      const steps = wheelAccumRef.current(e, performance.now());
+      if (steps === 0) return;
+      const next = stepVolume(target, steps, s?.wheel_volume_step ?? WHEEL_VOLUME_STEP);
+      showOsd(next.volume, next.muted);
+    };
+
+    // Suppress the middle-click autoscroll ring before it starts. Preventing the
+    // default here does not stop the auxclick that follows.
+    const onMouseDown = (e: MouseEvent) => {
+      if (e.button !== 1) return;
+      if (!(playerSettingsRef.current?.middle_click_mute ?? true)) return;
+      if (ignoresPlayerMouse(e.target)) return;
+      e.preventDefault();
+    };
+
+    const onAuxClick = (e: MouseEvent) => {
+      if (e.button !== 1) return;
+      if (!(playerSettingsRef.current?.middle_click_mute ?? true)) return;
+      if (ignoresPlayerMouse(e.target)) return;
+      const target = volumeTarget();
+      if (!target) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const next = toggleVolumeMute(target);
+      showOsd(next.volume, next.muted);
+    };
+
+    container.addEventListener('wheel', onWheel, { passive: false });
+    container.addEventListener('mousedown', onMouseDown, { capture: true });
+    container.addEventListener('auxclick', onAuxClick);
+    return () => {
+      container.removeEventListener('wheel', onWheel);
+      container.removeEventListener('mousedown', onMouseDown, { capture: true });
+      container.removeEventListener('auxclick', onAuxClick);
+    };
+  }, [showOsd]);
 
   // Build the quality menu once BOTH the quality list and the player are ready,
   // in whichever order they arrive. `playerReady` is state, so this re-runs when
@@ -2166,6 +2412,18 @@ const VideoPlayer = () => {
           Logger.debug(`[Video] Playing: ${video.videoWidth}x${video.videoHeight}, paused: ${video.paused}, readyState: ${video.readyState}`);
           Logger.debug(`[Video] Audio state: muted=${video.muted}, volume=${video.volume}`);
 
+          // Frames are on screen, so nothing is loading. The overlay is gated on
+          // the store's `isLoading` alone, and that flag covers the WHOLE start
+          // sequence: the stream url arrives early and the video begins, but the
+          // flag stays up through the rest of the session setup (stream info,
+          // EventSub, drops), which is why the loading widget could sit on top of
+          // a stream that was already playing. It also self-heals any start path
+          // that leaves the flag set. This is the one moment the answer is
+          // certain, so it is the right place to answer it.
+          if (useAppStore.getState().isLoading) {
+            useAppStore.setState({ isLoading: false });
+          }
+
           if (lastSuccessfulPlayRef.current === 0) {
             lastSuccessfulPlayRef.current = Date.now();
             Logger.debug('[Video] First successful playback recorded');
@@ -2349,20 +2607,10 @@ const VideoPlayer = () => {
                   </button>
                 </Tooltip>
               ) : (
-                <div className="flex gap-1.5 items-center pointer-events-auto shrink-0 mt-0.5">
-                  <Tooltip content="Keep Browsing" side="bottom" delay={200}>
-                    <button
-                      onClick={() => {
-                        setHomeActiveTab(isAuthenticated ? 'following' : 'recommended');
-                        toggleHome();
-                      }}
-                      className="p-2 glass-button rounded-lg"
-                      style={{ backdropFilter: 'blur(16px)' }}
-                    >
-                      <Home size={16} className="text-white drop-shadow-md" strokeWidth={2.5} />
-                    </button>
-                  </Tooltip>
-                </div>
+                // No home button here: the title bar owns the Home/Return
+                // toggle now, so it does not move between the overlay and the
+                // far side of the Home header depending on where you are.
+                null
               )
             )}
             <div className="min-w-0">
@@ -2450,8 +2698,8 @@ const VideoPlayer = () => {
                 : followLoading
                   ? 'Processing...'
                   : isFollowing
-                    ? `Unfollow ${currentStream.user_name}`
-                    : `Follow ${currentStream.user_name}`} side="bottom">
+                    ? `${terms.unfollow} ${currentStream.user_name}`
+                    : `${terms.follow} ${currentStream.user_name}`} side="bottom">
           <button
             onClick={handleFollowClick}
             disabled={followLoading || checkingFollowStatus}
@@ -2484,19 +2732,26 @@ const VideoPlayer = () => {
           )}
 
           {/* Subscribe Button */}
-          {overlayButtonOn('subscribe') && (
+          {/* Hidden when the channel sells no paid tier: most YouTube channels have
+              no memberships, and a Join button that leads nowhere is worse than no
+              button. Twitch and Kick always report true. */}
+          {overlayButtonOn('subscribe') && offersMembership && (
           <Tooltip content={isSubscribed
-                ? `Gift a sub to ${currentStream.user_name}'s community`
+                ? (membershipTier || membershipDuration
+                    // YouTube knows the tier and how long, which is more useful than
+                    // a generic gift prompt.
+                    ? [membershipTier, membershipDuration].filter(Boolean).join(' · ')
+                    : `${terms.paidGift} to ${currentStream.user_name}'s community`)
                 : hasSubHistory
-                  ? `Resubscribe to ${currentStream.user_name} (${cumulativeMonths + 1} months)`
-                  : `Subscribe to ${currentStream.user_name}`} side="bottom">
+                  ? `${terms.paidAgain} to ${currentStream.user_name} (${cumulativeMonths + 1} months)`
+                  : `${terms.paid} ${currentStream.user_name}`} side="bottom">
           <button
             onClick={handleSubscribeClick}
             className="flex items-center gap-2 px-4 py-2 glass-button text-white text-sm font-semibold transition-all duration-200"
             style={{ backdropFilter: 'blur(16px)' }}
           >
             <span>
-              {isSubscribed ? 'Gift Subs' : hasSubHistory ? 'Resubscribe' : 'Subscribe'}
+              {isSubscribed ? terms.paidGift : hasSubHistory ? terms.paidAgain : terms.paid}
             </span>
             {subscriberBadgeUrl ? (
               <img 
@@ -2577,8 +2832,10 @@ const VideoPlayer = () => {
           )}
 
           {/* Clips & VODs — opens this streamer's clip/VOD library. Text label,
-              no icon (the label speaks for itself, so no tooltip either). */}
-          {overlayButtonOn('clipsvods') && currentStream && currentStream.user_id && (
+              no icon (the label speaks for itself, so no tooltip either).
+              Twitch-only: the library is Helix clips + videos, so a provider
+              channel id would query an unrelated Twitch broadcaster. */}
+          {overlayButtonOn('clipsvods') && isTwitchStream && currentStream && currentStream.user_id && (
             <button
               onClick={() => openStreamerMedia(currentStream)}
               className="flex items-center justify-center px-3 py-2 glass-button rounded-lg text-sm font-semibold text-white hover:text-accent transition-colors duration-200"
@@ -2661,6 +2918,7 @@ const VideoPlayer = () => {
             onDoubleClick={(e) => e.stopPropagation()}
             onMouseDown={(e) => e.stopPropagation()}
             onContextMenu={(e) => e.preventDefault()}
+            data-no-wheel-volume
             className="liquid-glass-panel absolute bottom-16 right-3 z-[60] rounded-xl p-4"
             style={{ width: 'min(460px, calc(100% - 24px))' }}
           >
@@ -2709,6 +2967,10 @@ const VideoPlayer = () => {
           </motion.div>
         )}
       </AnimatePresence>
+
+      {/* Volume readout for wheel/middle-click changes. globals.css lifts it over
+          Plyr's fullscreen element, which is fixed at z-index 10000000. */}
+      <PlayerVolumeOsd osd={osd} boost={audioBoostEnabled ? resolvedBoost.gain : 1} />
     </div>
   );
 };

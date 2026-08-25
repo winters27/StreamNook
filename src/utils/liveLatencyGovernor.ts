@@ -34,8 +34,15 @@ export interface LatencyGovernorOptions {
   getTarget?: () => number;
   /** Max rate the governor will use to catch up. Keep < 1.25 (Plyr's lowest speed-up) so user selections are never fought. */
   ceiling?: number;
-  /** Seconds of forward buffer ABOVE target before the governor starts catching up. */
-  band?: number;
+  /**
+   * Seconds of forward buffer ABOVE target before the governor starts catching up.
+   *
+   * Must clear one whole segment on segment-delivered streams. Delivery adds a
+   * segment at a time, so a band narrower than that is overshot on every single
+   * arrival and the rate oscillates instead of ever settling. Pass a getter when
+   * the real segment length is only known once a playlist has landed.
+   */
+  band?: number | (() => number);
   /** Poll interval (ms). */
   tickMs?: number;
   /** Forward buffer beyond `target + dvrSlack` is treated as a deliberate DVR scrub-back and left alone. */
@@ -47,7 +54,7 @@ export interface LatencyGovernorOptions {
    * music) and read as a micro-hitch; a slide of ~0.01/tick is imperceptible.
    * Unset = legacy stepping (set the computed rate directly).
    */
-  rampStep?: number;
+  rampStep?: number | (() => number);
   /**
    * Low-buffer protection: when the forward buffer falls BELOW this (seconds),
    * ease the rate down toward `slowRate` so the playhead stops outrunning a
@@ -92,9 +99,12 @@ export interface LatencyGovernorOptions {
   log?: (msg: string) => void;
 }
 
+/** Fallback band, used until a stream reports its real segment length. */
+export const DEFAULT_LATENCY_BAND = 1.5;
+
 const DEFAULTS = {
   ceiling: 1.05,
-  band: 1.5,
+  band: DEFAULT_LATENCY_BAND,
   tickMs: 2000,
   dvrSlack: 25,
 };
@@ -120,7 +130,8 @@ export function startLatencyGovernor(
   options: LatencyGovernorOptions = {},
 ): () => void {
   const ceiling = options.ceiling ?? DEFAULTS.ceiling;
-  const band = options.band ?? DEFAULTS.band;
+  const bandOf = () =>
+    typeof options.band === 'function' ? options.band() : (options.band ?? DEFAULTS.band);
   const tickMs = options.tickMs ?? DEFAULTS.tickMs;
   const dvrSlack = options.dvrSlack ?? DEFAULTS.dvrSlack;
   const floor = options.floor;
@@ -152,6 +163,7 @@ export function startLatencyGovernor(
     if (rate < lowestOwned - 0.005 || rate > ceiling) return;
 
     const target = getTarget();
+    const band = bandOf();
     const fb = forwardBuffer(video);
 
     // A very large forward buffer means the user scrubbed back into the DVR window;
@@ -202,8 +214,10 @@ export function startLatencyGovernor(
           : usingLatency && excess < -band
             ? Math.min(1.0, Math.max(slowRate, 1 + gain * (excess + band)))
             : 1.0;
-    const next = options.rampStep
-      ? rate + Math.max(-options.rampStep, Math.min(options.rampStep, desired - rate))
+    const rampStep =
+      typeof options.rampStep === 'function' ? options.rampStep() : options.rampStep;
+    const next = rampStep
+      ? rate + Math.max(-rampStep, Math.min(rampStep, desired - rate))
       : desired;
     if (Math.abs(next - rate) > 0.0049) {
       // Round away float dust so repeated ramp arithmetic stays on clean values.
