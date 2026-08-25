@@ -376,6 +376,18 @@ pub struct EmoteService {
     cached_user_id: Arc<RwLock<Option<String>>>,
 }
 
+/// The `broadcaster_id` to send to Twitch's user-emotes endpoint, if any.
+///
+/// Helix rejects a non-numeric id outright, so anything else is dropped rather
+/// than sent and logged as an error.
+fn twitch_broadcaster_id<'a>(is_twitch: bool, channel_id: Option<&'a str>) -> Option<&'a str> {
+    let id = channel_id?;
+    if !is_twitch || id.is_empty() || !id.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    Some(id)
+}
+
 impl EmoteService {
     pub fn new() -> Self {
         Self {
@@ -398,9 +410,10 @@ impl EmoteService {
         channel_name: Option<String>,
         channel_id: Option<String>,
         access_token: Option<String>,
+        provider: Option<String>,
     ) -> Result<EmoteSet> {
         Ok(self
-            .fetch_channel_emotes_checked(channel_name, channel_id, access_token)
+            .fetch_channel_emotes_checked(channel_name, channel_id, access_token, provider)
             .await?
             .0)
     }
@@ -417,6 +430,9 @@ impl EmoteService {
         channel_name: Option<String>,
         channel_id: Option<String>,
         access_token: Option<String>,
+        // Which platform `channel_id` belongs to. None means Twitch, so every
+        // existing caller is unchanged.
+        provider: Option<String>,
     ) -> Result<(EmoteSet, bool)> {
         let cache_key = channel_id.clone().unwrap_or_else(|| "global".to_string());
 
@@ -433,9 +449,10 @@ impl EmoteService {
             }
         }
 
+        let is_twitch = provider.as_deref().unwrap_or("twitch") == "twitch";
         debug!(
-            "[EmoteService] Fetching emotes concurrently for channel: {:?}, ID: {:?}",
-            channel_name, channel_id
+            "[EmoteService] Fetching emotes concurrently for channel: {:?}, ID: {:?}, provider: {:?}",
+            channel_name, channel_id, provider
         );
 
         // Fetch all emote providers concurrently using tokio::join!
@@ -444,7 +461,21 @@ impl EmoteService {
             self.fetch_bttv_emotes(channel_name.clone(), channel_id.clone()),
             self.fetch_7tv_emotes(channel_name.clone(), channel_id.clone()),
             self.fetch_ffz_emotes(channel_name.clone()),
-            self.fetch_user_twitch_emotes(access_token.as_deref(), channel_id.as_deref())
+            // Twitch's `chat/emotes/user` takes a NUMERIC Twitch broadcaster_id, so a
+            // YouTube UC id makes it 400 ("value must be numeric") on every stream.
+            // The id is only meaningful for follower emotes on a Twitch channel, so
+            // it is simply omitted elsewhere: the call still returns the user's own
+            // global and subscription emotes, which is the correct result.
+            //
+            // The VALUE is checked, not just the `provider` flag. `provider` is
+            // optional and defaults to Twitch, so any caller that forgets to pass it
+            // while holding a non-Twitch id silently reintroduces the 400 — which is
+            // exactly how it came back after the flag alone was added. A shape the id
+            // can never legally have is not worth sending under any provider.
+            self.fetch_user_twitch_emotes(
+                access_token.as_deref(),
+                twitch_broadcaster_id(is_twitch, channel_id.as_deref()),
+            )
         );
 
         // Collect results (log errors but continue with available emotes)
@@ -1701,5 +1732,26 @@ mod tests {
         assert_eq!(e.is_zero_width, None);
         assert_eq!(e.modifier_flags, None);
         assert_eq!(e.ffz_sub_only, None);
+    }
+}
+
+#[cfg(test)]
+mod broadcaster_id_tests {
+    use super::twitch_broadcaster_id;
+
+    #[test]
+    fn keeps_a_numeric_twitch_id() {
+        assert_eq!(twitch_broadcaster_id(true, Some("71092938")), Some("71092938"));
+    }
+
+    #[test]
+    fn drops_ids_helix_would_reject() {
+        // A YouTube channel id under a caller that forgot to pass `provider`:
+        // the flag says Twitch, the value says otherwise, and the value wins.
+        assert_eq!(twitch_broadcaster_id(true, Some("UChNWxrTlmh4IRSevon1X93g")), None);
+        assert_eq!(twitch_broadcaster_id(true, Some("")), None);
+        assert_eq!(twitch_broadcaster_id(true, None), None);
+        // Correctly-flagged non-Twitch stays dropped even when it looks numeric.
+        assert_eq!(twitch_broadcaster_id(false, Some("12345")), None);
     }
 }

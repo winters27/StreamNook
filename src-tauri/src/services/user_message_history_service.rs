@@ -1,15 +1,15 @@
 use crate::models::chat_layout::ChatMessage;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::OnceLock;
 use tokio::sync::Mutex;
 
-const MAX_USERS: usize = 300;
-const MAX_MESSAGES_PER_USER: usize = 20;
+const MAX_USERS: usize = 1000;
+const MAX_MESSAGES_PER_USER: usize = 200;
 
 #[derive(Clone)]
 struct LruEntry {
-    messages: Vec<UserMessageSummary>,
+    messages: VecDeque<UserMessageSummary>,
     last_access: u64,
 }
 
@@ -18,8 +18,20 @@ struct LruEntry {
 /// Stores a compact summary of each chat message (id, content, timestamp, color)
 /// rather than the full `ChatMessage` struct. Profile cards only need those four
 /// fields to render their message timeline; badges, segments, and tags would be
-/// 1-3 KB per entry of wasted RAM. With the current caps this caches at most
-/// ~6,000 summaries (~1 MB) instead of the prior 50,000 full clones (50-150 MB).
+/// 1-3 KB per entry of wasted RAM.
+///
+/// The caps are a ceiling, not an allocation: a user costs only the messages
+/// they actually sent. A summary is ~200 bytes, so a busy channel with a couple
+/// dozen heavy chatters and several hundred light ones sits around 1-2 MB. The
+/// absolute worst case (every one of 1000 users hitting 200 messages) is ~40 MB
+/// and is not reachable in practice.
+///
+/// These caps are deliberately generous because they are what the profile card's
+/// message timeline can show for a channel where the viewer is NOT a moderator.
+/// Twitch only serves its own multi-year archive (`viewerCardModLogs`) to
+/// moderators of that channel, so for everywhere else this in-session buffer is
+/// the history. The previous 300x20 caps truncated heavy chatters to their last
+/// 20 messages and evicted early speakers entirely.
 pub struct UserMessageHistoryService {
     cache: Mutex<HashMap<String, LruEntry>>,
     access_counter: Mutex<u64>,
@@ -46,16 +58,22 @@ impl UserMessageHistoryService {
         let entry = cache
             .entry(user_id.to_string())
             .or_insert_with(|| LruEntry {
-                messages: Vec::with_capacity(MAX_MESSAGES_PER_USER),
+                // Grown on demand rather than preallocated: most chatters send a
+                // handful of messages, so reserving the full cap per user would
+                // cost far more than the entries themselves.
+                messages: VecDeque::new(),
                 last_access: current_access,
             });
 
         entry.last_access = current_access;
 
+        // pop_front is O(1); a Vec's remove(0) shifted every remaining element on
+        // each message once a user hit the cap, which matters at 200 per user in
+        // a fast chat.
         if entry.messages.len() >= MAX_MESSAGES_PER_USER {
-            entry.messages.remove(0);
+            entry.messages.pop_front();
         }
-        entry.messages.push(summary);
+        entry.messages.push_back(summary);
 
         if cache.len() > MAX_USERS {
             self.evict_lru(&mut cache);
@@ -71,7 +89,7 @@ impl UserMessageHistoryService {
 
         if let Some(entry) = cache.get_mut(user_id) {
             entry.last_access = current_access;
-            entry.messages.clone()
+            entry.messages.iter().cloned().collect()
         } else {
             Vec::new()
         }

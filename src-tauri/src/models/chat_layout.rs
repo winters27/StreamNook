@@ -103,6 +103,12 @@ pub enum MessageSegment {
         /// renderer applies these effects to the preceding emote.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         modifier_flags: Option<u32>,
+        /// Set on a 7TV PERSONAL emote — one belonging to the sender rather than
+        /// the room, which therefore renders in channels that never added it.
+        /// Carried so a renderer can offer to suppress them; absent means the
+        /// emote came from the channel's own sets.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        is_personal: Option<bool>,
     },
     Emoji {
         content: String,

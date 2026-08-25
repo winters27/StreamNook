@@ -147,6 +147,247 @@ const SESSION_FLAP_THRESHOLD_MS: u64 = 10_000;
 // JOINs from user actions.
 const JOIN_BURST_BUDGET: usize = 15;
 const JOIN_PACE_INTERVAL: std::time::Duration = std::time::Duration::from_millis(12_500);
+// A JOIN Twitch never acknowledged (no ROOMSTATE/USERSTATE/JOIN echo, no channel
+// message) is re-issued after this window. Twitch can silently drop JOINs (rate
+// limits, room-server hiccups); before this tracker existed such a channel stayed
+// deaf forever while the socket looked perfectly healthy.
+const JOIN_CONFIRM_TIMEOUT_MS: u64 = 12_000;
+const JOIN_MAX_ATTEMPTS: u32 = 3;
+const JOIN_WATCH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
+// After exhausting re-issues the watchdog drops the session so the supervisor
+// rebuilds and re-JOINs everything — but at most once per this window, so one
+// permanently unjoinable channel can't put chat in reconnect churn.
+const JOIN_DROP_COOLDOWN_MS: u64 = 300_000;
+// The read loop must never park forever inside message handling (Helix calls,
+// plugin hosts, file IO): past this the session is dropped as a detected failure
+// the supervisor heals, instead of a permanent undetectable freeze.
+const HANDLER_STALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+// JOIN acknowledgment tracking. CURRENT_CHANNELS stays the desired-state set;
+// this tracker holds the ACTUAL state: which desired channels the server has
+// acknowledged (ROOMSTATE/USERSTATE/JOIN echo/any channel message) and which
+// JOIN writes still await an ack. Per-session: cleared between supervisor
+// sessions and on stop, since a fresh socket re-JOINs everything.
+static JOIN_TRACKER: OnceLock<Mutex<JoinTracker>> = OnceLock::new();
+// pending-count mirror of the tracker, so the per-message hot path can skip the
+// tracker mutex entirely while no JOIN is awaiting confirmation.
+static JOIN_PENDING_HINT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+static IRC_JOINWATCH_ABORT: OnceLock<Mutex<Option<tokio::task::AbortHandle>>> = OnceLock::new();
+static LAST_JOIN_DROP_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+struct PendingJoin {
+    deadline_ms: u64,
+    attempts: u32,
+    // A nudge JOIN (frontend stale-watchdog probe on an already-joined channel)
+    // is never retried and never escalates: if Twitch doesn't re-ack it, the
+    // entry just lingers as an awaiting-confirm marker until session end.
+    nudge_only: bool,
+}
+
+#[derive(Default)]
+struct JoinTracker {
+    pending: HashMap<String, PendingJoin>,
+    confirmed: HashSet<String>,
+}
+
+impl JoinTracker {
+    /// Record a JOIN write. Re-recording the same key bumps its attempt count so
+    /// the watchdog can exhaust; `pace_slot_ms` defers the deadline for JOINs the
+    /// pacer only writes later, so pacing never reads as a lost JOIN.
+    fn record_sent(&mut self, key: &str, now_ms: u64, pace_slot_ms: u64, nudge_only: bool) {
+        let attempts = self.pending.get(key).map(|p| p.attempts).unwrap_or(0) + 1;
+        self.pending.insert(
+            key.to_string(),
+            PendingJoin {
+                deadline_ms: now_ms + JOIN_CONFIRM_TIMEOUT_MS + pace_slot_ms,
+                attempts,
+                nudge_only,
+            },
+        );
+    }
+
+    /// Any server frame for the channel proves membership. Returns true the
+    /// first time a channel becomes confirmed.
+    fn confirm(&mut self, key: &str) -> bool {
+        self.pending.remove(key);
+        self.confirmed.insert(key.to_string())
+    }
+
+    /// (confirmed, pending) for the key.
+    fn is_settled(&self, key: &str) -> (bool, bool) {
+        (
+            self.confirmed.contains(key),
+            self.pending.contains_key(key),
+        )
+    }
+
+    /// Non-nudge entries past their deadline: (key, attempts so far).
+    fn due(&self, now_ms: u64) -> Vec<(String, u32)> {
+        self.pending
+            .iter()
+            .filter(|(_, p)| !p.nudge_only && now_ms >= p.deadline_ms)
+            .map(|(k, p)| (k.clone(), p.attempts))
+            .collect()
+    }
+
+    fn drop_pending(&mut self, key: &str) {
+        self.pending.remove(key);
+    }
+
+    fn unconfirm(&mut self, key: &str) {
+        self.confirmed.remove(key);
+    }
+
+    fn forget(&mut self, key: &str) {
+        self.pending.remove(key);
+        self.confirmed.remove(key);
+    }
+
+    fn clear(&mut self) {
+        self.pending.clear();
+        self.confirmed.clear();
+    }
+}
+
+fn get_join_tracker() -> &'static Mutex<JoinTracker> {
+    JOIN_TRACKER.get_or_init(|| Mutex::new(JoinTracker::default()))
+}
+
+fn refresh_join_hint(t: &JoinTracker) {
+    JOIN_PENDING_HINT.store(t.pending.len(), std::sync::atomic::Ordering::Relaxed);
+}
+
+async fn tracker_record_sent(key: &str, pace_slot_ms: u64, nudge_only: bool) {
+    let mut t = get_join_tracker().lock().await;
+    t.record_sent(key, mono_ms(), pace_slot_ms, nudge_only);
+    refresh_join_hint(&t);
+}
+
+async fn confirm_join(key: &str) {
+    let mut t = get_join_tracker().lock().await;
+    if t.confirm(key) {
+        record_lifecycle(&format!("JOIN #{} confirmed", key));
+    }
+    refresh_join_hint(&t);
+}
+
+/// Hot-path confirm for per-message frames: one atomic load while nothing is
+/// pending (the overwhelmingly common state), the mutex only while JOINs are
+/// actually outstanding. ROOMSTATE provides the durable confirm either way.
+async fn confirm_join_if_pending(key: &str) {
+    if JOIN_PENDING_HINT.load(std::sync::atomic::Ordering::Relaxed) == 0 {
+        return;
+    }
+    confirm_join(key).await;
+}
+
+async fn tracker_forget(key: &str) {
+    let mut t = get_join_tracker().lock().await;
+    t.forget(key);
+    refresh_join_hint(&t);
+}
+
+async fn tracker_clear() {
+    let mut t = get_join_tracker().lock().await;
+    t.clear();
+    refresh_join_hint(&t);
+}
+
+/// Command-token parse of a JOIN frame (":nick!user@host JOIN #chan"), tags
+/// stripped. Strict on purpose: never match a PRIVMSG whose text contains the
+/// word. With twitch.tv/membership active, ANY user's JOIN for a channel proves
+/// we are in it (Twitch only relays membership for channels you have joined).
+fn parse_join_channel(line: &str) -> Option<String> {
+    let mut t = line.trim();
+    if t.starts_with('@') {
+        t = t.split_once(' ').map(|(_, rest)| rest)?;
+    }
+    let mut parts = t.split_whitespace();
+    let first = parts.next()?;
+    let (cmd, chan) = if first.starts_with(':') {
+        (parts.next()?, parts.next()?)
+    } else {
+        (first, parts.next()?)
+    };
+    if cmd != "JOIN" {
+        return None;
+    }
+    let chan = chan.trim_start_matches(':').trim_start_matches('#');
+    if chan.is_empty() {
+        return None;
+    }
+    Some(chan.to_lowercase())
+}
+
+/// Per-message side-effect payload for the ordered lane below.
+struct MessageSideEffects {
+    msg: ChatMessage,
+    add_history: bool,
+    /// Key the persisted history is stored under. Twitch uses the bare user id
+    /// (so existing entries keep resolving); other platforms are namespaced
+    /// `provider:id`, because platform id spaces overlap — Kick user 676 and
+    /// Twitch user 676 are different people and must not share a bucket.
+    history_key: String,
+}
+
+// Ordered side-effect lane: history LRU, chat logger (synchronous file IO), and
+// plugin fan-out ran ON the IRC read loop, so any of them stalling froze the
+// reader — undetectably, since sends kept working. One long-lived consumer
+// preserves chat-log line order; the read loop only pays an unbounded-channel
+// send per message.
+static SIDE_EFFECT_TX: OnceLock<tokio::sync::mpsc::UnboundedSender<MessageSideEffects>> =
+    OnceLock::new();
+
+fn side_effect_lane() -> &'static tokio::sync::mpsc::UnboundedSender<MessageSideEffects> {
+    SIDE_EFFECT_TX.get_or_init(|| {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<MessageSideEffects>();
+        tokio::spawn(async move {
+            while let Some(se) = rx.recv().await {
+                if se.add_history && !se.history_key.is_empty() {
+                    UserMessageHistoryService::global()
+                        .add_message(&se.history_key, &se.msg)
+                        .await;
+                }
+                ChatLoggerService::log_message(&se.msg);
+                if let Some(host) = PLUGIN_HOST.get() {
+                    if host.wants_chat_messages().await {
+                        host.emit_chat_message(chat_event_params(&se.msg)).await;
+                    }
+                }
+            }
+        });
+        tx
+    })
+}
+
+/// Run the shared per-message side effects (persisted user history, chat-log
+/// file write, plugin fan-out) for a message that did NOT come from the Twitch
+/// IRC reader.
+///
+/// Provider adapters publish straight onto the broadcast, which is what the UI
+/// reads, so their messages were never logged to file and never reached the
+/// persisted user history that the profile card's "messages" tab shows. Reusing
+/// this lane rather than calling the services directly keeps chat-log line order
+/// intact and keeps the file IO off the caller's task.
+pub fn run_message_side_effects(msg: ChatMessage) {
+    let add_history = !msg.user_id.is_empty();
+    let history_key = history_key_for(&msg);
+    let _ = side_effect_lane().send(MessageSideEffects {
+        msg,
+        add_history,
+        history_key,
+    });
+}
+
+/// The persisted-history key for a message: the bare id on Twitch, `provider:id`
+/// elsewhere. The frontend builds the same key when reading it back.
+fn history_key_for(msg: &ChatMessage) -> String {
+    if msg.provider.is_empty() || msg.provider == "twitch" {
+        msg.user_id.clone()
+    } else {
+        format!("{}:{}", msg.provider, msg.user_id)
+    }
+}
 
 fn get_start_lock() -> &'static Mutex<()> {
     START_LOCK.get_or_init(|| Mutex::new(()))
@@ -250,7 +491,12 @@ fn get_irc_heartbeat_abort() -> &'static Mutex<Option<tokio::task::AbortHandle>>
     IRC_HEARTBEAT_ABORT.get_or_init(|| Mutex::new(None))
 }
 
-/// Abort the ping + heartbeat keepalive tasks, if running. Idempotent.
+fn get_irc_joinwatch_abort() -> &'static Mutex<Option<tokio::task::AbortHandle>> {
+    IRC_JOINWATCH_ABORT.get_or_init(|| Mutex::new(None))
+}
+
+/// Abort the ping + heartbeat + JOIN-watchdog keepalive tasks, if running.
+/// Idempotent.
 async fn abort_keepalive_tasks() {
     if let Some(h) = get_irc_ping_abort().lock().await.take() {
         h.abort();
@@ -258,6 +504,35 @@ async fn abort_keepalive_tasks() {
     if let Some(h) = get_irc_heartbeat_abort().lock().await.take() {
         h.abort();
     }
+    if let Some(h) = get_irc_joinwatch_abort().lock().await.take() {
+        h.abort();
+    }
+}
+
+/// Send a frame to the local WS bridge, resolving the broadcaster AT CALL TIME.
+/// The bridge can be rebuilt mid-session (a dead warp task mints a fresh
+/// broadcast channel); a sender captured at session spawn keeps publishing into
+/// the dead one, which stuffed every message into MESSAGE_QUEUE — backlog drains
+/// on each refresh, then silence again. Returns whether a receiver got it.
+///
+/// `queue_on_fail` holds chat payloads for the next client attach. Status frames
+/// (HEARTBEAT, IRC_CONNECTED, IRC_RECONNECTING, ROOMSTATE, ...) must pass false:
+/// a stale status replayed from the queue later would lie to the frontend
+/// watchdog.
+async fn send_to_bridge(msg: String, queue_on_fail: bool) -> bool {
+    let tx = get_message_broadcaster().lock().await.clone();
+    let delivered = match tx {
+        Some(tx) => tx.send(msg.clone()).is_ok(),
+        None => false,
+    };
+    if !delivered && queue_on_fail {
+        let mut queue = get_message_queue().lock().await;
+        queue.push_back(msg);
+        if queue.len() > 500 {
+            queue.pop_front();
+        }
+    }
+    delivered
 }
 
 fn get_irc_writer() -> &'static Mutex<Option<Arc<Mutex<tokio::io::WriteHalf<TcpStream>>>>> {
@@ -278,6 +553,63 @@ fn get_user_color_cache() -> &'static Mutex<HashMap<String, String>> {
 
 fn get_room_state_cache() -> &'static Mutex<HashMap<String, String>> {
     ROOM_STATE_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Chat messages published while NOTHING was subscribed to the bus.
+///
+/// `broadcast::send` discards when there are no receivers, and a provider's join
+/// backlog is published within ~100ms of resolving, which is reliably BEFORE the
+/// frontend's WebSocket client has attached. Measured on a YouTube join: 28 of 30
+/// backlog rows discarded, so the pane opened empty while the log happily reported
+/// having trimmed and sent them.
+///
+/// Bounded, and DRAINED by the first client to attach, on the same handshake that
+/// already replays room state and user badges. The frontend dedupes by message id,
+/// so a replay can never double up a row that also arrived live.
+static PENDING_MESSAGES: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
+/// Enough for a full join backlog with headroom; past this the oldest go, because
+/// a buffer that grows without a listener is a leak, not a feature.
+const PENDING_MESSAGES_MAX: usize = 200;
+
+fn get_pending_messages() -> &'static Mutex<Vec<String>> {
+    PENDING_MESSAGES.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+/// Hold a message that had no subscriber, for replay when one attaches.
+pub async fn hold_undelivered_message(json: String) {
+    let mut pending = get_pending_messages().lock().await;
+    if pending.len() >= PENDING_MESSAGES_MAX {
+        let overflow = pending.len() + 1 - PENDING_MESSAGES_MAX;
+        pending.drain(0..overflow);
+    }
+    pending.push(json);
+}
+
+/// Take everything held, leaving the buffer empty.
+pub async fn take_undelivered_messages() -> Vec<String> {
+    std::mem::take(&mut *get_pending_messages().lock().await)
+}
+
+/// Cache a ROOMSTATE frame published by a non-Twitch provider, keyed by its full
+/// composite channel key ("kick:slug").
+///
+/// Providers emit the same frame Twitch does, and this is the same cache the
+/// local-WS handshake replays to every newly attached client, so a MultiChat pane
+/// that mounts after the room state arrived still learns the current modes.
+pub async fn cache_provider_room_state(channel_key: &str, frame: String) {
+    get_room_state_cache()
+        .lock()
+        .await
+        .insert(channel_key.to_lowercase(), frame);
+}
+
+/// Drop a provider's cached ROOMSTATE when its channel is released, mirroring the
+/// Twitch PART cleanup so a parted channel can't leak a stale entry.
+pub async fn remove_provider_room_state(channel_key: &str) {
+    get_room_state_cache()
+        .lock()
+        .await
+        .remove(&channel_key.to_lowercase());
 }
 
 fn get_channel_emotes() -> &'static Mutex<HashMap<String, EmoteSet>> {
@@ -497,6 +829,7 @@ impl IrcService {
         // but be defensive in case start() is called without a preceding stop().
         get_user_badges_cache().lock().await.clear();
         get_room_state_cache().lock().await.clear();
+        get_pending_messages().lock().await.clear();
         get_channel_emotes().lock().await.clear();
         get_channel_cheermotes().lock().await.clear();
         // Seed the consumer claims: this is the first window to ask for the
@@ -532,12 +865,17 @@ impl IrcService {
         // the frontend. Extracted into ensure_local_ws_bridge so non-Twitch
         // providers can publish onto the same bus without a Twitch chat open.
         let port = Self::ensure_local_ws_bridge().await?;
-        let tx = Self::broadcaster()
-            .await
-            .ok_or_else(|| anyhow::anyhow!("WS bridge broadcaster missing after bring-up"))?;
+        // Fail fast if bring-up didn't leave a broadcaster; the session itself
+        // resolves the CURRENT broadcaster at every send (send_to_bridge), so
+        // this handle is deliberately not passed down — a bridge rebuilt
+        // mid-session must not strand the supervisor on a dead sender.
+        if Self::broadcaster().await.is_none() {
+            return Err(anyhow::anyhow!(
+                "WS bridge broadcaster missing after bring-up"
+            ));
+        }
 
         // Start IRC connection
-        let tx_for_irc = tx.clone();
         let username = user_info.login.clone();
         let initial_channel = channel.to_string();
 
@@ -545,7 +883,6 @@ impl IrcService {
             Self::run_irc_connection(
                 &username,
                 &initial_channel,
-                tx_for_irc,
                 layout_service,
                 Arc::clone(&emote_service),
             )
@@ -566,7 +903,6 @@ impl IrcService {
     async fn run_irc_connection(
         username: &str,
         initial_channel: &str,
-        tx: Arc<broadcast::Sender<String>>,
         layout_service: Arc<LayoutService>,
         emote_service: Arc<tokio::sync::RwLock<EmoteService>>,
     ) {
@@ -587,7 +923,7 @@ impl IrcService {
                         e,
                         d.as_secs()
                     ));
-                    let _ = tx.send("IRC_RECONNECTING".to_string());
+                    send_to_bridge("IRC_RECONNECTING".to_string(), false).await;
                     tokio::time::sleep(d).await;
                     continue;
                 }
@@ -598,7 +934,6 @@ impl IrcService {
                 username,
                 &token,
                 initial_channel,
-                &tx,
                 &layout_service,
                 &emote_service,
             )
@@ -606,13 +941,16 @@ impl IrcService {
             let session_lived_ms = mono_ms().saturating_sub(session_started);
 
             // Between sessions: fail sends/JOINs fast instead of writing into
-            // a dead socket, and retire this session's keepalive tasks.
+            // a dead socket, retire this session's keepalive tasks, and drop
+            // its JOIN-ack state — the next session re-JOINs and re-confirms
+            // everything in CURRENT_CHANNELS from scratch.
             *get_irc_writer().lock().await = None;
             abort_keepalive_tasks().await;
+            tracker_clear().await;
 
             let delay = match outcome {
                 Ok(reason) => {
-                    let _ = tx.send("IRC_RECONNECTING".to_string());
+                    send_to_bridge("IRC_RECONNECTING".to_string(), false).await;
                     if session_lived_ms < SESSION_FLAP_THRESHOLD_MS {
                         consecutive_failures = consecutive_failures.saturating_add(1);
                         let d = reconnect_delay(consecutive_failures, false);
@@ -647,16 +985,18 @@ impl IrcService {
                         e,
                         d.as_secs()
                     ));
-                    let _ = tx.send("IRC_RECONNECTING".to_string());
+                    send_to_bridge("IRC_RECONNECTING".to_string(), false).await;
                     d
                 }
                 Err(SessionError::Auth(e)) => {
                     consecutive_failures = consecutive_failures.saturating_add(1);
                     record_lifecycle(&format!("authentication rejected: {}", e));
-                    let _ = tx.send(
+                    send_to_bridge(
                         "CONNECTION_WARNING:Chat sign-in failed. Your Twitch session may have expired; try signing out and back in."
                             .to_string(),
-                    );
+                        false,
+                    )
+                    .await;
                     reconnect_delay(consecutive_failures, true)
                 }
             };
@@ -670,7 +1010,6 @@ impl IrcService {
         username: &str,
         token: &str,
         initial_channel: &str,
-        tx: &Arc<broadcast::Sender<String>>,
         layout_service: &Arc<LayoutService>,
         emote_service: &Arc<tokio::sync::RwLock<EmoteService>>,
     ) -> std::result::Result<&'static str, SessionError> {
@@ -810,6 +1149,22 @@ impl IrcService {
                 }
                 w.flush().await?;
             }
+            {
+                // Everything this session will JOIN goes into the ack tracker up
+                // front. Paced channels get their deadline pushed out by their
+                // batch slot, so waiting on the pacer never reads as a lost JOIN.
+                let mut t = get_join_tracker().lock().await;
+                let now = mono_ms();
+                for ch in &channels {
+                    t.record_sent(ch, now, 0, false);
+                }
+                let pace_ms = JOIN_PACE_INTERVAL.as_millis() as u64;
+                for (idx, ch) in remainder.iter().enumerate() {
+                    let slot = (idx / JOIN_BURST_BUDGET) as u64 + 1;
+                    t.record_sent(ch, now, slot * pace_ms, false);
+                }
+                refresh_join_hint(&t);
+            }
             record_lifecycle(&format!(
                 "joined {} channel(s): {:?}",
                 channels.len(),
@@ -870,17 +1225,20 @@ impl IrcService {
         }
 
         // Send connection success notification
-        let _ = tx.send("IRC_CONNECTED".to_string());
+        send_to_bridge("IRC_CONNECTED".to_string(), false).await;
 
-        // Flush queued messages
-        let mut queue = get_message_queue().lock().await;
-        if !queue.is_empty() {
-            debug!("[IRC Chat] Flushing {} queued messages", queue.len());
-            while let Some(msg) = queue.pop_front() {
-                let _ = tx.send(msg);
+        // Flush queued messages (dropped if no receiver is attached yet; the
+        // WS handshake also drains this queue when a client connects).
+        let queued: Vec<String> = {
+            let mut queue = get_message_queue().lock().await;
+            queue.drain(..).collect()
+        };
+        if !queued.is_empty() {
+            debug!("[IRC Chat] Flushing {} queued messages", queued.len());
+            for msg in queued {
+                send_to_bridge(msg, false).await;
             }
         }
-        drop(queue);
 
         // Start ping task to keep IRC connection alive. The cadence also
         // bounds dead-connection detection: every PING elicits a PONG read,
@@ -903,7 +1261,6 @@ impl IrcService {
         // longer than the read timeout: a heartbeat must not vouch for a deaf
         // connection, and going silent is what lets the frontend watchdog
         // recover a wedged backend.
-        let tx_heartbeat = Arc::clone(tx);
         let heartbeat_handle = tokio::spawn(async move {
             let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(30));
             loop {
@@ -916,9 +1273,67 @@ impl IrcService {
                     );
                     continue;
                 }
-                if tx_heartbeat.send("HEARTBEAT".to_string()).is_err() {
-                    // No receivers, stop heartbeat
+                if !send_to_bridge("HEARTBEAT".to_string(), false).await {
+                    // No receivers (or no bridge), stop heartbeat
                     break;
+                }
+            }
+        });
+
+        // JOIN acknowledgment watchdog: re-issues JOINs the server never acked
+        // (no ROOMSTATE/USERSTATE/JOIN echo/channel message), and after
+        // JOIN_MAX_ATTEMPTS drops the session so the supervisor rebuilds it —
+        // the one lever that recovers a socket that is TCP-alive but deaf.
+        // Holds this session's writer, so it dies with the socket.
+        let writer_watch = writer.clone();
+        let joinwatch_handle = tokio::spawn(async move {
+            let mut interval = tokio::time::interval(JOIN_WATCH_INTERVAL);
+            loop {
+                interval.tick().await;
+                let now = mono_ms();
+                let due = { get_join_tracker().lock().await.due(now) };
+                for (key, attempts) in due {
+                    if attempts >= JOIN_MAX_ATTEMPTS {
+                        // Exhausted. Rate-limit the session-drop escalation so a
+                        // permanently unjoinable channel can't churn reconnects.
+                        let last = LAST_JOIN_DROP_MS.load(std::sync::atomic::Ordering::Relaxed);
+                        {
+                            let mut t = get_join_tracker().lock().await;
+                            t.drop_pending(&key);
+                            refresh_join_hint(&t);
+                        }
+                        if now.saturating_sub(last) >= JOIN_DROP_COOLDOWN_MS {
+                            LAST_JOIN_DROP_MS
+                                .store(now, std::sync::atomic::Ordering::Relaxed);
+                            record_lifecycle(&format!(
+                                "JOIN #{} unconfirmed after {} attempts; dropping session to rebuild",
+                                key, attempts
+                            ));
+                            let _ = writer_watch.lock().await.shutdown().await;
+                            return;
+                        }
+                        record_lifecycle(&format!(
+                            "JOIN #{} unconfirmed after {} attempts; within drop cooldown, deferring to next session",
+                            key, attempts
+                        ));
+                    } else {
+                        record_lifecycle(&format!(
+                            "JOIN #{} unconfirmed; re-issuing (attempt {})",
+                            key,
+                            attempts + 1
+                        ));
+                        {
+                            let mut w = writer_watch.lock().await;
+                            if w.write_all(format!("JOIN #{}\r\n", key).as_bytes())
+                                .await
+                                .is_err()
+                                || w.flush().await.is_err()
+                            {
+                                return;
+                            }
+                        }
+                        tracker_record_sent(&key, 0, false).await;
+                    }
                 }
             }
         });
@@ -929,6 +1344,7 @@ impl IrcService {
         // independent of their parent).
         *get_irc_ping_abort().lock().await = Some(ping_handle.abort_handle());
         *get_irc_heartbeat_abort().lock().await = Some(heartbeat_handle.abort_handle());
+        *get_irc_joinwatch_abort().lock().await = Some(joinwatch_handle.abort_handle());
 
         // Listen for messages. The timeout is the half-open detector: we PING
         // every 30s and the server answers, so 75s without a completed read
@@ -950,12 +1366,30 @@ impl IrcService {
                         if is_server_reconnect(&line) {
                             Some("server RECONNECT")
                         } else {
-                            if let Err(e) =
-                                Self::handle_irc_message(&line, tx, &writer, layout_service).await
+                            // The handler's own timeout is the belt-and-braces
+                            // stall detector: the read timeout above only covers
+                            // read_line, so a handler parked on a wedged await
+                            // used to freeze the reader forever while sends kept
+                            // working. A stall now becomes a detected drop.
+                            match tokio::time::timeout(
+                                HANDLER_STALL_TIMEOUT,
+                                Self::handle_irc_message(&line, &writer, layout_service),
+                            )
+                            .await
                             {
-                                error!("[IRC Chat] Error handling message: {}", e);
+                                Err(_) => {
+                                    warn!(
+                                        "[IRC Chat] message handler stalled for {}s, dropping session",
+                                        HANDLER_STALL_TIMEOUT.as_secs()
+                                    );
+                                    Some("handler stall")
+                                }
+                                Ok(Err(e)) => {
+                                    error!("[IRC Chat] Error handling message: {}", e);
+                                    None
+                                }
+                                Ok(Ok(())) => None,
                             }
-                            None
                         }
                     }
                     Ok(Err(e)) => {
@@ -972,7 +1406,6 @@ impl IrcService {
 
     async fn handle_irc_message(
         line: &str,
-        tx: &Arc<broadcast::Sender<String>>,
         writer: &Arc<Mutex<tokio::io::WriteHalf<TcpStream>>>,
         layout_service: &LayoutService,
     ) -> Result<()> {
@@ -1033,47 +1466,28 @@ impl IrcService {
                     is_first_message: chat_msg.metadata.is_first_message,
                 };
 
-                // Store a compact summary (id/content/timestamp/color) in the user
-                // history LRU for profile cards. Avoids cloning the full ChatMessage.
-                if !chat_msg.user_id.is_empty() {
-                    let history_service = UserMessageHistoryService::global();
-                    history_service
-                        .add_message(&chat_msg.user_id, &chat_msg)
-                        .await;
-                }
+                // Receiving a channel message proves its JOIN landed — the
+                // strongest, cheapest ack signal for the tracker.
+                confirm_join_if_pending(
+                    chat_msg.channel.trim_start_matches('#').to_lowercase().as_str(),
+                )
+                .await;
 
-                ChatLoggerService::log_message(&chat_msg);
-
-                if let Some(host) = PLUGIN_HOST.get() {
-                    if host.wants_chat_messages().await {
-                        host.emit_chat_message(chat_event_params(&chat_msg)).await;
-                    }
-                }
-
+                // Deliver to the frontend FIRST (wire order is the only order
+                // the UI needs), then hand the slow side effects (history LRU,
+                // chat logger, plugins) to the ordered lane so they can never
+                // block the read loop.
                 if let Ok(json_msg) = serde_json::to_string(&chat_msg) {
-                    if tx.send(json_msg).is_err() {
-                        // debug!("[IRC Chat] No active receivers, queueing message");
-                        let mut queue = get_message_queue().lock().await;
-                        // Store serialized JSON in queue
-                        queue.push_back(
-                            serde_json::to_string(&chat_msg).unwrap_or(enhanced_message),
-                        );
-
-                        // Keep queue size manageable
-                        if queue.len() > 500 {
-                            queue.pop_front();
-                        }
-                    }
+                    send_to_bridge(json_msg, true).await;
                 }
+                let _ = side_effect_lane().send(MessageSideEffects {
+                    history_key: history_key_for(&chat_msg),
+                    msg: chat_msg,
+                    add_history: true,
+                });
             } else {
                 // Fallback to sending raw string if parsing fails
-                if tx.send(enhanced_message.clone()).is_err() {
-                    let mut queue = get_message_queue().lock().await;
-                    queue.push_back(enhanced_message);
-                    if queue.len() > 500 {
-                        queue.pop_front();
-                    }
-                }
+                send_to_bridge(enhanced_message, true).await;
             }
         } else if trimmed.contains("USERNOTICE") {
             // Subscription, resub, gift sub, etc.
@@ -1111,34 +1525,25 @@ impl IrcService {
                     chat_msg.content.len()
                 );
 
-                ChatLoggerService::log_message(&chat_msg);
+                // A USERNOTICE for a channel is membership proof, same as PRIVMSG.
+                confirm_join_if_pending(
+                    chat_msg.channel.trim_start_matches('#').to_lowercase().as_str(),
+                )
+                .await;
 
-                if let Some(host) = PLUGIN_HOST.get() {
-                    if host.wants_chat_messages().await {
-                        host.emit_chat_message(chat_event_params(&chat_msg)).await;
-                    }
-                }
-
+                // Frontend first, side effects on the ordered lane (no history:
+                // USERNOTICE never fed the profile-card history).
                 if let Ok(json_msg) = serde_json::to_string(&chat_msg) {
-                    if tx.send(json_msg).is_err() {
-                        let mut queue = get_message_queue().lock().await;
-                        queue.push_back(
-                            serde_json::to_string(&chat_msg).unwrap_or(trimmed.to_string()),
-                        );
-                        if queue.len() > 500 {
-                            queue.pop_front();
-                        }
-                    }
+                    send_to_bridge(json_msg, true).await;
                 }
+                let _ = side_effect_lane().send(MessageSideEffects {
+                    history_key: history_key_for(&chat_msg),
+                    msg: chat_msg,
+                    add_history: false,
+                });
             } else {
                 // Fallback to raw string if parsing fails
-                if tx.send(trimmed.to_string()).is_err() {
-                    let mut queue = get_message_queue().lock().await;
-                    queue.push_back(trimmed.to_string());
-                    if queue.len() > 500 {
-                        queue.pop_front();
-                    }
-                }
+                send_to_bridge(trimmed.to_string(), true).await;
             }
         } else if trimmed.contains("ROOMSTATE") {
             // Room state updates (slow mode, sub-only, etc.)
@@ -1191,13 +1596,21 @@ impl IrcService {
                     .lock()
                     .await
                     .insert(ch.clone(), room_state_str.clone());
+                // Twitch always sends ROOMSTATE on a successful join — the
+                // deterministic JOIN ack.
+                confirm_join(ch).await;
             }
 
-            let _ = tx.send(room_state_str);
+            send_to_bridge(room_state_str, false).await;
 
-            // Check for shared chat information
+            // Check for shared chat information. Spawned: this is a Helix HTTP
+            // round-trip (pure cache refresh — enhance_message reads the cache
+            // on later PRIVMSGs) and ROOMSTATE fires on every setting change,
+            // so it must never sit on the read loop.
             if let Some(room_id) = Self::extract_tag_value(trimmed, "room-id") {
-                Self::check_shared_chat_status(&room_id).await;
+                tokio::spawn(async move {
+                    Self::check_shared_chat_status(&room_id).await;
+                });
             }
         } else if trimmed.contains("USERSTATE") {
             // User state in channel (mod status, badges, etc.)
@@ -1208,6 +1621,11 @@ impl IrcService {
             // Extract channel so the user's per-channel badges are keyed and the
             // synthetic wire message carries the channel for frontend routing.
             let channel_name = extract_channel_from_irc_line(trimmed);
+
+            // USERSTATE arrives on join (and after own sends) — a JOIN ack.
+            if let Some(ref ch) = channel_name {
+                confirm_join(ch).await;
+            }
 
             // Extract badges from USERSTATE and cache them per channel
             if let Some(badges) = Self::extract_tag_value(trimmed, "badges") {
@@ -1229,7 +1647,7 @@ impl IrcService {
                     Some(ch) => format!("USER_BADGES:#{}:{}", ch, badges),
                     None => format!("USER_BADGES:{}", badges),
                 };
-                let _ = tx.send(badges_message);
+                send_to_bridge(badges_message, false).await;
             }
 
             // Cache and forward the user's own chat color. An empty tag means the
@@ -1247,7 +1665,7 @@ impl IrcService {
                         Some(ch) => format!("USER_COLOR:#{}:{}", ch, color),
                         None => format!("USER_COLOR:{}", color),
                     };
-                    let _ = tx.send(color_message);
+                    send_to_bridge(color_message, false).await;
                 }
             }
 
@@ -1283,7 +1701,7 @@ impl IrcService {
                     "login": login,
                     "message": deleted_text
                 });
-                let _ = tx.send(delete_event.to_string());
+                send_to_bridge(delete_event.to_string(), false).await;
             }
         } else if trimmed.contains("CLEARCHAT") {
             // User timed out/banned (clear all their messages) or chat cleared
@@ -1319,7 +1737,7 @@ impl IrcService {
                 "target_user": target_user,
                 "ban_duration": ban_duration_secs
             });
-            let _ = tx.send(clear_event.to_string());
+            send_to_bridge(clear_event.to_string(), false).await;
         } else if trimmed.contains("NOTICE") {
             // System notices — forward to frontend for user-facing handling
             debug!("[IRC Chat] Notice: {}", trimmed);
@@ -1327,6 +1745,16 @@ impl IrcService {
             // Extract the msg-id tag (e.g. "msg_followersonly", "msg_subsonly")
             // Present when twitch.tv/tags capability is active (requested at connect)
             let msg_id = Self::extract_tag_value(trimmed, "msg-id");
+
+            // A suspended channel can never confirm its JOIN; forget it so the
+            // JOIN watchdog doesn't drop sessions chasing it forever.
+            if msg_id.as_deref() == Some("msg_channel_suspended") {
+                if let Some(ch) = extract_channel_from_irc_line(trimmed) {
+                    record_lifecycle(&format!("#{} suspended; dropping from desired set", ch));
+                    tracker_forget(&ch).await;
+                    get_current_channels().lock().await.remove(&ch);
+                }
+            }
 
             // Extract the human-readable notice text after the last " :"
             let notice_text = trimmed
@@ -1339,7 +1767,12 @@ impl IrcService {
                 "msg_id": msg_id,
                 "message": notice_text,
             });
-            let _ = tx.send(notice_event.to_string());
+            send_to_bridge(notice_event.to_string(), false).await;
+        } else if let Some(join_ch) = parse_join_channel(trimmed) {
+            // JOIN frame — ours or any member's (twitch.tv/membership relays
+            // them only for channels we are in). Membership proof for the ack
+            // tracker; hint-gated so big-channel join floods stay off the lock.
+            confirm_join_if_pending(&join_ch).await;
         }
 
         Ok(())
@@ -1594,6 +2027,16 @@ impl IrcService {
             let _ = local_tx.send(warp::ws::Message::text(state)).await;
         }
 
+        // Then anything published before this client existed. Ordered AFTER room
+        // state so the pane knows the channel's modes before its first rows land.
+        let held = take_undelivered_messages().await;
+        if !held.is_empty() {
+            info!("[WS] replaying {} message(s) held for a late client", held.len());
+            for msg in held {
+                let _ = local_tx.send(warp::ws::Message::text(msg)).await;
+            }
+        }
+
         let badge_entries: Vec<(String, String)> = {
             let cache = get_user_badges_cache().lock().await;
             cache
@@ -1832,7 +2275,11 @@ impl IrcService {
                 "[IRC Chat] join_channel({}): window {} already a consumer, reusing JOIN",
                 key, window
             );
-            return Ok(());
+            // Still run the JOIN health probe: for a confirmed channel this is
+            // two set lookups, but for a channel whose JOIN the server silently
+            // dropped it re-issues the JOIN — which is what turns the user's
+            // refresh into a real recovery instead of an IRC no-op.
+            return Self::ensure_joined(&key).await;
         }
 
         // Make sure the channel is actually JOINed (no-op when another window
@@ -1853,12 +2300,22 @@ impl IrcService {
     }
 
     /// Send the IRC JOIN for `key` (lowercase) and set up its per-channel
-    /// subscriptions. No-op when the channel is already in the current set
-    /// (its subscriptions were set up by whoever joined it). Never touches the
-    /// consumer sets; callers decide whether a consumer claim is recorded.
+    /// subscriptions. For a channel already in the desired set this is a health
+    /// probe: no-op while the JOIN is confirmed or in flight, but a channel the
+    /// server silently un-JOINed (desired, yet neither confirmed nor pending)
+    /// gets its JOIN re-issued. Never touches the consumer sets; callers decide
+    /// whether a consumer claim is recorded.
     async fn ensure_joined(key: &str) -> Result<()> {
-        if get_current_channels().lock().await.contains(key) {
-            return Ok(());
+        let newly_desired = get_current_channels().lock().await.insert(key.to_string());
+        if !newly_desired {
+            let (confirmed, pending) = get_join_tracker().lock().await.is_settled(key);
+            if confirmed || pending {
+                return Ok(());
+            }
+            record_lifecycle(&format!(
+                "JOIN #{} lost (desired but unconfirmed); re-issuing",
+                key
+            ));
         }
 
         // The connection may still be establishing: start_chat spawns the IRC
@@ -1874,31 +2331,56 @@ impl IrcService {
         );
         match Self::wait_for_irc_writer(100).await {
             Some(writer) => {
-                let mut w = writer.lock().await;
-                w.write_all(format!("JOIN #{}\r\n", key).as_bytes()).await?;
-                w.flush().await?;
-                debug!("[IRC Chat] Joined channel: #{}", key);
+                let write_result = async {
+                    let mut w = writer.lock().await;
+                    w.write_all(format!("JOIN #{}\r\n", key).as_bytes()).await?;
+                    w.flush().await
+                }
+                .await;
+                match write_result {
+                    Ok(()) => {
+                        tracker_record_sent(key, 0, false).await;
+                        debug!("[IRC Chat] Joined channel: #{}", key);
+                    }
+                    Err(e) => {
+                        // Undo the desired-state insert so join_channel's claim
+                        // rollback leaves clean state for a later retry.
+                        if newly_desired {
+                            get_current_channels().lock().await.remove(key);
+                        }
+                        return Err(e.into());
+                    }
+                }
             }
             // Between supervisor sessions (reconnect/backoff) there is no
-            // writer. Record the channel anyway: CURRENT_CHANNELS is the
+            // writer. Keep the channel recorded anyway: CURRENT_CHANNELS is the
             // desired-state set and the next session JOINs everything in it.
             // Without this, a channel switch during a reconnect window lost
-            // its JOIN permanently.
+            // its JOIN permanently. Deliberately NOT recorded in the ack
+            // tracker — the next session's burst records it when it actually
+            // writes the JOIN.
             None if supervisor_alive => {
                 record_lifecycle(&format!("JOIN #{} deferred to next session", key));
             }
-            None => return Err(anyhow::anyhow!("IRC connection not established")),
+            None => {
+                if newly_desired {
+                    get_current_channels().lock().await.remove(key);
+                }
+                return Err(anyhow::anyhow!("IRC connection not established"));
+            }
         }
 
-        get_current_channels().lock().await.insert(key.to_string());
-
-        // Check for shared chat in the new channel, and subscribe it to the 7TV
-        // EventAPI for live emote set updates. Both reuse the same lookup.
-        if let Ok(broadcaster_info) = TwitchService::get_user_by_login(key).await {
-            Self::check_shared_chat_status(&broadcaster_info.id).await;
-            crate::services::seventv_eventapi::subscribe_channel(key, &broadcaster_info.id).await;
-            crate::services::eventsub_moderation::subscribe_channel(key, &broadcaster_info.id)
-                .await;
+        // First time this channel becomes desired: shared-chat lookup + 7TV
+        // EventAPI + mod-view subscriptions. A health-probe re-issue must not
+        // re-subscribe — those were set up when the key first entered the set.
+        if newly_desired {
+            if let Ok(broadcaster_info) = TwitchService::get_user_by_login(key).await {
+                Self::check_shared_chat_status(&broadcaster_info.id).await;
+                crate::services::seventv_eventapi::subscribe_channel(key, &broadcaster_info.id)
+                    .await;
+                crate::services::eventsub_moderation::subscribe_channel(key, &broadcaster_info.id)
+                    .await;
+            }
         }
 
         Ok(())
@@ -2022,6 +2504,7 @@ impl IrcService {
         }
 
         get_current_channels().lock().await.remove(key);
+        tracker_forget(key).await;
 
         // Drop per-channel caches so PARTed channels don't accumulate memory.
         // If the user re-JOINs later, fetch_and_store_emotes runs again and
@@ -2106,6 +2589,8 @@ impl IrcService {
                             Some(channel_name.to_string()),
                             Some(user.id.clone()),
                             access_token,
+                            // This path is Twitch's own IRC service.
+                            None,
                         )
                         .await
                     {
@@ -2318,6 +2803,7 @@ impl IrcService {
                     emote_url: seventv_emote.url.clone(),
                     is_zero_width: seventv_emote.is_zero_width,
                     modifier_flags: None,
+                    is_personal: None,
                 });
             } else {
                 // Use Twitch emote
@@ -2327,6 +2813,7 @@ impl IrcService {
                     emote_url: emote.url.clone(),
                     is_zero_width: None,
                     modifier_flags: None,
+                    is_personal: None,
                 });
             }
 
@@ -2454,13 +2941,19 @@ impl IrcService {
                     cheermote_url,
                 });
             } else if let Some(emote) = emote_map.get(word) {
-                // Found a third-party emote (BTTV, FFZ, or 7TV)
+                // Found a third-party emote (BTTV, FFZ, or 7TV). Personal emotes
+                // were inserted last and win ties, so a name present in that set
+                // is the one that matched.
                 segments.push(MessageSegment::Emote {
                     content: word.to_string(),
                     emote_id: Some(emote.id.clone()),
                     emote_url: emote.url.clone(),
                     is_zero_width: emote.is_zero_width,
                     modifier_flags: emote.modifier_flags,
+                    is_personal: personal_emotes
+                        .iter()
+                        .any(|p| p.name == *word)
+                        .then_some(true),
                 });
             } else {
                 // Convert emoji shortcodes first
@@ -3227,8 +3720,9 @@ impl IrcService {
         // Clear message queue
         get_message_queue().lock().await.clear();
 
-        // Clear channels
+        // Clear channels + their JOIN-ack state
         get_current_channels().lock().await.clear();
+        tracker_clear().await;
 
         // Clear shared chat rooms
         get_shared_chat_rooms().lock().await.clear();
@@ -3238,6 +3732,7 @@ impl IrcService {
         get_channel_cheermotes().lock().await.clear();
         get_user_badges_cache().lock().await.clear();
         get_room_state_cache().lock().await.clear();
+        get_pending_messages().lock().await.clear();
         get_channel_consumers().lock().await.clear();
 
         // Drop all 7TV EventAPI subscriptions so the idle socket stops
@@ -3255,6 +3750,13 @@ impl IrcService {
         Ok(())
     }
 
+    /// Public form of `stop_irc_only`, for callers outside this module that have
+    /// already established a provider is holding the bridge (see
+    /// `ChatService::stop`).
+    pub async fn stop_twitch_only() {
+        Self::stop_irc_only().await;
+    }
+
     /// Clear Twitch IRC state (connection, writer, per-channel caches, consumer
     /// claims) WITHOUT tearing down the shared local-WS bridge. Used when a
     /// non-Twitch provider is keeping the bridge alive and we only need to
@@ -3266,11 +3768,13 @@ impl IrcService {
         abort_keepalive_tasks().await;
         *get_irc_writer().lock().await = None;
         get_current_channels().lock().await.clear();
+        tracker_clear().await;
         get_shared_chat_rooms().lock().await.clear();
         get_channel_emotes().lock().await.clear();
         get_channel_cheermotes().lock().await.clear();
         get_user_badges_cache().lock().await.clear();
         get_room_state_cache().lock().await.clear();
+        get_pending_messages().lock().await.clear();
         get_channel_consumers().lock().await.clear();
         crate::services::seventv_eventapi::clear_all().await;
         crate::services::eventsub_moderation::clear_all().await;
@@ -3354,6 +3858,12 @@ impl IrcService {
         *get_message_broadcaster().lock().await = Some(tx);
         *get_ws_server_handle().lock().await = Some(handle);
         *get_ws_port().lock().await = Some(port);
+        // Field-proof line: a rebuild under a live IRC session used to orphan
+        // the session's captured sender; sends now resolve the broadcaster per
+        // call, and this records that the swap happened.
+        if matches!(get_irc_handle().lock().await.as_ref(), Some(h) if !h.is_finished()) {
+            record_lifecycle("WS bridge rebuilt while IRC session live; broadcaster swapped");
+        }
         Ok(port)
     }
 
@@ -3375,6 +3885,72 @@ impl IrcService {
         writer.lock().await.shutdown().await?;
         Ok(())
     }
+
+    /// Dev-only failure lever: raw PART with NO bookkeeping — the channel stays
+    /// desired and confirmed while the server drops our membership, exactly
+    /// simulating a silently lost JOIN so the recovery paths (refresh probe,
+    /// frontend nudge ladder) can be exercised on demand.
+    pub async fn debug_send_part(channel: &str) -> Result<()> {
+        let key = channel.to_lowercase();
+        let writer = get_irc_writer()
+            .lock()
+            .await
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("no IRC connection"))?;
+        let mut w = writer.lock().await;
+        w.write_all(format!("PART #{}\r\n", key).as_bytes()).await?;
+        w.flush().await?;
+        record_lifecycle(&format!("debug: raw PART #{} sent (state untouched)", key));
+        Ok(())
+    }
+
+    /// Frontend stale-watchdog stage 1: for every desired channel not already
+    /// awaiting a JOIN ack, unconfirm it and rewrite its JOIN. A healthy
+    /// channel re-acks (JOIN echo + ROOMSTATE) — which both re-confirms it and
+    /// puts a frame on the bridge, resetting the frontend's stale timer — while
+    /// a lost one stays unconfirmed so the refresh probe / stage-2 escalation
+    /// can act. Nudge entries never retry and never drop the session, so a
+    /// quiet-but-healthy channel costs one JOIN line per stale window. Capped
+    /// at JOIN_BURST_BUDGET per call to stay clear of Twitch's JOIN rate wall;
+    /// the next stale window nudges the rest.
+    pub async fn nudge_channels() -> Result<usize> {
+        let channels: Vec<String> = get_current_channels()
+            .lock()
+            .await
+            .iter()
+            .cloned()
+            .collect();
+        let writer = get_irc_writer()
+            .lock()
+            .await
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("no IRC connection"))?;
+        let mut nudged = 0usize;
+        for key in channels {
+            if nudged >= JOIN_BURST_BUDGET {
+                break;
+            }
+            {
+                let mut t = get_join_tracker().lock().await;
+                let (_, pending) = t.is_settled(&key);
+                if pending {
+                    continue;
+                }
+                t.unconfirm(&key);
+                t.record_sent(&key, mono_ms(), 0, true);
+                refresh_join_hint(&t);
+            }
+            let mut w = writer.lock().await;
+            w.write_all(format!("JOIN #{}\r\n", key).as_bytes()).await?;
+            w.flush().await?;
+            nudged += 1;
+        }
+        record_lifecycle(&format!(
+            "nudged {} channel(s) after frontend stale report",
+            nudged
+        ));
+        Ok(nudged)
+    }
 }
 
 #[cfg(test)]
@@ -3388,6 +3964,93 @@ mod tests {
         assert_eq!(reconnect_delay(0, false).as_secs(), 2);
         assert_eq!(reconnect_delay(1, true).as_secs(), 300);
         assert_eq!(reconnect_delay(9, true).as_secs(), 300);
+    }
+
+    #[test]
+    fn join_tracker_confirms_and_clears_pending() {
+        let mut t = JoinTracker::default();
+        t.record_sent("xqc", 1_000, 0, false);
+        assert_eq!(t.is_settled("xqc"), (false, true));
+        assert!(t.confirm("xqc"));
+        assert_eq!(t.is_settled("xqc"), (true, false));
+        // Re-confirming is not a "first confirm" again.
+        assert!(!t.confirm("xqc"));
+        assert!(t.due(u64::MAX).is_empty());
+    }
+
+    #[test]
+    fn join_tracker_reissues_after_deadline_and_exhausts() {
+        let mut t = JoinTracker::default();
+        t.record_sent("xqc", 1_000, 0, false);
+        // Before the deadline: not due.
+        assert!(t.due(1_000 + JOIN_CONFIRM_TIMEOUT_MS - 1).is_empty());
+        // Past it: due with 1 attempt so far.
+        let due = t.due(1_000 + JOIN_CONFIRM_TIMEOUT_MS);
+        assert_eq!(due, vec![("xqc".to_string(), 1)]);
+        // Re-issues bump attempts toward exhaustion.
+        t.record_sent("xqc", 20_000, 0, false);
+        t.record_sent("xqc", 40_000, 0, false);
+        let due = t.due(40_000 + JOIN_CONFIRM_TIMEOUT_MS);
+        assert_eq!(due, vec![("xqc".to_string(), 3)]);
+        assert!(due[0].1 >= JOIN_MAX_ATTEMPTS);
+    }
+
+    #[test]
+    fn join_tracker_pace_slots_defer_deadlines() {
+        let mut t = JoinTracker::default();
+        let pace = JOIN_PACE_INTERVAL.as_millis() as u64;
+        t.record_sent("burst", 0, 0, false);
+        t.record_sent("batch1", 0, pace, false);
+        t.record_sent("batch2", 0, 2 * pace, false);
+        // Only the burst channel is due after one timeout window.
+        let due = t.due(JOIN_CONFIRM_TIMEOUT_MS);
+        assert_eq!(due, vec![("burst".to_string(), 1)]);
+        // batch1 becomes due only after its slot plus the window.
+        let mut due: Vec<String> = t
+            .due(pace + JOIN_CONFIRM_TIMEOUT_MS)
+            .into_iter()
+            .map(|(k, _)| k)
+            .collect();
+        due.sort();
+        assert_eq!(due, vec!["batch1".to_string(), "burst".to_string()]);
+    }
+
+    #[test]
+    fn join_tracker_nudge_entries_never_escalate() {
+        let mut t = JoinTracker::default();
+        t.confirm("xqc");
+        t.unconfirm("xqc");
+        t.record_sent("xqc", 0, 0, true);
+        // A nudge entry is pending (so refresh probes treat it as in flight)
+        // but never becomes due, no matter how much time passes.
+        assert_eq!(t.is_settled("xqc"), (false, true));
+        assert!(t.due(u64::MAX).is_empty());
+        // A late ack still resolves it.
+        assert!(t.confirm("xqc"));
+        assert_eq!(t.is_settled("xqc"), (true, false));
+    }
+
+    #[test]
+    fn parse_join_channel_matches_join_frames_only() {
+        assert_eq!(
+            parse_join_channel(":nick!nick@nick.tmi.twitch.tv JOIN #xqc\r\n"),
+            Some("xqc".to_string())
+        );
+        assert_eq!(
+            parse_join_channel("@tag=1 :nick!nick@host JOIN #XQC\r\n"),
+            Some("xqc".to_string())
+        );
+        assert_eq!(
+            parse_join_channel(":other!other@host JOIN :#chan\r\n"),
+            Some("chan".to_string())
+        );
+        // A PRIVMSG whose TEXT contains a JOIN must never match.
+        assert_eq!(
+            parse_join_channel(":nick!nick@host PRIVMSG #chan :please JOIN #other now\r\n"),
+            None
+        );
+        assert_eq!(parse_join_channel(":nick!nick@host PART #chan\r\n"), None);
+        assert_eq!(parse_join_channel("JOIN"), None);
     }
 
     #[test]

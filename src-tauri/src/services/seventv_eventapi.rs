@@ -27,7 +27,10 @@ use crate::services::emote_service::{self, EmoteService};
 use crate::services::irc_service::IrcService;
 
 const EVENTAPI_URL: &str = "wss://events.7tv.io/v3";
-const SEVENTV_USER_URL: &str = "https://7tv.io/v3/users/twitch/";
+// 7TV identifies a channel by PLATFORM + platform user id. Kick and YouTube are
+// first-class platforms in 7TV's own connection model, same as Twitch, so the
+// only thing that varies is this path segment.
+const SEVENTV_USER_URL: &str = "https://7tv.io/v3/users/";
 
 // Server opcodes we care about. (Client opcodes: SUBSCRIBE=35, UNSUBSCRIBE=36.)
 const OP_DISPATCH: u64 = 0;
@@ -44,8 +47,11 @@ const RECONNECT_DELAY_SECS: u64 = 5;
 /// (re)connect, so a dropped socket self-heals.
 #[derive(Clone)]
 struct ChannelSub {
-    channel_name: String, // lowercase twitch login (chat key)
-    channel_id: String,   // twitch user id
+    channel_name: String, // lowercase channel key (login / slug / identifier)
+    channel_id: String,   // the platform's own user id
+    // Which platform `channel_id` belongs to, lowercased for the 7TV REST path
+    // ("twitch" / "kick" / "youtube"). Uppercased for the EventAPI condition.
+    platform: String,
     emote_set_id: Option<String>,
     // Channel broadcaster's 7TV user id. Used as the subject of the passive
     // presence POST that triggers 7TV to deliver present users' cosmetics.
@@ -100,7 +106,19 @@ pub fn init(app_handle: AppHandle, emote_service: Arc<RwLock<EmoteService>>) {
 /// Subscribe to a channel's 7TV resources. Resolves the channel's 7TV emote set
 /// id and 7TV user id (one REST call), then registers + signals the connection
 /// task. No-op if the channel is not on 7TV or is already subscribed.
+/// Subscribe to a Twitch channel's 7TV events. Thin wrapper over
+/// `subscribe_channel_on` so every existing Twitch call site is unchanged.
 pub async fn subscribe_channel(channel_name: &str, channel_id: &str) {
+    subscribe_channel_on(channel_name, channel_id, "twitch").await;
+}
+
+/// Subscribe to a channel's 7TV events on a given platform.
+///
+/// 7TV supports Kick and YouTube identities natively, so provider channels get
+/// the same live emote-set updates and cosmetics entitlements Twitch does. If a
+/// platform is not on 7TV, `resolve_ids` finds nothing and we skip quietly —
+/// which leaves the periodic TTL refetch as the fallback, exactly as before.
+pub async fn subscribe_channel_on(channel_name: &str, channel_id: &str, platform: &str) {
     let Some(svc) = SERVICE.get() else {
         return;
     };
@@ -110,7 +128,7 @@ pub async fn subscribe_channel(channel_name: &str, channel_id: &str) {
         return; // already subscribed (e.g. IRC reconnect re-running the hook)
     }
 
-    let (emote_set_id, seventv_user_id) = resolve_ids(&svc.http, channel_id).await;
+    let (emote_set_id, seventv_user_id) = resolve_ids(&svc.http, channel_id, platform).await;
     if emote_set_id.is_none() && seventv_user_id.is_none() {
         debug!(
             "[7TV EventAPI] {} not on 7TV, skipping subscription",
@@ -122,6 +140,7 @@ pub async fn subscribe_channel(channel_name: &str, channel_id: &str) {
     let sub = ChannelSub {
         channel_name: key.clone(),
         channel_id: channel_id.to_string(),
+        platform: platform.to_lowercase(),
         emote_set_id,
         seventv_user_id,
     };
@@ -161,13 +180,17 @@ pub async fn clear_all() {
 /// Resolve (emote_set_id, seventv_user_id) from the public 7TV user endpoint.
 /// The active set id comes from the root `emote_set_id` (with `/emote_set/id`
 /// as legacy fallback — the inline `emote_set` object is no longer returned).
-async fn resolve_ids(http: &reqwest::Client, channel_id: &str) -> (Option<String>, Option<String>) {
+async fn resolve_ids(
+    http: &reqwest::Client,
+    channel_id: &str,
+    platform: &str,
+) -> (Option<String>, Option<String>) {
     // The join path fetches this document moments earlier; reuse it.
     let json: Option<std::sync::Arc<Value>> =
         match emote_service::seventv_user_payload_cached(channel_id).await {
             Some(v) => Some(v),
             None => {
-                let url = format!("{}{}", SEVENTV_USER_URL, channel_id);
+                let url = format!("{}{}/{}", SEVENTV_USER_URL, platform, channel_id);
                 match http.get(&url).send().await {
                     Ok(resp) if resp.status().is_success() => match resp.json::<Value>().await {
                         Ok(v) => Some(std::sync::Arc::new(v)),
@@ -194,6 +217,19 @@ async fn resolve_ids(http: &reqwest::Client, channel_id: &str) -> (Option<String
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
     (emote_set_id, seventv_user_id)
+}
+
+/// Our provider id translated to 7TV's platform name.
+///
+/// These are NOT the same vocabulary: 7TV calls YouTube **GOOGLE**, and sending
+/// "YOUTUBE" is rejected outright rather than ignored. Verified against the live
+/// v4 schema, whose Platform enum is TWITCH, DISCORD, GOOGLE, KICK.
+fn seventv_platform(provider: &str) -> &'static str {
+    match provider {
+        "kick" => "KICK",
+        "youtube" => "GOOGLE",
+        _ => "TWITCH",
+    }
 }
 
 // Cosmetics entitlement event types subscribed per channel. Paired with the
@@ -233,7 +269,7 @@ fn frames_for(sub: &ChannelSub, op: u64) -> Vec<String> {
                 "op": op,
                 "d": {
                     "type": t,
-                    "condition": { "ctx": "channel", "platform": "TWITCH", "id": sub.channel_id }
+                    "condition": { "ctx": "channel", "platform": seventv_platform(&sub.platform), "id": sub.channel_id }
                 }
             })
             .to_string(),
@@ -254,7 +290,7 @@ async fn bootstrap_presence(http: &reqwest::Client, sub: &ChannelSub, session_id
         "kind": 1,
         "passive": true,
         "session_id": session,
-        "data": { "platform": "TWITCH", "id": sub.channel_id }
+        "data": { "platform": seventv_platform(&sub.platform), "id": sub.channel_id }
     });
     if let Err(e) = http.post(&url).json(&body).send().await {
         warn!(
@@ -421,9 +457,9 @@ async fn handle_emote_set_update(
         let map = subs.read().await;
         map.values()
             .find(|s| s.emote_set_id.as_deref() == Some(set_id))
-            .map(|s| (s.channel_name.clone(), s.channel_id.clone()))
+            .map(|s| (s.channel_name.clone(), s.channel_id.clone(), s.platform.clone()))
     };
-    let Some((channel_name, channel_id)) = channel else {
+    let Some((channel_name, channel_id, platform)) = channel else {
         return; // an emote set we are no longer tracking
     };
 
@@ -490,11 +526,29 @@ async fn handle_emote_set_update(
     // Authoritatively refresh both Rust caches by re-fetching the set. Reuses
     // all existing parsing; emote set changes are rare so the extra fetch is
     // cheap. Invalidate first so the 5 minute TTL does not return a stale set.
-    {
-        let svc = emote_service.read().await;
-        svc.invalidate_channel(&channel_id).await;
+    // Each platform owns its own emote store, so the refetch has to go to the
+    // right one. Sending a Kick or YouTube channel through the Twitch path would
+    // fetch a SAME-NAMED Twitch channel's emotes and write them under this
+    // channel's key.
+    match platform.as_str() {
+        "kick" => {
+            if let Ok(uid) = channel_id.parse::<u64>() {
+                super::providers::kick_emotes::invalidate(&channel_name);
+                super::providers::kick_emotes::refresh(&channel_name, uid).await;
+            }
+        }
+        "youtube" => {
+            super::providers::youtube_emotes::invalidate(&channel_name);
+            super::providers::youtube_emotes::refresh(&channel_name, &channel_id).await;
+        }
+        _ => {
+            {
+                let svc = emote_service.read().await;
+                svc.invalidate_channel(&channel_id).await;
+            }
+            IrcService::fetch_and_store_emotes(&channel_name, emote_service.clone()).await;
+        }
     }
-    IrcService::fetch_and_store_emotes(&channel_name, emote_service.clone()).await;
 
     let renamed_json: Vec<Value> = renamed
         .iter()
@@ -506,6 +560,9 @@ async fn handle_emote_set_update(
         json!({
             "channel": channel_name,
             "channel_id": channel_id,
+            // Which platform's chat key / emote store this refers to; without it
+            // the frontend would treat every update as Twitch.
+            "platform": platform,
             "actor_name": actor_name,
             "added": added,
             "removed": removed,

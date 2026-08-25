@@ -70,11 +70,19 @@ impl ChatLoggerService {
     }
 
     fn passes_filter(cfg: &ChatLoggingSettings, channel: &str) -> bool {
+        // A provider channel arrives as the composite key ("kick:xqc") while the
+        // allowlist holds bare logins, so match on the channel part. Naming a
+        // channel therefore logs it on every platform you watch it, which is what
+        // "log this channel" is understood to mean.
+        let bare = crate::services::providers::key::parse_key(channel).channel;
         cfg.channels.is_empty()
             || cfg
                 .channels
                 .iter()
-                .any(|c| c.channel_login.eq_ignore_ascii_case(channel))
+                .any(|c| {
+                    c.channel_login.eq_ignore_ascii_case(channel)
+                        || c.channel_login.eq_ignore_ascii_case(&bare)
+                })
     }
 
     /// `[HH:MM:SS] ` from an epoch-milliseconds string (the ChatMessage
@@ -83,11 +91,19 @@ impl ChatLoggerService {
         if !cfg.timestamps {
             return String::new();
         }
+        // Twitch stamps epoch milliseconds; Kick and YouTube stamp ISO-8601. Try
+        // both before falling back to now, or every provider line would be logged
+        // with its WRITE time instead of its send time.
         let local = epoch_ms
             .parse::<i64>()
             .ok()
             .and_then(chrono::DateTime::from_timestamp_millis)
             .map(|t| t.with_timezone(&Local))
+            .or_else(|| {
+                chrono::DateTime::parse_from_rfc3339(epoch_ms)
+                    .ok()
+                    .map(|t| t.with_timezone(&Local))
+            })
             .unwrap_or_else(Local::now);
         format!("[{}] ", local.format("%H:%M:%S"))
     }
