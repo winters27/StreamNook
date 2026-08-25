@@ -1,3 +1,37 @@
+## [8.5.0] - 2026-08-25
+
+## 🎉 New: Kick and YouTube join Twitch
+> StreamNook is no longer a Twitch only app. Browse Kick and YouTube, watch them in the same player, and use the same chat you already know. Connect your accounts and follows from every platform land in one list, so a single glance tells you what is live.
+
+![Kick and YouTube join Twitch](https://raw.githubusercontent.com/winters27/StreamNook/main/.github/assets/release-8.5.0-platforms.png)
+
+---
+
+### ✨ Features
+- **Kick and YouTube, everywhere Twitch already was.** A picker in the title bar switches between platforms or shows all of them at once, with a live count for each. Everything below works the same on all three.
+  - **Browse and watch.** Directories, categories and channel search per platform, in the same player with the same quality picker, theater mode, Compact View and MultiNook.
+  - **Your account.** Sign in once and follows import automatically with their profile pictures, so offline channels look right immediately. Sessions are rechecked in the background, so a revoked login is flagged instead of silently returning nothing. Follow and unfollow from the heart, and open a Kick subscription or YouTube membership where the creator offers one.
+  - **Chat, with the tools you actually use.** Send, reply, mention and tab complete. Ban, timeout and delete from the same drag targets, hover dock and slash commands as Twitch, with your moderator status checked properly rather than guessed. User cards carry recent messages, account age, follow and subscription state. Room modes show when a channel is in slow, followers only, subscriber only or emote only mode, and the composer says why a message was refused instead of quietly dropping it.
+  - **Every event each platform sends.** Kick subscriptions, gifted subs, pins, deletions and bans. YouTube Super Chats and Super Stickers in their real tier colors, memberships and milestones, gift purchases and redemptions, mode changes and pinned banners.
+  - **Chat opens with history** instead of an empty pane, so you arrive with context rather than waiting for someone to talk. Offline Kick channels show their chat too.
+  - **Emotes and cosmetics.** 7TV channel sets and globals load for Kick and YouTube and appear in the picker, in chat and in tab completion. Kick's own channel emotes send correctly so they render for everyone else on kick.com, and YouTube's custom emoji are learned from chat as they arrive. 7TV paints and badges render for you and everyone else, resolved from whichever account they linked.
+  - **YouTube specifics.** Streams play up to 1440p60 wherever the broadcaster offers it, with the rest of the quality ladder still there to step back down to. And you choose which chat to read: Live chat is everything, Top chat is YouTube's own filtered view that keeps a very fast chat readable.
+- **Write your own event text on the overlay.** Every event category can carry your own wording in place of the platform's system message, built from tokens that resolve out of the real event: the name, tier, months, streak, gift count, recipient, bits, raid viewers, channel and more. Nothing is invented, so a token with no value falls back rather than printing a blank.
+- **Finer control over how overlay chat reads.** Choose whether replies show the full quoted parent, a short mention, or nothing at all. Style links with your own color, with or without an underline, or leave them plain. And decide whether your personal emotes appear for viewers.
+- **Spellcheck in the chat box.** Misspellings get a subtle underline as you type, right click any of them for suggestions, and add names, slang and channel in-jokes to a personal dictionary so they stop being flagged. Fully optional and off in one click.
+- **Mouse controls in the player.** Scroll anywhere over the video to change volume and middle click to mute, with a readout that appears while you are adjusting and fades once you stop. Shift and scroll opens the channel's About panel. Each one can be turned off on its own, and the volume step is yours to set.
+- **Know what a channel is streaming before you click.** Hovering a channel in the sidebar shows its title, category and viewers, and Compact View gained a live stats readout of its own.
+
+### 🐛 Bug Fixes
+- Fixed chat that could go quiet while still looking connected. A session that stopped receiving is now spotted and revived, instead of passing as healthy because sending still worked.
+- Fixed a maximized window that could grow slightly larger every time it was dragged.
+- Fixed shared chat headers being clipped, and follow and subscribe buttons showing on streams where they do not apply.
+- The mod logs panel now says why it is empty. "You are not a moderator here", "your login expired" and "this user never spoke" used to look identical, all of them a blank panel.
+- Sign-in popups now stay inside the app. Google's account picker in particular used to escape as a bare undecorated window floating over everything.
+
+### 🔧 Maintenance
+- Playback recovers on its own when a stream's access credentials expire mid session, instead of stalling or dropping to a lower quality.
+
 ## [8.4.2] - 2026-08-16
 
 ## 🔦 Feature Spotlight: The Command Palette
