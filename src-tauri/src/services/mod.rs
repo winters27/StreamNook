@@ -30,6 +30,7 @@ pub mod layout_service;
 pub mod modroom_auth_service;
 pub mod youtube_auth_service;
 pub mod live_notification_service;
+pub mod provider_live_service;
 pub mod ll_origin;
 #[cfg(test)]
 mod ll_soak;
@@ -46,6 +47,10 @@ pub mod seventv_eventapi;
 pub mod song_id;
 pub mod stream_server;
 pub mod ts_fmp4;
+pub mod webm_fmp4;
+pub mod youtube_dash;
+pub mod youtube_potoken;
+pub mod youtube_sabr;
 pub mod twitch_auth_service;
 pub mod twitch_resolver;
 pub mod twitch_service;

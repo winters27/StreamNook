@@ -31,6 +31,7 @@ pub mod modroom;
 pub mod multi_nook;
 pub mod plugins;
 pub mod profile_cache;
+pub mod provider_browse;
 pub mod resub;
 pub mod screen_capture;
 pub mod session;

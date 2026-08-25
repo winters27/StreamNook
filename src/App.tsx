@@ -3,7 +3,6 @@ import { ChevronLeft, ChevronRight } from 'lucide-react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore, type WhisperImportProgress, type SettingsTab } from './stores/AppStore';
-import { useContextMenuStore } from './stores/contextMenuStore';
 import { listenForSettingsUpdates } from './utils/settingsBroadcast';
 import { trackPresence, isSupabaseConfigured, incrementStat, incrementChannelWatch, subscribeToStreamNookRegistry, subscribeToCosmeticsRegistry, subscribeToAtmospheresRegistry, refreshEntitlementRegistries } from './services/supabaseService';
 import { maybeClaimWatchRewards } from './services/watchRewards';
@@ -12,12 +11,18 @@ import DynamicIsland from './components/DynamicIsland';
 import VideoPlayer from './components/VideoPlayer';
 import ChannelAboutReveal from './components/ChannelAboutReveal';
 import ChatWidget from './components/ChatWidget';
+import MainProviderChat from './components/MainProviderChat';
+import { streamProvider } from './utils/streamProvider';
+import { useFollowsStore, type ProviderStreamRow } from './stores/followsStore';
+import type { ProviderId } from './types/providers';
 import { ModLogsWidget } from './components/chat/ModLogsWidget';
 import Home from './components/Home';
 import SettingsDialog from './components/SettingsDialog';
 import PublicProfileOverlay from './components/PublicProfileOverlay';
 import CommandPalette from './components/CommandPalette';
 import { useCommandPaletteHotkey } from './hooks/useCommandPaletteHotkey';
+import { usePlatformSessionCheck } from './hooks/usePlatformSessionCheck';
+import { usePlatformAccountSync } from './hooks/usePlatformAccountSync';
 import { useKeybindings } from './keybindings';
 import { startSnippetSync } from './stores/snippetStore';
 import PluginUiHost from './plugins-ui/PluginUiHost';
@@ -51,7 +56,7 @@ import ClipModal from './components/ClipModal';
 import ClipEditor from './components/ClipEditor';
 import TwitchOverlay from './components/TwitchOverlay';
 import ErrorBoundary from './components/ErrorBoundary';
-import { StreamContextMenu } from './components/StreamContextMenu';
+import InputContextMenuHost from './components/InputContextMenuHost';
 import ModerationDragLayer from './components/chat/ModerationDragLayer';
 import { listen } from '@tauri-apps/api/event';
 import { applyModerateEvent } from './utils/applyModerateEvent';
@@ -59,6 +64,7 @@ import { handleSeventvEmoteSetUpdate, handleSeventvCosmeticUpdate, type EmoteSet
 import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWindow, LogicalSize } from '@tauri-apps/api/window';
 import { getLogicalInnerSize, clampToWorkArea } from './utils/windowSizing';
+import { isTitlebarDragActive } from './utils/titleBarDrag';
 import { getThemeById, applyTheme, DEFAULT_THEME_ID, getThemeByIdWithCustom, applyGlassStrength, DEFAULT_GLASS_TRANSPARENCY, applyFont, DEFAULT_FONT_ID, OLED_THEME_ID, getOledTheme } from './themes';
 import { getSelectedCompactViewPreset } from './constants/compactViewPresets';
 
@@ -111,6 +117,54 @@ async function restoreFromCompact(
 function App() {
   useCommandPaletteHotkey();
   useKeybindings();
+  // Main window only: popouts learn from the `platform-account-changed` broadcast
+  // rather than each running a check of their own.
+  usePlatformSessionCheck();
+  usePlatformAccountSync();
+  useEffect(() => {
+    // In-app follows for platforms with no followed-channels API of their own.
+    // The backend poller owns liveness and pushes `provider-live-update`; the
+    // initial pull just paints whatever it already knows so the sidebar isn't
+    // empty for the first poll interval after launch.
+    const follows = useFollowsStore.getState();
+    void follows.hydrate();
+    void follows.refreshLive();
+    let unlistenLive: (() => void) | undefined;
+    let cancelled = false;
+    // The stream we are WATCHING ended, reported the moment the backend learns
+    // it rather than on the liveness poll's schedule. That poll needs two 60s
+    // cycles to agree, and never gets there at all if the check itself is
+    // erroring — so without this the player just froze on its last frame.
+    void listen<{ provider: ProviderId; channel: string }>(
+      'provider-stream-offline',
+      (event) => {
+        const watching = useAppStore.getState().currentStream;
+        if (!watching) return;
+        const sameChannel =
+          (watching.user_login || '').toLowerCase() ===
+          (event.payload.channel || '').toLowerCase();
+        if (streamProvider(watching) !== event.payload.provider || !sameChannel) return;
+        void useAppStore.getState().handleStreamOffline();
+      },
+    ).then((u) => {
+      if (cancelled) u();
+    });
+    void listen<{ provider: ProviderId; streams: ProviderStreamRow[] }>(
+      'provider-live-update',
+      (event) => {
+        useFollowsStore
+          .getState()
+          .setProviderLive(event.payload.provider, event.payload.streams ?? []);
+      },
+    ).then((u) => {
+      if (cancelled) u();
+      else unlistenLive = u;
+    });
+    return () => {
+      cancelled = true;
+      unlistenLive?.();
+    };
+  }, []);
   useEffect(() => {
     // Subscribe to snippet-store updates from MultiChat popouts so changes
     // made over there propagate here without reload.
@@ -493,29 +547,11 @@ function App() {
     }
   }, [isBooting]);
 
-  // Global Context Menu Blocker (exempting inputs)
+  // The context-menu blocker lives in InputContextMenuHost (rendered below), so
+  // MultiChat popouts get the same menu — they render MultiChatWindow, not App.
+  //
+  // Global Keydown Blocker for Developer Tools (F12, Ctrl+Shift+I, Cmd+Option+I)
   useEffect(() => {
-    const handleContextMenu = (e: MouseEvent) => {
-        const target = e.target as HTMLElement;
-        const isInput = target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable || target.closest('input, textarea, [contenteditable]');
-        
-        if (isInput) {
-            e.preventDefault();
-            useContextMenuStore.getState().openInputMenu(e, target as HTMLElement);
-            return;
-        }
-
-        const selection = window.getSelection();
-        if (selection && selection.toString().trim().length > 0) {
-            e.preventDefault();
-            useContextMenuStore.getState().openSelectionMenu(e);
-            return;
-        }
-
-        e.preventDefault();
-    };
-    
-    // Global Keydown Blocker for Developer Tools (F12, Ctrl+Shift+I, Cmd+Option+I)
     // Disabled automatically in development environment
     const handleKeyDown = (e: KeyboardEvent) => {
         if (import.meta.env.DEV) return;
@@ -528,10 +564,8 @@ function App() {
         }
     };
 
-    document.addEventListener('contextmenu', handleContextMenu);
     document.addEventListener('keydown', handleKeyDown);
     return () => {
-        document.removeEventListener('contextmenu', handleContextMenu);
         document.removeEventListener('keydown', handleKeyDown);
     };
   }, []);
@@ -1236,8 +1270,12 @@ function App() {
     incrementStat(currentUser.user_id, 'streams_watched', 1);
 
     // Claim any active watch-to-earn event reward this stream qualifies for.
-    // Check on stream start, then every minute below.
-    void maybeClaimWatchRewards(
+    // Check on stream start, then every minute below. TWITCH ONLY: the rewards
+    // are keyed to Twitch channels and the category fallback is Helix, so on a
+    // provider stream this only produced a failed lookup on every tick.
+    const rewardsEligible =
+      streamProvider(useAppStore.getState().currentStream) === 'twitch';
+    if (rewardsEligible) void maybeClaimWatchRewards(
       currentUser.user_id,
       useAppStore.getState().currentStream?.user_login,
       useAppStore.getState().currentStream?.game_name,
@@ -1300,9 +1338,11 @@ function App() {
       if (theaterMode || !lockEnabled || (!currentStreamUrl && !currentIsMultiNookActive)) return;
 
       // Prevent re-entrant calls, and stand down while a placement change is
-      // mid-resize. That handler preserves the video dimensions; running the
-      // lock formula here against a half-applied window size shrinks it.
-      if (isAdjustingRef.current || placementResizeInProgressRef.current) return;
+      // mid-resize (that handler preserves the video dimensions; running the
+      // lock formula here against a half-applied window size shrinks it) or a
+      // titlebar drag holds the OS modal move loop (a setSize inside it
+      // corrupts the loop's cached rect).
+      if (isAdjustingRef.current || placementResizeInProgressRef.current || isTitlebarDragActive()) return;
       isAdjustingRef.current = true;
 
       try {
@@ -1327,7 +1367,7 @@ function App() {
         // Logical pixels: innerSize() is physical, and every offset below is a CSS
         // pixel. Mixing the two both skews the formula and, once written back as a
         // LogicalSize, multiplies the window by the scale factor on every pass.
-        const { width, height } = await getLogicalInnerSize(window);
+        const { width, height, scale } = await getLogicalInnerSize(window);
 
         Logger.debug('[AspectRatio] Current window size:', width, height);
         Logger.debug('[AspectRatio] Chat size:', currentChatSize);
@@ -1379,7 +1419,7 @@ function App() {
         Logger.debug('[AspectRatio] Calculated new size:', newWidth, newHeight);
 
         // Only resize if dimensions changed significantly (more than 5px difference)
-        const clamped = await clampToWorkArea(newWidth, newHeight);
+        const clamped = await clampToWorkArea(newWidth, newHeight, scale);
         if (Math.abs(width - clamped.width) > 5 || Math.abs(height - clamped.height) > 5) {
           Logger.debug('[AspectRatio] Resizing window to:', clamped.width, clamped.height);
           selfResizeUntilRef.current = Date.now() + 300;
@@ -1421,7 +1461,7 @@ function App() {
       const multiNookCount = multiNookSlotsLengthRef.current;
 
       if (theaterMode || !lockEnabled || (!currentStreamUrl && !currentIsMultiNookActive)) return;
-      if (isAdjustingRef.current || placementResizeInProgressRef.current) return;
+      if (isAdjustingRef.current || placementResizeInProgressRef.current || isTitlebarDragActive()) return;
       isAdjustingRef.current = true;
 
       try {
@@ -1441,7 +1481,7 @@ function App() {
 
         // Logical pixels — see the settle effect above for why this conversion is
         // what stops the window from growing on every resize event.
-        const { width, height } = await getLogicalInnerSize(window);
+        const { width, height, scale } = await getLogicalInnerSize(window);
 
         const titleBarHeight = 40;
 
@@ -1484,7 +1524,7 @@ function App() {
           uiHeightOffset: uiHeightOffset,
         });
 
-        const clamped = await clampToWorkArea(newWidth, newHeight);
+        const clamped = await clampToWorkArea(newWidth, newHeight, scale);
         if (Math.abs(width - clamped.width) > 5 || Math.abs(height - clamped.height) > 5) {
           Logger.debug('[AspectRatio] Resize event - adjusting to:', clamped.width, clamped.height);
           selfResizeUntilRef.current = Date.now() + 300;
@@ -1506,8 +1546,9 @@ function App() {
           clearTimeout(debounceTimeout);
         }
         debounceTimeout = setTimeout(async () => {
-          // Never react to a resize we performed ourselves.
-          if (Date.now() < selfResizeUntilRef.current) return;
+          // Never react to a resize we performed ourselves, nor to the
+          // restore/move traffic of a titlebar drag still in the OS move loop.
+          if (Date.now() < selfResizeUntilRef.current || isTitlebarDragActive()) return;
           // Check refs for current state
           if (aspectRatioLockEnabledRef.current && !isTheaterModeRef.current && (streamUrlRef.current || isMultiNookActiveRef.current)) {
             await adjustWindowForAspectRatio();
@@ -1631,6 +1672,19 @@ function App() {
       document.body.style.cursor = '';
     };
   }, [isResizing, isResizingModLogs, chatPlacement]);
+
+  // The chat pane, rendered identically at both docked layouts below. A
+  // non-Twitch stream routes through MainProviderChat, which feeds ChatWidget
+  // the same `channelOverride` seam MultiChat panes already use.
+  const chatPane =
+    currentStream && streamProvider(currentStream) !== 'twitch' ? (
+      <MainProviderChat
+        provider={streamProvider(currentStream)}
+        channel={currentStream.user_login}
+      />
+    ) : (
+      <ChatWidget />
+    );
 
   return (
     <div className="flex flex-col h-screen bg-background backdrop-blur-md">
@@ -1847,7 +1901,7 @@ function App() {
                             {isMultiNookActive && <MultiNookChatSwitcher />}
                             <div className="flex-1 overflow-hidden relative">
                               <ErrorBoundary componentName="Chat" reportToLogService resetKeys={[streamUrl, currentMediaType]}>
-                                <ChatWidget />
+                                {chatPane}
                               </ErrorBoundary>
                             </div>
                           </div>
@@ -1904,7 +1958,7 @@ function App() {
                         {isMultiNookActive && <MultiNookChatSwitcher />}
                         <div className="flex-1 overflow-hidden relative">
                           <ErrorBoundary componentName="Chat" reportToLogService resetKeys={[streamUrl, currentMediaType]}>
-                            <ChatWidget />
+                            {chatPane}
                           </ErrorBoundary>
                         </div>
                       </div>
@@ -2047,7 +2101,7 @@ function App() {
       <EntitlementUnlockNote />
       <TooltipManager />
       <CommandPalette />
-      <StreamContextMenu />
+      <InputContextMenuHost />
       <ModerationDragLayer />
       <ClipModal />
       <ClipEditor />

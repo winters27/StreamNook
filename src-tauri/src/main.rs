@@ -32,7 +32,7 @@ use commands::{
     cosmetics_cache::*, diagnostic_logging::*, discord::*, drops::*, emoji::*, emote_prefetch::*,
     emotes::*, eventsub::*, ffz::*, hype_train::*, identity::*, justlog::*, layout::*,
     link_preview::*, logs::*, mod_log_storage::*, modroom::*, multi_nook::*, plugins::*,
-    profile_cache::*,
+    profile_cache::*, provider_browse::*,
     resub::*, screen_capture::*, session::*, settings::*, seventv::*, seventv_cosmetics::*,
     seventv_cosmetics_fetch::*, song_id::*, streaming::*, subscriptions::*, twitch::*,
     universal_cache::*,
@@ -586,6 +586,10 @@ fn main() {
                 .map(|s| s.drops.auto_claim_channel_points)
                 .unwrap_or(false);
 
+            // Hand the provider adapters a settings handle. Done here rather than
+            // from the Twitch chat path, which a YouTube-only session never runs.
+            services::providers::init_settings(settings_arc.clone());
+
             let app_state = AppState {
                 settings: settings_arc,
                 drops_service,
@@ -599,9 +603,18 @@ fn main() {
 
             // Clone the app_state before managing it
             let app_state_for_live_notif = app_state.clone();
+            let app_state_for_provider_live = app_state.clone();
 
             // Manage AppState directly, not wrapped in Arc
             app.manage(app_state);
+
+            // Who's-live polling for followed channels on non-Twitch platforms.
+            // Separate from the Twitch live-notification service: it reads the
+            // app-local follow list and each platform's own adapter, but emits
+            // the SAME `streamer-went-live` event so the notification UI is
+            // shared. Started here (not earlier in setup) because it needs the
+            // AppState, which only exists at this point.
+            services::provider_live_service::start(app_handle.clone(), app_state_for_provider_live);
 
             // Start the plugin host: loads the registry and starts plugins
             // the user previously enabled. No-op with none installed.
@@ -866,8 +879,15 @@ fn main() {
             // Chat commands
             start_chat,
             stop_chat,
+            restart_chat_bridge,
+            validate_platform_sessions,
+            platform_account_info,
+            get_youtube_channel_emojis,
+            commands::streaming::youtube_sabr_probe,
             get_chat_lifecycle_log,
             debug_break_chat_socket,
+            debug_unjoin_channel,
+            nudge_chat_channels,
             send_chat_message,
             join_chat_channel,
             leave_chat_channel,
@@ -876,6 +896,26 @@ fn main() {
             provider_chat_disconnect,
             provider_send_message,
             provider_send_capability,
+            provider_source_caps,
+            provider_directory,
+            provider_search,
+            provider_categories,
+            provider_channel_meta,
+            provider_live_check,
+            get_provider_followed_live,
+            kick_account_sync,
+            youtube_account_sync,
+            provider_channel_avatars,
+            kick_user_profile,
+            youtube_user_profile,
+            provider_membership,
+            log_frontend_diag,
+            kick_account_is_synced,
+            report_kick_follows,
+            report_kick_resolve_diag,
+            get_provider_follows,
+            provider_follow,
+            provider_unfollow,
             report_kick_chatroom,
             report_kick_emotes,
             get_kick_channel_meta,
@@ -896,7 +936,11 @@ fn main() {
             kick_ban_user,
             kick_unban_user,
             kick_delete_message,
+            kick_can_moderate,
+            kick_chat_history,
+            kick_viewer_state,
             get_kick_channel_emotes,
+            get_youtube_channel_emotes,
             load_mod_logs,
             append_mod_log,
             clear_mod_logs,
@@ -1240,6 +1284,11 @@ fn main() {
                 let gone = label.clone();
                 tauri::async_runtime::spawn(async move {
                     services::irc_service::IrcService::release_window_claims(&gone, None).await;
+                    // Same sweep for the non-Twitch adapters. Their consumers are
+                    // window labels too, so without this a closed popout leaves
+                    // every Kick/YouTube/TikTok pane's socket and task running and
+                    // its BRIDGE_USERS count incremented for the whole session.
+                    services::providers::release_window_claims(&gone).await;
                 });
                 // Tell popouts the main window is gone so their Go Live control
                 // flips to "Live Chat" (standalone). Mirrors `main-ready`, which

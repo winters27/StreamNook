@@ -91,10 +91,28 @@ pub struct VideoPlayerSettings {
     /// and governor target. Default 2.5.
     #[serde(default = "default_ll_target_latency")]
     pub ll_target_latency: f32,
+    /// Scrolling over the player adjusts volume. On by default.
+    #[serde(default = "default_true")]
+    pub scroll_volume: bool,
+    /// Scrolling down over the player opens the channel About drawer. On by
+    /// default. When `scroll_volume` is also on, the plain wheel belongs to
+    /// volume and this moves to Shift + scroll down, so both can coexist.
+    #[serde(default = "default_true")]
+    pub scroll_about_reveal: bool,
+    /// Middle-clicking the player toggles mute. On by default.
+    #[serde(default = "default_true")]
+    pub middle_click_mute: bool,
+    /// How much one wheel notch moves the volume (0.01-0.25). Default 5%.
+    #[serde(default = "default_wheel_volume_step")]
+    pub wheel_volume_step: f32,
 }
 
 fn default_ll_target_latency() -> f32 {
     6.0
+}
+
+fn default_wheel_volume_step() -> f32 {
+    0.05
 }
 
 impl Default for VideoPlayerSettings {
@@ -110,6 +128,10 @@ impl Default for VideoPlayerSettings {
             audio_boost: AudioBoostSettings::default(),
             experimental_low_latency: false,
             ll_target_latency: 6.0,
+            scroll_volume: true,
+            scroll_about_reveal: true,
+            middle_click_mute: true,
+            wheel_volume_step: 0.05,
         }
     }
 }
@@ -522,6 +544,15 @@ pub struct Settings {
     /// `extra` because the window-event handler in main.rs reads it.
     #[serde(default)]
     pub close_to_tray: CloseToTrayMode,
+    /// Channels followed inside StreamNook on platforms whose own follow list we
+    /// can't read (Kick, TikTok). Modelled here rather than left to `extra`
+    /// because the who's-live poller (provider_live_service) reads it.
+    #[serde(default)]
+    pub provider_follows: Vec<ProviderFollow>,
+    /// Which YouTube live-chat view to read. Modelled here rather than left to
+    /// `extra` because the YouTube adapter reads it when it resolves a stream.
+    #[serde(default)]
+    pub youtube_chat_view: YouTubeChatView,
     /// Catch-all for preference groups the frontend manages but this struct does
     /// not model field-by-field: highlight phrases, custom chat commands,
     /// moderation prefs, custom themes, the OLED accent, and any future ones.
@@ -531,6 +562,40 @@ pub struct Settings {
     /// persists across restarts and travels intact in exported backups.
     #[serde(flatten, default)]
     pub extra: HashMap<String, serde_json::Value>,
+}
+
+/// A channel the user follows inside StreamNook, for platforms that don't
+/// expose their own follow list to us. Mirrors the frontend `ProviderFollow`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProviderFollow {
+    pub provider: String,
+    /// Slug / @handle / UC id — what chat and playback address.
+    pub channel: String,
+    #[serde(default)]
+    pub display_name: Option<String>,
+    /// Cached platform user id, filled on the first successful live check (Kick's
+    /// batch live endpoint takes numeric ids, not slugs).
+    #[serde(default)]
+    pub user_id: Option<String>,
+    #[serde(default)]
+    pub added_at: String,
+    /// The user subscribes to this channel on the platform. Imported from the
+    /// account sync; drives the subscriber marker in lists and the player.
+    #[serde(default)]
+    pub subscribed: bool,
+    /// The channel's avatar, captured when the follow was imported.
+    ///
+    /// Both platforms hand us this in the import payload and it used to be
+    /// discarded, after which the offline roster re-fetched the same image one
+    /// channel at a time, on every app start. Stored here it costs nothing to
+    /// draw. Absent for rows imported before this existed, and for any the
+    /// import didn't carry — the per-card resolver still covers those.
+    #[serde(default)]
+    pub avatar: Option<String>,
+    /// Imported from the platform's own follow list rather than added by hand
+    /// here. A re-sync may remove these; hand-added follows are never touched.
+    #[serde(default)]
+    pub imported: bool,
 }
 
 fn default_theme() -> String {
@@ -551,6 +616,8 @@ impl Default for Settings {
             streamlink: StreamlinkSettings::default(),
             drops: DropsSettings::default(),
             favorite_streamers: vec![],
+            provider_follows: vec![],
+            youtube_chat_view: YouTubeChatView::default(),
             chat_design: ChatDesignSettings::default(),
             live_notifications: LiveNotificationSettings::default(),
             last_seen_version: None,
@@ -601,6 +668,27 @@ pub enum CloseToTrayMode {
     Always,
     /// Always quit, even with popouts open.
     Never,
+}
+
+/// Which of YouTube's two live-chat views to read.
+///
+/// `Live` is the unfiltered firehose and stays the default. `Top` is what
+/// youtube.com itself defaults to: YouTube drops messages it judges low quality
+/// (and most of one author's repeats), so a very fast chat stays readable at the
+/// cost of not seeing everything.
+///
+/// Measured by polling both views over the SAME window on one stream: Live 159
+/// messages, Top 129, and every Top id was also in Live. So Top is a strict
+/// subset that dropped about 19% here, not a different feed. Its join backlog is
+/// smaller too (51 rows against 73).
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum YouTubeChatView {
+    /// Every message YouTube publishes.
+    #[default]
+    Live,
+    /// YouTube's own filtered view.
+    Top,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -656,6 +744,43 @@ pub struct AppState {
 #[cfg(test)]
 mod backup_persistence_tests {
     use super::*;
+
+    /// A modeled top-level preference must survive the save/load round-trip, and
+    /// must NOT be swallowed by the flattened `extra` map on the way back.
+    #[test]
+    fn youtube_chat_view_round_trips() {
+        let mut s = Settings::default();
+        assert_eq!(s.youtube_chat_view, YouTubeChatView::Live, "firehose is the default");
+
+        s.youtube_chat_view = YouTubeChatView::Top;
+        let value = serde_json::to_value(&s).expect("serialize");
+        assert_eq!(
+            value.get("youtube_chat_view").and_then(|v| v.as_str()),
+            Some("top"),
+            "kebab-case on the wire, matching the TS YouTubeChatView union",
+        );
+        assert!(
+            value.get("extra").is_none(),
+            "modeled fields serialize at the top level",
+        );
+
+        let back: Settings = serde_json::from_value(value).expect("deserialize");
+        assert_eq!(back.youtube_chat_view, YouTubeChatView::Top);
+        assert!(!back.extra.contains_key("youtube_chat_view"));
+    }
+
+    /// A settings.json written before this setting existed must load, and land on
+    /// the default rather than failing the whole parse.
+    #[test]
+    fn youtube_chat_view_defaults_when_absent() {
+        let mut value = serde_json::to_value(Settings::default()).expect("serialize");
+        value
+            .as_object_mut()
+            .expect("object")
+            .remove("youtube_chat_view");
+        let loaded: Settings = serde_json::from_value(value).expect("older settings still load");
+        assert_eq!(loaded.youtube_chat_view, YouTubeChatView::Live);
+    }
 
     /// Frontend-managed preference groups the struct doesn't model (highlight
     /// phrases, custom themes, the OLED accent, ...) must survive a save/load

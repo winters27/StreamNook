@@ -43,6 +43,13 @@ pub fn set_diagnostics_enabled(enabled: bool) {
 
     // Update the log level filter. "Enabled" raises to Info (not Debug — debug
     // is the firehose that floods the terminal); disabled drops to Warn.
+    // RUST_LOG wins. Without this the runtime toggle forced Info on every
+    // startup, so a developer setting RUST_LOG=...=debug got NOTHING and had no
+    // way to tell the filter was being overridden — debug diagnostics simply
+    // never appeared.
+    if std::env::var("RUST_LOG").is_ok() {
+        return;
+    }
     let level = if enabled {
         LevelFilter::Info
     } else {

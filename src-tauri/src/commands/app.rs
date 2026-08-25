@@ -92,42 +92,109 @@ pub fn start_titlebar_drag(window: Window) -> Result<(), String> {
         // the event loop, so outer_size() straight after unmaximize() can still report
         // the maximized size.
         if let Some((mut rw, mut rh)) = restore_rect_size(&window) {
-            // A build before the logical-units fix could have persisted a restore rect
-            // larger than the screen. Never restore into one.
-            if let Ok(Some(monitor)) = window.current_monitor() {
-                let work = monitor.work_area();
-                rw = rw.min(work.size.width);
-                rh = rh.min(work.size.height);
-            }
-
             let cursor = window.cursor_position().map_err(|e| e.to_string())?;
-            let pos = window.outer_position().map_err(|e| e.to_string())?;
-            let size = window.outer_size().map_err(|e| e.to_string())?;
 
-            // Keep the same point of the title bar under the cursor after the restore.
-            let frac_x = if size.width > 0 {
-                ((cursor.x - pos.x as f64) / size.width as f64).clamp(0.0, 1.0)
+            // A poisoned restore rect (persisted by an older build, or inflated by a
+            // mis-scaled resize) must never round-trip. current_monitor() can be None
+            // while the window straddles monitors, so fall back to the monitor under
+            // the cursor, then the primary — the clamp must never silently no-op.
+            let monitor = window
+                .current_monitor()
+                .ok()
+                .flatten()
+                .or_else(|| window.monitor_from_point(cursor.x, cursor.y).ok().flatten())
+                .or_else(|| window.primary_monitor().ok().flatten());
+
+            if let Some(monitor) = monitor {
+                let work = monitor.work_area();
+                // 90% cap: the restore is always visibly smaller than maximized, so a
+                // work-area-sized rcNormalPosition self-heals on the first drag.
+                rw = rw.min(work.size.width * 9 / 10);
+                rh = rh.min(work.size.height * 9 / 10);
+
+                let pos = window.outer_position().map_err(|e| e.to_string())?;
+                let size = window.outer_size().map_err(|e| e.to_string())?;
+
+                // Keep the same point of the title bar under the cursor after the restore.
+                let frac_x = if size.width > 0 {
+                    ((cursor.x - pos.x as f64) / size.width as f64).clamp(0.0, 1.0)
+                } else {
+                    0.5
+                };
+                let grab_y = (cursor.y - pos.y as f64).clamp(0.0, (rh as f64 - 1.0).max(0.0));
+
+                let x = (cursor.x - frac_x * rw as f64).round() as i32;
+                let y = (cursor.y - grab_y).round() as i32;
+
+                // rcNormalPosition is an OUTER rect but set_size takes the INNER size;
+                // subtract the frame delta measured now (the same invisible resize
+                // border applies whether maximized or restored on a borderless window).
+                let inner = window.inner_size().map_err(|e| e.to_string())?;
+                let frame_w = size.width.saturating_sub(inner.width);
+                let frame_h = size.height.saturating_sub(inner.height);
+
+                // Queued setters, so they apply in this order on the event loop.
+                window.unmaximize().map_err(|e| e.to_string())?;
+                window
+                    .set_size(tauri::PhysicalSize::new(
+                        rw.saturating_sub(frame_w),
+                        rh.saturating_sub(frame_h),
+                    ))
+                    .map_err(|e| e.to_string())?;
+                window
+                    .set_position(tauri::PhysicalPosition::new(x, y))
+                    .map_err(|e| e.to_string())?;
             } else {
-                0.5
-            };
-            let grab_y = (cursor.y - pos.y as f64).clamp(0.0, (rh as f64 - 1.0).max(0.0));
-
-            let x = (cursor.x - frac_x * rw as f64).round() as i32;
-            let y = (cursor.y - grab_y).round() as i32;
-
-            // Queued setters, so they apply in this order on the event loop.
-            window.unmaximize().map_err(|e| e.to_string())?;
-            window
-                .set_size(tauri::PhysicalSize::new(rw, rh))
-                .map_err(|e| e.to_string())?;
-            window
-                .set_position(tauri::PhysicalPosition::new(x, y))
-                .map_err(|e| e.to_string())?;
+                // No monitor info at all: don't guess a rect, just unmaximize and drag.
+                window.unmaximize().map_err(|e| e.to_string())?;
+            }
         } else {
             window.unmaximize().map_err(|e| e.to_string())?;
         }
     }
-    window.start_dragging().map_err(|e| e.to_string())
+    let result = window.start_dragging().map_err(|e| e.to_string());
+
+    // start_dragging() returns as soon as the OS move loop is POSTED, not when the
+    // drag ends, so the frontend gets its drag-over signal from a watcher thread
+    // instead of the invoke resolving. The frontend suppresses aspect-ratio resizes
+    // between the invoke and this event: a setSize inside the modal move loop
+    // corrupts the loop's cached rect and commits a bogus size on mouse-up.
+    #[cfg(windows)]
+    if result.is_ok() {
+        use tauri::Emitter;
+        let win = window.clone();
+        std::thread::spawn(move || {
+            use windows::Win32::UI::Input::KeyboardAndMouse::{
+                GetAsyncKeyState, VK_LBUTTON, VK_RBUTTON,
+            };
+            use windows::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_SWAPBUTTON};
+            // Swapped mouse buttons report the physical left button as VK_RBUTTON.
+            let vk = if unsafe { GetSystemMetrics(SM_SWAPBUTTON) } != 0 {
+                VK_RBUTTON
+            } else {
+                VK_LBUTTON
+            };
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+            loop {
+                std::thread::sleep(std::time::Duration::from_millis(30));
+                let down = (unsafe { GetAsyncKeyState(vk.0 as i32) } as u16) & 0x8000 != 0;
+                if !down || std::time::Instant::now() > deadline {
+                    break;
+                }
+            }
+            // The modal loop is over: recover any wedged unresizable state and let
+            // the frontend resume aspect-ratio adjustments.
+            let _ = win.set_resizable(true);
+            let _ = win.emit("titlebar-drag-ended", ());
+        });
+    }
+    #[cfg(not(windows))]
+    {
+        use tauri::Emitter;
+        let _ = window.emit("titlebar-drag-ended", ());
+    }
+
+    result
 }
 
 /// Pre-maximize window size straight from Win32. `rcNormalPosition` is documented as

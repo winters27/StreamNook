@@ -1,6 +1,17 @@
 use crate::services::log_service::{ActivityEntry, LogEntry, LogLevel, LogService};
 use tauri::command;
 
+/// Put a frontend diagnostic into the SAME log the backend writes.
+///
+/// `LogService` keeps its own in-app buffer and does not go through the `log`
+/// crate, and the frontend `Logger` writes to the devtools console (with info/debug
+/// off by default). So a frontend trace was invisible in the log file people
+/// actually read and paste. This is the one-line bridge for that.
+#[command]
+pub fn log_frontend_diag(message: String) {
+    log::info!("[frontend] {}", message);
+}
+
 #[command]
 pub async fn log_message(
     level: String,

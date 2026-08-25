@@ -55,6 +55,22 @@ const isPluginWindow = hash.startsWith('#/plugin/');
 const container = document.getElementById('root') as HTMLElement & {
   __snRoot?: ReactDOM.Root;
 };
+// Dev-only console hooks. `withGlobalTauri` is deliberately off, so devtools has
+// no way to reach a Tauri command; this exposes the handful worth poking at by
+// hand rather than opening the whole API surface to any script in the window.
+// Stripped from production builds by the DEV guard.
+if (import.meta.env.DEV) {
+  void import('@tauri-apps/api/core').then(({ invoke }) => {
+    (window as unknown as Record<string, unknown>).sn = {
+      /** One SABR round trip for a YouTube video id: mints a PO token, asks for
+       *  media, and reports what came back. Watch the Rust log for the detail. */
+      sabrProbe: (videoId: string) => invoke('youtube_sabr_probe', { videoId }),
+    };
+    // eslint-disable-next-line no-console
+    console.info('[dev] window.sn ready: sn.sabrProbe("<videoId>")');
+  });
+}
+
 const root = container.__snRoot ?? (container.__snRoot = ReactDOM.createRoot(container));
 root.render(
   <React.StrictMode>

@@ -19,6 +19,16 @@ pub async fn load_settings(state: State<'_, AppState>) -> Result<Settings, Strin
     Ok(settings.clone())
 }
 
+/// Serialize the given settings to settings.json. Shared by the settings save
+/// command and by any backend-owned write (e.g. the provider follow list), so
+/// there is exactly one place that knows the file format and location.
+pub fn write_settings_to_disk(settings: &Settings) -> Result<(), String> {
+    let settings_path = get_settings_path()?;
+    let json = serde_json::to_string_pretty(settings)
+        .map_err(|e| format!("Failed to serialize settings: {}", e))?;
+    fs::write(&settings_path, json).map_err(|e| format!("Failed to write settings file: {}", e))
+}
+
 #[tauri::command]
 pub async fn save_settings(
     mut settings: Settings,
@@ -26,6 +36,12 @@ pub async fn save_settings(
 ) -> Result<(), String> {
     {
         let mut state_settings = state.settings.lock().unwrap();
+        // `provider_follows` is backend-owned for the same reason `drops` is
+        // (below): it is written by the follow commands and read by the
+        // who's-live poller, so the frontend's copy can be stale. Worse, it is
+        // `#[serde(default)]`, so a frontend save that omits the key would
+        // silently deserialize to an empty list and wipe every follow.
+        settings.provider_follows = state_settings.provider_follows.clone();
         // `drops` is owned by the drops service: it's written only through
         // update_drops_settings (the plugin's Autopilot panel writes through that
         // path too), which keeps state.settings.drops authoritative. A frontend
@@ -39,13 +55,7 @@ pub async fn save_settings(
     }
 
     // Save to our custom location in the same directory as cache
-    let settings_path = get_settings_path()?;
-    let json = serde_json::to_string_pretty(&settings)
-        .map_err(|e| format!("Failed to serialize settings: {}", e))?;
-
-    fs::write(&settings_path, json).map_err(|e| format!("Failed to write settings file: {}", e))?;
-
-    Ok(())
+    write_settings_to_disk(&settings)
 }
 
 /// Top-level keys tied to *this machine's* session, never written into a backup

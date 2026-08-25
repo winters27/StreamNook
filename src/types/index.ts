@@ -1,3 +1,5 @@
+import type { ProviderId } from './providers';
+
 export interface AudioBoostSettings {
   enabled: boolean;
   gain: number; // Makeup gain multiplier applied after compression (1 = unity)
@@ -49,6 +51,15 @@ export interface VideoPlayerSettings {
   song_id?: SongIdSettings;
   experimental_low_latency?: boolean;
   ll_target_latency?: number;
+  /** Scroll over the player to adjust volume. Default true. */
+  scroll_volume?: boolean;
+  /** Scroll down over the player to open the channel About drawer. Default
+   *  true. Moves to Shift + scroll down while `scroll_volume` is also on. */
+  scroll_about_reveal?: boolean;
+  /** Middle-click the player to toggle mute. Default true. */
+  middle_click_mute?: boolean;
+  /** Volume moved per wheel notch, 0.01-0.25. Default 0.05. */
+  wheel_volume_step?: number;
 }
 
 export interface CacheSettings {
@@ -475,6 +486,13 @@ export interface ChatInputSettings {
   emote_tab_complete_enabled?: boolean;
   emote_tab_complete_match_mode?: 'starts_with' | 'includes';
   emote_tab_complete_include_chatters?: boolean;
+  // Underline misspelled words in the composer and offer corrections on
+  // right-click. Replaces the webview's own spell check, which flags every
+  // emote name and every login because it has never seen Twitch chat.
+  // Defaults to on.
+  spellcheck_enabled?: boolean;
+  // Words taught from the right-click menu. Stored lowercase.
+  spellcheck_custom_words?: string[];
   // Chrome around the composer, for people who want the row as bare as
   // possible. All default to showing.
   hide_placeholder?: boolean;
@@ -725,6 +743,12 @@ export interface UserCardSettings {
 // the long-standing behavior.
 export type CloseToTrayMode = 'with-popouts' | 'always' | 'never';
 
+// Which of YouTube's two live-chat views to read. Mirrors the Rust
+// YouTubeChatView enum (kebab-case); keep the two in sync. 'live' is the
+// unfiltered firehose and the default; 'top' is YouTube's own filtered view,
+// which drops messages it judges low quality so a very fast chat stays readable.
+export type YouTubeChatView = 'live' | 'top';
+
 export interface Settings {
   quality: string;
   chat_placement: string;
@@ -805,6 +829,39 @@ export interface Settings {
   // same one again is two clicks in the composer.
   recent_polls?: RecentPollEntry[];
   recent_predictions?: RecentPollEntry[];
+  // Channels followed inside StreamNook on platforms whose own follow list we
+  // can't read (Kick, TikTok). A TYPED Rust field, not an `extra` key, because
+  // the backend who's-live poller reads it.
+  provider_follows?: ProviderFollow[];
+  // Which YouTube live-chat view to read. A TYPED Rust field, not an `extra`
+  // key, because the YouTube adapter reads it when it resolves a stream.
+  youtube_chat_view?: YouTubeChatView;
+  // Which platform the Home tabs are filtered to. Frontend-only, rides `extra`.
+  /** Which platform the app is scoped to (the rail's selection). Frontend-only,
+   *  so it rides Rust's settings catch-all as a top-level key. */
+  active_platform?: ProviderId | 'all';
+  // Whether the sidebar merges platforms into one list or groups them into
+  // collapsible per-platform sections. Frontend-only, rides `extra`.
+  sidebar_provider_grouping?: 'unified' | 'grouped';
+}
+
+/** A channel the user follows inside StreamNook. Mirrors the Rust struct. */
+export interface ProviderFollow {
+  provider: ProviderId;
+  /** Slug / @handle / UC id, lowercased for Kick, verbatim for YouTube ids. */
+  channel: string;
+  display_name?: string;
+  /** Cached platform user id, filled on the first successful live check. */
+  user_id?: string;
+  /** ISO-UTC. */
+  added_at: string;
+  /** The user subscribes to this channel on the platform. */
+  subscribed?: boolean;
+  /** Imported from the platform's own follow list rather than added by hand. */
+  imported?: boolean;
+  /** Channel avatar captured at import (and backfilled once after a sync), so
+   *  the roster draws without a per-card lookup on every app start. */
+  avatar?: string;
 }
 
 /** A title plus its choices, remembered so the composer can offer it again. */
@@ -869,6 +926,13 @@ export interface ReleaseNotes {
   published_at: string;
 }
 
+/**
+ * A live stream row. The name is historical: rows may now come from any
+ * platform, tagged by `provider`. Non-Twitch rows are field-compatible but
+ * differ semantically — `user_id` is the platform's own id (Kick numeric,
+ * YouTube UC…), `thumbnail_url` is a direct URL with no {width} template, and
+ * `game_id` / `tags` / `broadcaster_type` may be absent.
+ */
 export interface TwitchStream {
   id: string;
   user_id: string;
@@ -886,7 +950,14 @@ export interface TwitchStream {
   is_live?: boolean;
   // Free-form stream tags (e.g. "English", "Speedrun"); used by the category tag filter.
   tags?: string[];
+  /** Source platform. ABSENT = twitch (every pre-existing producer). */
+  provider?: ProviderId;
+  /** Canonical platform watch URL, set by provider rows; drives `start_stream`. */
+  watch_url?: string;
 }
+
+/** Platform-neutral alias for new code; identical to `TwitchStream`. */
+export type Stream = TwitchStream;
 
 export interface TwitchClip {
   id: string;
