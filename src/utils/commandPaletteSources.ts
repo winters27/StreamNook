@@ -21,7 +21,9 @@
 import { invoke } from '@tauri-apps/api/core';
 import { useAppStore, clipSourceOf, type SettingsTab } from '../stores/AppStore';
 import { useChatUserStore } from '../stores/chatUserStore';
+import { useFollowsStore } from '../stores/followsStore';
 import { useSnippetStore } from '../stores/snippetStore';
+import { WATCHABLE_PROVIDERS, providerLabel, type ProviderId } from '../types/providers';
 import { usePluginUiRegistry } from '../plugins-ui/registry';
 import { Logger } from './logger';
 import { getBuiltInSnippets, type Snippet } from './commandPaletteCopypastas';
@@ -161,6 +163,35 @@ function requireStream(): TwitchStream | null {
     return null;
   }
   return stream;
+}
+
+/** One row per platform context, so the seam's menu has a keyboard equivalent.
+ *  The subtitle carries the same live count the seam shows, which is what makes
+ *  the row worth choosing between rather than a bare rename. */
+function buildPlatformItems(): PaletteItem[] {
+  if (WATCHABLE_PROVIDERS.length < 2) return [];
+  const followed = useAppStore.getState().followedStreams.length;
+  const live = Object.values(useFollowsStore.getState().liveByKey).filter((r) => r.is_live);
+  const countOf = (p: ProviderId | 'all'): number => {
+    if (p === 'twitch') return followed;
+    if (p !== 'all') return live.filter((r) => r.provider === p).length;
+    return WATCHABLE_PROVIDERS.reduce(
+      (n, id) => n + (id === 'twitch' ? followed : live.filter((r) => r.provider === id).length),
+      0,
+    );
+  };
+  const options: (ProviderId | 'all')[] = ['all', ...WATCHABLE_PROVIDERS];
+  return options.map((p) => {
+    const label = p === 'all' ? 'All platforms' : providerLabel(p);
+    return {
+      id: `qa.platform.${p}`,
+      section: 'Quick Actions' as const,
+      title: `Switch to ${label}`,
+      subtitle: `${countOf(p)} followed live`,
+      keywords: `platform provider switch scope ${label.toLowerCase()} ${p}`,
+      run: () => useAppStore.getState().setActivePlatform(p),
+    };
+  });
 }
 
 function buildQuickActions(): PaletteItem[] {
@@ -304,7 +335,7 @@ function buildQuickActions(): PaletteItem[] {
     {
       id: 'qa.surpriseMe',
       section: 'Quick Actions',
-      title: 'Surprise me — random live follow',
+      title: 'Surprise me, a random live follow',
       subtitle: 'Jump into a random channel from your following',
       keywords: 'random shuffle surprise lucky pick',
       run: () => {
@@ -779,6 +810,7 @@ const SETTINGS_CATALOG: SettingsEntry[] = [
   // Player
   { tab: 'Player', keywords: 'player video stream playback overlay buttons auto switch streaming codecs audio boost song id' },
   { tab: 'Player', section: 'Player Overlay Buttons', keywords: 'player overlay buttons follow subscribe clip identify song clips vods multinook refresh close hide show customize which buttons top right' },
+  { tab: 'Player', section: 'Mouse Controls', sectionId: 'settings-section-mouse-controls', keywords: 'mouse wheel scroll volume louder quieter middle click mute unmute one handed scroll wheel button volume step notch channel about reveal shift scroll down' },
   { tab: 'Player', section: 'Auto-Switch', sectionId: 'settings-section-auto-switch', keywords: 'auto switch fallback offline next stream raid redirect followed category notification stay offline chat' },
   { tab: 'Player', section: 'Streaming', sectionId: 'settings-section-streaming', keywords: 'streaming codecs h265 hevc av1 h264 connection timeout auto retry delay resolve' },
   { tab: 'Player', section: 'Video Player', sectionId: 'settings-section-video-player', keywords: 'video player autoplay live edge gap low latency buffer quality volume aspect ratio lock start muted fullscreen controls cinema mode letterbox bars black color match theme floating pillarbox immersive' },
@@ -795,6 +827,7 @@ const SETTINGS_CATALOG: SettingsEntry[] = [
   { tab: 'Chat', keywords: 'chat placement design fonts dividers timestamps mentions emotes logging channel points highlights commands reminders' },
   { tab: 'Chat', section: 'Chat Placement', keywords: 'chat placement position right bottom hidden where show hide' },
   { tab: 'Chat', section: 'Channel Points', keywords: 'channel points auto claim bonus chest reward collect points' },
+  { tab: 'Chat', section: 'YouTube Chat', sectionId: 'settings-section-youtube-chat', label: 'Which chat to read', keywords: 'youtube chat view live chat top chat filtered firehose every message flooding flood too fast too many messages slow down readable quality filter' },
   { tab: 'Chat', section: 'Chat Events', sectionId: 'settings-section-chat-events', keywords: 'chat events live activity overlay show hide toggle turn off in chat' },
   { tab: 'Chat', section: 'Chat Events', sectionId: 'settings-section-chat-events', label: 'Polls', keywords: 'polls poll vote voting live poll overlay chat event show hide toggle turn off' },
   { tab: 'Chat', section: 'Chat Events', sectionId: 'settings-section-chat-events', label: 'Predictions', keywords: 'predictions prediction bet outcome channel points overlay chat event show hide toggle turn off' },
@@ -807,6 +840,8 @@ const SETTINGS_CATALOG: SettingsEntry[] = [
   { tab: 'Chat', section: 'Link Previews', keywords: 'link preview previews load card url unfurl embed trusted sources shorten links domains clean' },
   { tab: 'Chat', section: 'Emotes', keywords: 'emotes emote size hover preview spacing inline scale 7tv bttv ffz' },
   { tab: 'Chat', section: 'Chat Input', keywords: 'chat input composer bypass duplicate message quick send ctrl enter keep message repeat' },
+  { tab: 'Chat', section: 'Chat Input', label: 'Check spelling as you type', keywords: 'spell check spelling typo autocorrect correction misspelled underline squiggle red wavy dictionary proofread grammar' },
+  { tab: 'Chat', section: 'Chat Input', label: 'Spell check dictionary', keywords: 'dictionary custom words add word taught spell check spelling ignore list personal vocabulary' },
   { tab: 'Chat', section: 'Chat Input', label: 'Hide the placeholder text', keywords: 'hide placeholder prompt send a message empty input box composer text grey ghost hint clean minimal' },
   { tab: 'Chat', section: 'Chat Input', label: 'Hide the emote button', keywords: 'hide emote emoji button smiley face icon input box composer picker clean minimal remove' },
   { tab: 'Chat', section: 'Chat Input', label: 'Hide the points balance', keywords: 'hide channel points balance number counter button input box composer clean minimal remove' },
@@ -848,7 +883,10 @@ const SETTINGS_CATALOG: SettingsEntry[] = [
   { tab: 'Overlay', section: 'Appearance', keywords: 'overlay appearance text color shadow legibility timestamps transparent solid background opacity scene size blur spread strength outline stroke drop shadow contrast readable' },
   { tab: 'Overlay', section: 'Chatters', label: 'Profile pictures', keywords: 'overlay profile pictures avatars pfp youtube tiktok chatter photo show hide toggle' },
   { tab: 'Overlay', section: 'Chatters', label: '@ before usernames', keywords: 'overlay at sign @ username handle youtube strip remove show hide toggle' },
-  { tab: 'Overlay', section: 'Messages', label: 'Reply context', keywords: 'overlay replying to reply context line thread show hide toggle remove' },
+  { tab: 'Overlay', section: 'Messages', label: 'Replies', keywords: 'overlay replying to reply context line thread mention at username old twitch style show hide toggle remove off' },
+  { tab: 'Overlay', section: 'Messages', label: 'Links', keywords: 'overlay link url hyperlink blue accent color underline plain body text no underline style' },
+  { tab: 'Overlay', section: 'Emotes & Badges', label: '7TV personal emotes', keywords: 'overlay 7tv personal emotes subscriber own set every channel unknown random emote not added show hide toggle' },
+  { tab: 'Overlay', section: 'Events', label: 'Custom event text', keywords: 'overlay custom event text message template wording tokens variables legend reference username months years streak tier recipient count bits viewers charity amount goal points channel platform time action resub sub gift raid milestone follow announcement rewrite greeting welcome' },
   { tab: 'Overlay', section: 'Chatters', label: 'First-time chatters', keywords: 'overlay first time chatter first message highlight outline border new chatter twitch streamnook style purple pink show hide toggle off' },
   { tab: 'Overlay', section: 'Chatters', label: 'Fill the highlight', keywords: 'overlay first time chatter fill tint background highlight transparent color matched' },
   { tab: 'Overlay', section: 'Chatters', label: 'First-time highlight animation', keywords: 'overlay first time chatter animate animation sheen pulse chase sweep shimmer border flash spark highlight one shot repeat loop every 5 seconds' },
@@ -874,6 +912,9 @@ const SETTINGS_CATALOG: SettingsEntry[] = [
   { tab: 'Interface', section: 'Keep on Top', sectionId: 'settings-section-window-on-top', keywords: 'always on top pin keep window above float stay in front overlay floating player behind browser buried sinks disappears compact view mini player picture in picture alternative' },
   { tab: 'Interface', section: 'Settings Window', sectionId: 'settings-section-settings-window', keywords: 'settings window compact centered full page layout fills app' },
   { tab: 'Interface', section: 'Compact View', sectionId: 'settings-section-compact', keywords: 'compact view mini small window size second monitor preset' },
+
+  // Profile — platform accounts live with the Twitch ones, not under Integrations.
+  { tab: 'Profile', section: 'Accounts', label: 'Platform accounts', keywords: 'accounts kick youtube twitch connect disconnect sign in link platform add account multi-platform followed channels subscriptions' },
 
   // Integrations
   { tab: 'Integrations', keywords: 'integrations discord rpc rich presence ttv lol ad block ad-free connected apps services' },
@@ -1030,7 +1071,9 @@ export function getStaticItems(): PaletteItem[] {
   const pluginItems = getPluginPaletteItems();
   const socials = getCurrentStreamSocialItems();
   const playerControls = buildPlayerControlItems();
+  const platforms = buildPlatformItems();
   const items: PaletteItem[] = [
+    ...platforms,
     ...quick.map((it) => {
       if (it.id === 'qa.sleep15') return { ...it, subtitle: sleepTimerSubtitle(15) };
       if (it.id === 'qa.sleep30') return { ...it, subtitle: sleepTimerSubtitle(30) };

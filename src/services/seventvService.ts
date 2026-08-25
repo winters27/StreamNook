@@ -426,10 +426,18 @@ let batchScheduled = false;
 // "kick:12345"); a 7TV account's cosmetics are user-level and resolve from any
 // linked platform. Twitch stays a BARE numeric id, so its query, cache key, and
 // alias are all byte-identical to before — the no-prefix path is unchanged.
-const cosmeticPlatform = (id: string): { platform: string; platformId: string } =>
-  id.startsWith('kick:')
-    ? { platform: 'KICK', platformId: id.slice(5) }
-    : { platform: 'TWITCH', platformId: id };
+const cosmeticPlatform = (id: string): { platform: string; platformId: string } => {
+  if (id.startsWith('kick:')) return { platform: 'KICK', platformId: id.slice(5) };
+  // YouTube was falling through to the TWITCH arm, so a `youtube:UC…` id was sent
+  // to 7TV as a Twitch user id — never a match, and a wasted lookup on every
+  // YouTube chatter.
+  // 7TV names this platform GOOGLE, not YOUTUBE. Verified against the live v4
+  // schema: the Platform enum is TWITCH, DISCORD, GOOGLE, KICK, and sending
+  // YOUTUBE fails the whole query with "enumeration type Platform does not
+  // contain the value YOUTUBE" — so YouTube chatters resolved NO cosmetics at all.
+  if (id.startsWith('youtube:')) return { platform: 'GOOGLE', platformId: id.slice(8) };
+  return { platform: 'TWITCH', platformId: id };
+};
 
 // GraphQL aliases must match /[_A-Za-z][_0-9A-Za-z]*/, so a "kick:123" id can't be
 // used raw. Sanitize to a stable token used identically when building the query

@@ -2,6 +2,7 @@ import { Dropdown } from '../ui/Dropdown';
 import { useAppStore } from '../../stores/AppStore';
 import { SettingsSection, SettingsRow, SegmentedSelect } from './_primitives';
 import { DEFAULT_AUDIO_BOOST, DEFAULT_SONG_ID } from '../../types';
+import { aboutRevealNeedsShift } from '../../utils/playerMouseControls';
 import { Fader } from '../AudioBoostFaders';
 import { audioBoostFaderDefs, audioBoostResetPatch } from '../../utils/audioBoost';
 import { reportCodecPreference } from '../../utils/codecPreference';
@@ -53,6 +54,19 @@ const PlayerSettings = () => {
   const autoSwitchRaid = autoSwitch?.auto_redirect_on_raid ?? true;
   const autoSwitchOfflineChat = autoSwitch?.stay_in_offline_chat ?? false;
   const videoPlayer = settings.video_player;
+
+  // Patch a few top-level video_player fields at once.
+  const setVideoPlayer = (patch: Partial<typeof videoPlayer>) => {
+    updateSettings({ ...settings, video_player: { ...videoPlayer, ...patch } });
+  };
+
+  const scrollVolume = videoPlayer?.scroll_volume ?? true;
+  const scrollAboutReveal = videoPlayer?.scroll_about_reveal ?? true;
+  const middleClickMute = videoPlayer?.middle_click_mute ?? true;
+  const wheelVolumeStep = videoPlayer?.wheel_volume_step ?? 0.05;
+  // Both gestures want the wheel, so with both on the reveal moves to Shift.
+  // The row description says so rather than leaving it to be discovered.
+  const revealNeedsShift = aboutRevealNeedsShift(videoPlayer);
 
   // Audio boost: a compressor + makeup-gain stage on the player audio. Merge the
   // persisted values over the shared defaults so a missing/partial object still
@@ -256,6 +270,70 @@ const PlayerSettings = () => {
             }
             className="w-full accent-accent cursor-pointer"
           />
+        </SettingsRow>
+      </SettingsSection>
+
+      <SettingsSection
+        id="settings-section-mouse-controls"
+        label="Mouse Controls"
+        description="Drive the player one-handed with the mouse. These apply to the main player and to each MultiNook tile."
+      >
+        <SettingsRow
+          title="Scroll to change volume"
+          description="Scroll the wheel over the player to turn the stream up and down."
+          control={
+            <Toggle
+              enabled={scrollVolume}
+              onChange={() => setVideoPlayer({ scroll_volume: !scrollVolume })}
+            />
+          }
+        />
+
+        <SettingsRow
+          title="Scroll to open Channel About"
+          description={
+            revealNeedsShift
+              ? "Hold Shift and scroll down over the player to slide the channel's About panel up over the stream. Shift is needed because the plain wheel is set to volume; turn that off and a plain scroll down opens it instead."
+              : "Scroll down over the player to slide the channel's About panel up over the stream. It's also always reachable from the About pill that appears when you hover the player."
+          }
+          control={
+            <Toggle
+              enabled={scrollAboutReveal}
+              onChange={() => setVideoPlayer({ scroll_about_reveal: !scrollAboutReveal })}
+            />
+          }
+        />
+
+        <SettingsRow
+          title="Middle-click to mute"
+          description="Click the scroll wheel over the player to mute or unmute."
+          control={
+            <Toggle
+              enabled={middleClickMute}
+              onChange={() => setVideoPlayer({ middle_click_mute: !middleClickMute })}
+            />
+          }
+        />
+
+        <SettingsRow
+          title="Volume Step"
+          description="How far one wheel notch moves the volume."
+          disabled={!scrollVolume}
+        >
+          <div className="flex items-center gap-3">
+            <input
+              type="range"
+              min="1"
+              max="25"
+              step="1"
+              value={Math.round(wheelVolumeStep * 100)}
+              onChange={(e) => setVideoPlayer({ wheel_volume_step: parseInt(e.target.value) / 100 })}
+              className="w-full accent-accent cursor-pointer"
+            />
+            <span className="text-[12px] font-medium text-textPrimary tabular-nums flex-shrink-0">
+              {Math.round(wheelVolumeStep * 100)}%
+            </span>
+          </div>
         </SettingsRow>
       </SettingsSection>
 

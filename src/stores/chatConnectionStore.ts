@@ -20,12 +20,13 @@
 
 import { useEffect, useState } from 'react';
 import { create } from 'zustand';
-import type { ProviderId } from '../types/providers';
+import { PROVIDERS, type ProviderId } from '../types/providers';
 import { makeKey, parseKey } from '../utils/providerKey';
+import { streamProvider } from '../utils/streamProvider';
 import { parseBadges } from '../services/twitchBadges';
 import { invoke } from '@tauri-apps/api/core';
 import { fetchRecentMessagesAsIRC } from '../services/ivrService';
-import { fetchAllEmotes, fetchKickChannelEmotes, type EmoteSet } from '../services/emoteService';
+import { fetchAllEmotes, fetchKickChannelEmotes, fetchYouTubeChannelEmotes, type EmoteSet } from '../services/emoteService';
 import { Logger } from '../utils/logger';
 import { useAppStore } from './AppStore';
 import { useGiftBombStore, type GiftRecipient } from './giftBombStore';
@@ -167,6 +168,14 @@ let outageStartedAtMs: number | null = null;
 // the backend task is alive but wedged (start_chat's idempotent path can't
 // fix that), so the watchdog escalates to a full stop_chat teardown.
 let watchdogCycles = 0;
+// Stale-ladder stage 1 marker: set when the watchdog has asked the backend to
+// nudge (re-JOIN) its channels for the current quiet spell; any arriving frame
+// clears it. Non-null when the next full stale window should escalate to the
+// reconnect path instead of nudging again.
+let staleNudgeAtMs: number | null = null;
+// Serializes reconnectAll: the retry timer and a user-triggered refresh must
+// not tear the socket down concurrently.
+let reconnectInFlight = false;
 
 // Every Twitch user id that belongs to the local user (primary + any linked
 // secondary accounts). Used so a message we sent from a secondary account is
@@ -377,11 +386,15 @@ export function getChannelEmotes(channel: string): EmoteSet | null {
 export async function refreshChannelEmotes(
   channel: string,
   channelId: string,
+  // Without this the provider defaulted to twitch, so a YouTube channel id was
+  // sent to Twitch's Helix emote API, which answers 400 ("broadcaster_id must be
+  // numeric"). Absent still means twitch, so Twitch callers are unchanged.
+  provider: ProviderId = 'twitch',
 ): Promise<EmoteSet | null> {
   const key = channel.toLowerCase();
   emoteCache.delete(key);
   inflightEmoteFetches.delete(key);
-  return ensureChannelEmotes(key, channelId);
+  return ensureChannelEmotes(key, channelId, provider);
 }
 
 // The emote-cache key namespaces non-Twitch providers so the SAME channel slug on
@@ -405,16 +418,18 @@ export async function ensureChannelEmotes(
 
   const promise = (async () => {
     try {
-      // Kick has its own 7TV path (by Kick user id); Twitch keeps the full
-      // BTTV/FFZ/7TV/native fetch. YouTube + TikTok have no channel-emote fetch
-      // this pass — their messages are plain text / native emoji baked at parse
-      // time, so there's no picker set to fetch.
+      // Kick and YouTube each have their own 7TV path (by platform user id);
+      // Twitch keeps the full BTTV/FFZ/7TV/native fetch. TikTok has no
+      // channel-emote fetch — its messages are plain text baked at parse time,
+      // so there is no picker set to fetch.
       const set =
         provider === 'kick'
           ? await fetchKickChannelEmotes(channel.toLowerCase())
-          : provider === 'youtube' || provider === 'tiktok'
-            ? null
-            : await fetchAllEmotes(channel.toLowerCase(), channelId);
+          : provider === 'youtube'
+            ? await fetchYouTubeChannelEmotes(channel.toLowerCase())
+            : provider === 'tiktok'
+              ? null
+              : await fetchAllEmotes(channel.toLowerCase(), channelId);
       if (set) {
         emoteCache.set(key, set);
         notifyEmoteSubscribers(key);
@@ -617,6 +632,46 @@ function withSlice(channel: string, mutator: (slice: ChannelSlice) => void): voi
   if (!slice) return;
   mutator(slice);
   bumpRevision();
+}
+
+/// Seed a Kick pane with the channel's recent scrollback.
+///
+/// Deduped against whatever the socket delivered while the fetch was in flight,
+/// and PREPENDED, because history belongs above the live rows that raced in. Same
+/// reasoning as the Twitch preload path: appending would interleave stale rows
+/// under live ones, and skipping the dedup would prepend a second copy of a
+/// message already on screen, which React reconciles as a duplicate key.
+async function seedKickHistory(key: string, channel: string): Promise<void> {
+  let history: any[] = [];
+  try {
+    history = await invoke<any[]>('kick_chat_history', { channel });
+  } catch (e) {
+    Logger.warn('[ChatStore] kick_chat_history failed:', e);
+    return;
+  }
+  if (!history.length) return;
+  withSlice(key, (slice) => {
+    const existingIds = new Set<string>();
+    for (const m of slice.messages) {
+      const eid = typeof m === 'string' ? undefined : (m as any)?.id;
+      if (eid) existingIds.add(eid);
+    }
+    const fresh: any[] = [];
+    for (const msg of history) {
+      const id = msg?.id;
+      if (id) {
+        if (slice.seenMessageIds.has(id) || existingIds.has(id)) continue;
+        slice.seenMessageIds.add(id);
+      }
+      fresh.push(msg);
+    }
+    if (!fresh.length) return;
+    slice.messages = [...fresh, ...slice.messages];
+    const limit = getActiveHistoryMax();
+    if (slice.messages.length > limit) {
+      slice.messages = slice.messages.slice(slice.messages.length - limit);
+    }
+  });
 }
 
 function emptySlice(
@@ -842,8 +897,36 @@ function startHealthCheck() {
       Logger.debug('[ChatStore] No frames for 3+ minutes — checking stream / reconnecting');
       lastMessageTime = Date.now();
 
+      // Stage 1: an invisible probe before any teardown. The backend re-JOINs
+      // its channels; a healthy connection re-acks (a ROOMSTATE frame arrives,
+      // which resets lastMessageTime and clears staleNudgeAtMs), while a deaf
+      // socket or lost JOIN stays silent — and only then, after a SECOND full
+      // stale window, does stage 2 below reconnect/escalate. Quiet channels no
+      // longer trigger teardowns, and lost JOINs recover without one.
+      const hasTwitchSlice = Array.from(
+        useChatConnectionStore.getState().channels.values(),
+      ).some((s) => s.provider === 'twitch');
+      if (hasTwitchSlice && staleNudgeAtMs === null) {
+        staleNudgeAtMs = Date.now();
+        Logger.warn('[ChatStore] No frames for 3m — nudging backend re-JOIN before escalating');
+        invoke('nudge_chat_channels').catch(() => {
+          // No IRC connection to nudge; stage 2 handles it next window.
+        });
+        return;
+      }
+      staleNudgeAtMs = null;
+
       const { handleStreamOffline, currentStream, isAutoSwitching } = useAppStore.getState();
       if (!currentStream || isAutoSwitching) return;
+      // `check_stream_online` is Helix, so it would look up a same-named TWITCH
+      // channel for a Kick/YouTube/TikTok stream and answer about the wrong
+      // thing entirely. Provider streams have their own liveness poll in
+      // AppStore, so here we only reconnect the socket.
+      if (streamProvider(currentStream) !== 'twitch') {
+        Logger.debug('[ChatStore] Provider stream: reconnecting chat without a Helix check');
+        scheduleReconnect(0);
+        return;
+      }
       (async () => {
         try {
           // The command's argument is user_login (camelCased by Tauri); passing
@@ -865,7 +948,12 @@ function startHealthCheck() {
               );
               watchdogCycles = 0;
               try {
-                await invoke('stop_chat');
+                // Recovery intent, NOT user intent: this must tear the shared WS
+                // bridge down even when Kick/YouTube panes are riding it, because
+                // rebuilding it is the whole point. `stop_chat` deliberately
+                // preserves the bridge for those providers and so cannot recover
+                // a wedged task. Provider slices come back via reconnectAll below.
+                await invoke('restart_chat_bridge');
               } catch {
                 // Proceed to reconnect regardless.
               }
@@ -899,6 +987,16 @@ function scheduleReconnect(delayMs: number) {
 }
 
 async function reconnectAll() {
+  if (reconnectInFlight) return;
+  reconnectInFlight = true;
+  try {
+    await reconnectAllInner();
+  } finally {
+    reconnectInFlight = false;
+  }
+}
+
+async function reconnectAllInner() {
   const state = useChatConnectionStore.getState();
   const channels = Array.from(state.channels.keys());
   if (channels.length === 0) return;
@@ -953,6 +1051,12 @@ async function reconnectAll() {
   } catch (err) {
     Logger.error('[ChatStore] Reconnect failed:', err);
     setAllChannelsError('Reconnection failed');
+    // Never strand ws === null: the health check and visibility handlers both
+    // skip that state, so without a retry here a single failed reconnect froze
+    // chat until a manual refresh. Backoff caps at 30s; any successful
+    // IRC_CONNECTED resets the attempt counter.
+    reconnectAttempts++;
+    scheduleReconnect(Math.min(30_000, 1_000 * 2 ** reconnectAttempts));
   }
 }
 
@@ -1000,7 +1104,7 @@ export async function hardRefreshChannel(
 
   // Bust the emote cache and re-fetch. Fire-and-forget — the picker re-renders
   // via its subscription when the fresh set lands; chat doesn't block on it.
-  if (channelId) void refreshChannelEmotes(key, channelId);
+  if (channelId) void refreshChannelEmotes(key, channelId, slice?.provider ?? 'twitch');
 
   // Tear down + reconnect the IRC bridge. connectBridgeForFirstChannel re-runs
   // preloadChannel for the first channel, re-seeding recent history into the
@@ -1251,13 +1355,18 @@ export async function ensureChannelHistory(
 // --- Incoming message routing ----------------------------------------------
 
 function handleWsMessage(raw: string) {
-  lastMessageTime = Date.now();
-
-  // Global signals first
+  // Global signals first. HEARTBEAT deliberately does NOT touch
+  // lastMessageTime: the backend heartbeat only proves the socket reads
+  // SOMETHING (its own PONGs included), so letting it reset the stale timer
+  // blinded the watchdog to a connection that was TCP-alive but delivering no
+  // channel traffic. It still clears the stale-warning banner.
   if (raw === 'HEARTBEAT') {
     setAllChannelsError(null);
     return;
   }
+
+  lastMessageTime = Date.now();
+  staleNudgeAtMs = null;
 
   if (!chatFirstFrameLogged) {
     chatFirstFrameLogged = true;
@@ -1434,7 +1543,17 @@ function handleWsMessage(raw: string) {
         }
         if (showModMsgs && ch) {
           const who = delLogin ?? 'a user';
-          injectSystemMessage(ch, `${who}'s message was deleted by a moderator.`);
+          // Kick's auto-mod deletes name the rule that was violated; saying so
+          // beats "by a moderator" when no human was involved.
+          const why = (parsed.reason as string) || '';
+          injectSystemMessage(
+            ch,
+            why
+              ? `${who}'s message was deleted (${why}).`
+              : `${who}'s message was deleted by a moderator.`,
+            undefined,
+            systemSourceFor(ch),
+          );
         }
         // Moderator log: message deletions are broadcast to every viewer over IRC,
         // so this populates the log even when you're not a mod. The EventSub feed
@@ -1634,9 +1753,19 @@ function handleWsMessage(raw: string) {
         } else if (channels.size === 1) {
           targetChannel = channels.keys().next().value as string;
         }
-        if (!targetChannel) return;
+        if (!targetChannel) {
+          Logger.warn(
+            `[ChatStore] Dropping structured message: no routable channel (id=${messageId}, channel=${parsed.channel ?? '∅'}, slices=${channels.size})`,
+          );
+          return;
+        }
         const slice = channels.get(targetChannel);
-        if (!slice) return;
+        if (!slice) {
+          Logger.warn(
+            `[ChatStore] Dropping structured message: no slice for "${targetChannel}" (id=${messageId}, slices=${channels.size})`,
+          );
+          return;
+        }
         appendStructuredMessage(slice, parsed);
         return;
       }
@@ -2024,7 +2153,13 @@ function appendStructuredMessage(slice: ChannelSlice, parsed: any) {
           detail: {
             provider: pk.provider,
             channelKey,
-            msgId: eventMsgType,
+            // A YouTube membership milestone keeps the `membership` msg-id on the
+            // chat row (the only id the message renderer decorates) and is told
+            // apart here by the tag, so the feed can label it as a milestone.
+            msgId:
+              eventMsgType === 'membership' && tags['msg-param-milestone']
+                ? 'member_milestone'
+                : eventMsgType,
             username: parsed.username,
             displayName: parsed.display_name || parsed.username,
             userId: parsed.user_id,
@@ -2207,6 +2342,15 @@ export async function acquireChannel(
   const slice = emptySlice(key, channelId, provider);
   slice.refCount = 1;
   setSlice(key, slice);
+
+  // Kick's socket carries only NEW traffic, so a freshly opened pane is empty
+  // until somebody talks, and an OFFLINE channel stays empty indefinitely. Seed
+  // it from Kick's own scrollback the way the site does. Fire-and-forget: the
+  // socket connect below must not wait on it, and no scrollback is a cosmetic
+  // loss, never a reason to fail opening the channel.
+  if (provider === 'kick') {
+    void seedKickHistory(key, channel);
+  }
 
   // First channel ever: open the bridge + WS.
   if (state.channels.size === 0) {
@@ -2467,7 +2611,22 @@ export async function sendChannelMessage(
 /** Inject a system message into the channel (mirrors the `twitch-system-message`
  *  custom event the old hook listened for). Used by `/mods` and similar local
  *  command results. */
-export function injectSystemMessage(channel: string, message: string, songCard?: SongMatch): void {
+/** The platform label/color for a system row on this channel key, so a notice on
+ *  a Kick or YouTube channel isn't attributed to Twitch. */
+export function systemSourceFor(channelKey: string): { label: string; color: string } | undefined {
+  const provider = parseKey(channelKey).provider;
+  return provider === 'twitch' ? undefined : { label: PROVIDERS[provider].label, color: PROVIDERS[provider].color };
+}
+
+export function injectSystemMessage(
+  channel: string,
+  message: string,
+  songCard?: SongMatch,
+  // Which platform is speaking. Defaults to Twitch so every existing caller is
+  // unchanged; a provider pane passes its own so the row doesn't sign itself
+  // "Twitch" on a Kick or YouTube channel.
+  source?: { label: string; color: string },
+): void {
   const sysMsgId = `sys-cmd-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
   withSlice(channel, (slice) => {
     pushMessage(slice, {
@@ -2476,8 +2635,8 @@ export function injectSystemMessage(channel: string, message: string, songCard?:
       // around system rows (e.g. the disconnect marker) instead of past them.
       timestamp: String(Date.now()),
       username: 'System',
-      display_name: 'Twitch',
-      color: '#9147ff',
+      display_name: source?.label ?? 'Twitch',
+      color: source?.color ?? '#9147ff',
       badges: [{ key: 'staff/1', info: {} }],
       content: message,
       segments: [{ type: 'text', content: message }],

@@ -1,4 +1,6 @@
 import { useLayoutEffect, useRef, useState, type ReactNode } from 'react';
+import { RotateCcw } from 'lucide-react';
+import { Tooltip } from '../ui/Tooltip';
 
 interface SettingsSectionProps {
   label: string;
@@ -42,6 +44,10 @@ interface SettingsRowProps {
   control?: ReactNode;
   children?: ReactNode;
   disabled?: boolean;
+  /** Restores this row's setting to its default. Pass it ONLY while the setting
+   *  actually differs from the default — the affordance's presence is the signal
+   *  that something was changed here, so an always-present one says nothing. */
+  onReset?: () => void;
 }
 
 export const SettingsRow = ({
@@ -51,6 +57,7 @@ export const SettingsRow = ({
   control,
   children,
   disabled = false,
+  onReset,
 }: SettingsRowProps) => (
   <div
     className={`settings-row -mx-4 px-4 py-3 ${
@@ -62,6 +69,18 @@ export const SettingsRow = ({
         <div className="text-[13px] font-medium text-textPrimary">
           {title}
           {titleBadge && <span className="ml-1.5 align-middle">{titleBadge}</span>}
+          {onReset && (
+            <Tooltip content="Reset to default">
+              <button
+                type="button"
+                onClick={onReset}
+                aria-label="Reset to default"
+                className="ml-1.5 inline-flex align-middle text-textMuted hover:text-textPrimary transition-colors"
+              >
+                <RotateCcw size={11} />
+              </button>
+            </Tooltip>
+          )}
         </div>
         {description && (
           <p className="mt-0.5 text-[12px] leading-relaxed text-textSecondary">

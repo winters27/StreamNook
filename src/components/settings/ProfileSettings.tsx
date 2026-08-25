@@ -1320,6 +1320,13 @@ const ProfileSettings = () => {
             seventvBadgeCount={seventvBadges.length}
             ownedCosmeticsCount={ownedCosmetics.length}
           />
+
+          {/* Accounts belong on the tab Profile actually opens on. This panel
+              used to sit at the very bottom of Customize, below badges, paints
+              and atmospheres — so "manage my accounts" meant finding it inside a
+              cosmetics screen. It is identity, not decoration, and it is now the
+              one place Twitch, Kick and YouTube are all managed. */}
+          <LinkedAccountsSection />
         </>
       )}
 
@@ -1914,7 +1921,6 @@ const ProfileSettings = () => {
         </div>
       )}
 
-      <LinkedAccountsSection />
         </>
       )}
     </div>

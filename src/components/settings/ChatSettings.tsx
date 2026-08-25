@@ -16,11 +16,13 @@ import UserCommandsSettings from './UserCommandsSettings';
 import RemindersSettings from './RemindersSettings';
 import { SettingsSection, SettingsRow, SegmentedSelect } from './_primitives';
 import { Toggle } from '../ui/Toggle';
+import SpellcheckDictionary from './SpellcheckDictionary';
 import type {
   UserCardSettings,
   MessageRepeatSettings,
   RepeatDisplayMode,
   RepeatMatchMode,
+  YouTubeChatView,
 } from '../../types';
 
 // Muted grey, so the counter reads as chrome rather than competing with the
@@ -434,6 +436,26 @@ const ChatSettings = ({ hidePlacement = false }: { hidePlacement?: boolean } = {
             />
           }
         />
+      </SettingsSection>
+
+      <SettingsSection
+        id="settings-section-youtube-chat"
+        label="YouTube Chat"
+        description="Applies the next time you open a YouTube stream."
+      >
+        <SettingsRow
+          title="Which chat to read"
+          description="YouTube publishes two feeds. Live chat is everything. Top chat is YouTube's own filtered view, which drops messages it judges low quality and most of one person's repeats, so a very fast chat stays readable."
+        >
+          <SegmentedSelect<YouTubeChatView>
+            value={settings.youtube_chat_view ?? 'live'}
+            onChange={(view) => updateSettings({ ...settings, youtube_chat_view: view })}
+            options={[
+              { value: 'live', label: 'Live chat' },
+              { value: 'top', label: 'Top chat' },
+            ]}
+          />
+        </SettingsRow>
       </SettingsSection>
 
       <SettingsSection
@@ -959,6 +981,17 @@ const ChatSettings = ({ hidePlacement = false }: { hidePlacement?: boolean } = {
             />
           }
         />
+        <SettingsRow
+          title="Check spelling as you type"
+          description="Underlines misspelled words in the message box and offers corrections when you right-click one. Emotes, chatters, commands and links are left alone."
+          control={
+            <Toggle
+              enabled={settings.chat_input?.spellcheck_enabled ?? true}
+              onChange={() => setInput({ spellcheck_enabled: !(settings.chat_input?.spellcheck_enabled ?? true) })}
+            />
+          }
+        />
+        {(settings.chat_input?.spellcheck_enabled ?? true) && <SpellcheckDictionary />}
         <SettingsRow
           title="Hide the placeholder text"
           description="Leaves the message box empty instead of prompting you to send a message. Notices you can act on, like read-only or subscriber-only mode, still show."

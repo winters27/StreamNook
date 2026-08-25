@@ -12,7 +12,14 @@ import { Gift, Star, Users, Megaphone, DollarSign, Flame, Heart } from 'lucide-r
 import { computePaintStyle } from '../../services/paintStyle';
 import { PROVIDERS, type ProviderId } from '../../types/providers';
 import type { MessageSegment } from '../../services/twitchChat';
-import { clampOverlayStyle, type OverlayStyle, type EventCategory } from './overlayConfig';
+import {
+  clampOverlayStyle,
+  renderEventTemplate,
+  DEFAULT_LINK_COLOR,
+  type OverlayStyle,
+  type EventCategory,
+  type EventTemplateContext,
+} from './overlayConfig';
 import type { OverlayMessage } from './sampleMessages';
 import { ProviderIcon } from './ProviderIcon';
 import { AtmosphereChatWash } from './AtmosphereChatWash';
@@ -315,9 +322,16 @@ const renderTextWithEmoji = (text: string, style: string): ReactNode => {
   return out;
 };
 
-const OverlaySegment = ({ segment, emoteScale, emojiStyle = 'apple', giant = false }: { segment: MessageSegment; emoteScale: number; emojiStyle?: string; giant?: boolean }) => {
+const OverlaySegment = ({ segment, style, emoteScale, giant = false }: { segment: MessageSegment; style: OverlayStyle; emoteScale?: number; giant?: boolean }) => {
+  const scale = emoteScale ?? style.emoteScale;
+  const emojiStyle = style.emojiStyle;
   if (segment.type === 'emote') {
-    return <EmoteImg segment={segment} emoteScale={emoteScale} giant={giant} />;
+    // A 7TV personal emote belongs to the SENDER, not the channel, so it renders
+    // in rooms that never added it. With the toggle off, show what they typed.
+    if (segment.is_personal && style.showPersonalEmotes === false) {
+      return <span>{segment.content}</span>;
+    }
+    return <EmoteImg segment={segment} emoteScale={scale} giant={giant} />;
   }
   if (segment.type === 'emoji') {
     const uni = isUnicodeEmoji(segment.content);
@@ -337,7 +351,18 @@ const OverlaySegment = ({ segment, emoteScale, emojiStyle = 'apple', giant = fal
     );
   }
   if (segment.type === 'link') {
-    return <span style={{ color: '#8ab4ff', textDecoration: 'underline' }}>{segment.content}</span>;
+    // 'plain' inherits the body color from the container, so a link reads as
+    // ordinary text; underlining is independent of the color choice.
+    return (
+      <span
+        style={{
+          color: style.linkStyle === 'plain' ? undefined : (style.linkColor || '').trim() || DEFAULT_LINK_COLOR,
+          textDecoration: style.linkUnderline === false ? 'none' : 'underline',
+        }}
+      >
+        {segment.content}
+      </span>
+    );
   }
   // Plain text: under a vendor style, image any unicode emoji sitting in the text.
   return <span>{emojiStyle === 'system' ? segment.content : renderTextWithEmoji(segment.content, emojiStyle)}</span>;
@@ -465,6 +490,102 @@ const stripLeadingName = (text: string, names: (string | undefined)[]): string =
   return text;
 };
 
+// Twitch's numeric sub-plan ids as the platform labels them. Anything else (a
+// YouTube tier name, a Kick plan) is already human-readable and passes through.
+const SUB_PLAN_LABELS: Record<string, string> = {
+  '1000': 'Tier 1',
+  '2000': 'Tier 2',
+  '3000': 'Tier 3',
+  Prime: 'Prime',
+};
+
+// A positive integer from an IRC tag, or undefined. Zero counts as absent: the
+// platforms send these tags only when the value means something, and a template
+// that resolved {months} to 0 would read as broken.
+const tagCount = (raw?: string): number | undefined => {
+  const n = Number.parseInt(raw ?? '', 10);
+  return Number.isFinite(n) && n > 0 ? n : undefined;
+};
+
+// A non-empty tag value with Twitch's escaped spaces restored, or undefined.
+const tagText = (raw?: string): string | undefined => {
+  const v = (raw ?? '').replace(/\\s/g, ' ').trim();
+  return v || undefined;
+};
+
+// Twitch sends a charity donation as an integer in the currency's smallest unit
+// plus the exponent to shift by (1234 + exponent 2 = 12.34). Formatted here so a
+// template gets "$12.34" rather than a number it would have to caption itself.
+const charityAmount = (t: Record<string, string>): string | undefined => {
+  const raw = Number.parseInt(t['msg-param-donation-amount'] ?? '', 10);
+  if (!Number.isFinite(raw)) return undefined;
+  const exponent = Number.parseInt(t['msg-param-exponent'] ?? '2', 10);
+  const value = raw / Math.pow(10, Number.isFinite(exponent) ? exponent : 2);
+  const currency = t['msg-param-donation-currency'] || 'USD';
+  try {
+    return new Intl.NumberFormat('en-US', { style: 'currency', currency }).format(value);
+  } catch {
+    // An unrecognized currency code throws rather than degrading, so fall back
+    // to the bare number instead of losing the token entirely.
+    return String(value);
+  }
+};
+
+// Real values behind an event, for a streamer's custom wording. Everything comes
+// off the event itself — a token with no value makes renderEventTemplate bail to
+// the platform's own system message rather than fill a hole with a guess.
+const eventTemplateContext = (
+  message: OverlayMessage,
+  category: EventCategory,
+  bits: number,
+  platformAction: string,
+): EventTemplateContext => {
+  const t = message.tags ?? {};
+  const plan = t['msg-param-sub-plan'];
+  const provider = (message.provider ?? 'twitch') as ProviderId;
+  const months = tagCount(t['msg-param-cumulative-months']) ?? tagCount(t['msg-param-months']);
+  const tierDigit = plan && /^[123]000$/.test(plan) ? Number.parseInt(plan.charAt(0), 10) : undefined;
+  return {
+    username: message.display_name || message.username || undefined,
+    userLogin: message.username || undefined,
+
+    tier: plan ? (SUB_PLAN_LABELS[plan] ?? plan) : tagText(t['msg-param-sub-plan-name']),
+    tierNumber: tierDigit,
+    planName: tagText(t['msg-param-sub-plan-name']),
+    months,
+    // Only from a full year up, so "{years} years" can never render "0 years".
+    years: months && months >= 12 ? Math.floor(months / 12) : undefined,
+    // Subs carry a month streak; a watch-streak Milestone carries its count in
+    // msg-param-value instead, which is the number a "consecutive days" wording wants.
+    streak: category === 'milestone'
+      ? tagCount(t['msg-param-value'])
+      : tagCount(t['msg-param-streak-months']),
+    giftMonths: tagCount(t['msg-param-gift-months']),
+    multimonth: tagCount(t['msg-param-multimonth-duration']),
+    priorGifter: tagText(t['msg-param-prior-gifter-display-name']),
+
+    recipient: tagText(t['msg-param-recipient-display-name']),
+    recipientLogin: tagText(t['msg-param-recipient-user-name']),
+    count: tagCount(t['msg-param-mass-gift-count']),
+    gifterTotal: tagCount(t['msg-param-sender-count']),
+
+    bits: bits > 0 ? bits : undefined,
+    charity: tagText(t['msg-param-charity-name']),
+    amount: charityAmount(t),
+
+    viewers: tagCount(t['msg-param-viewerCount']),
+
+    points: tagCount(t['msg-param-copoReward']),
+
+    // The channel key is composite off Twitch ("youtube:slug"), so show the part
+    // a viewer would recognize.
+    channel: (message.channel ?? '').split(':').pop() || undefined,
+    platform: PROVIDERS[provider]?.label ?? PROVIDERS.twitch.label,
+    time: message.metadata?.formatted_timestamp || undefined,
+    default: platformAction || undefined,
+  };
+};
+
 const OverlayRow = ({ message, style, expiring }: { message: OverlayMessage; style: OverlayStyle; expiring?: boolean }) => {
   const provider = (message.provider ?? 'twitch') as ProviderId;
   const color = message.color || '#9147ff';
@@ -499,7 +620,11 @@ const OverlayRow = ({ message, style, expiring }: { message: OverlayMessage; sty
   const visibleExtraBadges = thirdPartyOn ? (message.extraBadges ?? []).filter((b) => !badgeSourceHidden(b.source)) : [];
   const showExtraBadges = visibleExtraBadges.length > 0;
   const anyBadge = showNativeBadges || showSnBadge || showSeventvBadge || showExtraBadges;
-  const reply = style.showReplies === false ? undefined : message.metadata?.reply_info;
+  // 'full' draws the context line above the message, 'mention' prefixes the body
+  // with the parent's @name (pre-threading Twitch), 'off' shows neither.
+  const replyInfo = message.metadata?.reply_info;
+  const reply = style.replyStyle === 'full' ? replyInfo : undefined;
+  const replyMention = style.replyStyle === 'mention' ? replyInfo : undefined;
   const avatar = style.showAvatars !== false && (provider === 'youtube' || provider === 'tiktok')
     ? message.tags?.avatar
     : undefined;
@@ -652,9 +777,22 @@ const OverlayRow = ({ message, style, expiring }: { message: OverlayMessage; sty
       : systemMessage || eventFallback(category, message.display_name || message.username);
     // Convert the amount in a YouTube Super Chat / Super Sticker to the chosen target
     // currency (no-op unless a target is set + rates are loaded).
-    const text = style.superchatCurrency && (msgType === 'superchat' || msgType === 'supersticker')
+    const converted = style.superchatCurrency && (msgType === 'superchat' || msgType === 'supersticker')
       ? convertMoneyInText(rawEventText, style.superchatCurrency)
       : rawEventText;
+    // The streamer's own wording for this category, if they set one and this event
+    // carries every value it references. Null (no template, or a token with nothing
+    // behind it) keeps the platform's message. A template opening with {username}
+    // resolves to the sender's name, which stripLeadingName then hands to the
+    // decorated name node below — so the paint/badge treatment is kept, not doubled.
+    // {action} always reflects the PLATFORM's wording, never the template being
+    // built from it — otherwise the token would be defined in terms of itself.
+    const platformAction = stripLeadingName(converted, [message.display_name, message.username]);
+    const templated = renderEventTemplate(
+      style.eventTemplates?.[category] ?? '',
+      eventTemplateContext(message, category, cheerBits, platformAction),
+    );
+    const text = templated ?? converted;
     // TikTok stamps the action itself as the message body (e.g. "sent Team Power",
     // "followed"), which just duplicates the event line — so skip it. Twitch resubs
     // and YouTube Super Chats carry a real separate message, so those keep it.
@@ -683,6 +821,10 @@ const OverlayRow = ({ message, style, expiring }: { message: OverlayMessage; sty
     // months" (or "with Prime for N months"). Prefer the tags; fall back to folding
     // the month count out of the 2nd sentence for samples / providers without them.
     const shownAction = (() => {
+      // A template is the streamer's own sentence. The re-phrasings below exist to
+      // improve the PLATFORM's default wording, so they must not rewrite it —
+      // without this, a custom sub message is silently replaced by the collapse.
+      if (templated) return action;
       if (category !== 'subscription') return action;
       const plan = message.tags?.['msg-param-sub-plan'];
       const cumulative = message.tags?.['msg-param-cumulative-months'] || message.tags?.['msg-param-months'];
@@ -701,7 +843,7 @@ const OverlayRow = ({ message, style, expiring }: { message: OverlayMessage; sty
     const isWatchStreak = msgType === 'viewermilestone' && message.tags?.['msg-param-category'] === 'watch-streak';
     const streakValue = isWatchStreak ? parseInt(message.tags?.['msg-param-value'] || '0', 10) : 0;
     const streakPoints = isWatchStreak ? parseInt(message.tags?.['msg-param-copoReward'] || '0', 10) : 0;
-    const finalAction = isWatchStreak && streakValue > 0
+    const finalAction = !templated && isWatchStreak && streakValue > 0
       ? `watched ${streakValue} consecutive streams and sparked a watch streak!`
       : shownAction;
     // TikTok gifts carry the gift's own (often animated) image as an emote segment.
@@ -795,7 +937,7 @@ const OverlayRow = ({ message, style, expiring }: { message: OverlayMessage; sty
                 </span>
               )}
               {giftSegments.map((seg, i) => (
-                <OverlaySegment key={`gift-${i}`} segment={seg} emoteScale={Math.max(style.emoteScale, 1)} emojiStyle={style.emojiStyle} />
+                <OverlaySegment key={`gift-${i}`} segment={seg} style={style} emoteScale={Math.max(style.emoteScale, 1)} />
               ))}
             </div>
             {hasBody && (
@@ -807,7 +949,7 @@ const OverlayRow = ({ message, style, expiring }: { message: OverlayMessage; sty
                 <span aria-hidden="true" style={{ flexShrink: 0, width: '2px', borderRadius: '1px', background: 'color-mix(in srgb, currentColor 45%, transparent)' }} />
                 <span style={{ minWidth: 0 }}>
                   {message.segments!.map((seg, i) => (
-                    <OverlaySegment key={i} segment={seg} emoteScale={style.emoteScale} emojiStyle={style.emojiStyle} />
+                    <OverlaySegment key={i} segment={seg} style={style} />
                   ))}
                 </span>
               </div>
@@ -879,10 +1021,13 @@ const OverlayRow = ({ message, style, expiring }: { message: OverlayMessage; sty
           ...(message.metadata?.is_action ? { color, fontStyle: 'italic' as const } : null),
         }}
       >
+        {replyMention && (
+          <span style={{ fontWeight: 700, opacity: 0.85 }}>@{stripAt(replyMention.parent_display_name)} </span>
+        )}
         {bodySegs.map((seg, i) => (
           i === giantIdx && !giantInline
             ? null
-            : <OverlaySegment key={i} segment={seg} emoteScale={style.emoteScale} emojiStyle={style.emojiStyle} giant={i === giantIdx && giantInline} />
+            : <OverlaySegment key={i} segment={seg} style={style} giant={i === giantIdx && giantInline} />
         ))}
       </span>
     </div>
@@ -897,7 +1042,7 @@ const OverlayRow = ({ message, style, expiring }: { message: OverlayMessage; sty
         marginTop: '0.2em',
       }}
     >
-      <OverlaySegment segment={bodySegs[giantIdx]} emoteScale={style.emoteScale} emojiStyle={style.emojiStyle} giant />
+      <OverlaySegment segment={bodySegs[giantIdx]} style={style} giant />
     </div>
   ) : null;
 

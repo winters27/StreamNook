@@ -5,7 +5,19 @@ import { invoke } from '@tauri-apps/api/core';
 import { MultiNookSlot } from '../../types';
 import { useMultiNookPlayer } from './useMultiNookPlayer';
 import { usemultiNookStore } from '../../stores/multiNookStore';
+import { useAppStore } from '../../stores/AppStore';
 import { useChannelSocial } from '../../hooks/useChannelSocial';
+import {
+  ignoresPlayerMouse,
+  createWheelAccumulator,
+  stepVolume,
+  toggleVolumeMute,
+  scrollVolumeOn,
+  WHEEL_VOLUME_STEP,
+} from '../../utils/playerMouseControls';
+import { playerOverlayButtonOn } from '../../utils/playerOverlayButtons';
+import { PlayerVolumeOsd } from '../PlayerVolumeOsd';
+import { useVolumeOsd } from '../../hooks/useVolumeOsd';
 import StreamTitleWithEmojis from '../StreamTitleWithEmojis';
 import { Tooltip } from '../ui/Tooltip';
 import { TwitchVerifiedMark } from '../ui/TwitchGlyph';
@@ -54,10 +66,15 @@ const MultiNookCellInner: React.FC<MultiNookCellProps> = ({ slot, cssOrder, grid
     isMinimized,
   });
 
+  // Volume readout for this tile's wheel/middle-click changes.
+  const { osd, showOsd } = useVolumeOsd();
+
   // Follow + subscribe controls. Only the focused, non-docked tile activates the
   // hook so we make one follow/subscription lookup at a time instead of one per
-  // tile across the whole grid.
+  // tile across the whole grid. Visibility additionally honors the same
+  // Player Overlay Buttons setting as the single-stream player.
   const socialEnabled = isFocused && !isMinimized;
+  const playerOverlayButtons = useAppStore((s) => s.settings.player_overlay_buttons);
   const {
     isFollowing,
     followLoading,
@@ -69,12 +86,16 @@ const MultiNookCellInner: React.FC<MultiNookCellProps> = ({ slot, cssOrder, grid
     cumulativeMonths,
     subscriberBadgeUrl,
     handleSubscribeClick,
+    offersMembership,
   } = useChannelSocial({
     userId: channelId,
     userLogin: channelLogin,
     userName: channelName,
     enabled: socialEnabled,
   });
+  const showFollowButton = socialEnabled && playerOverlayButtonOn(playerOverlayButtons, 'follow');
+  const showSubscribeButton =
+    socialEnabled && offersMembership && playerOverlayButtonOn(playerOverlayButtons, 'subscribe');
 
   // Available stream qualities for the focused tile's gear menu
   const [availableQualities, setAvailableQualities] = useState<string[]>([]);
@@ -243,6 +264,71 @@ const MultiNookCellInner: React.FC<MultiNookCellProps> = ({ slot, cssOrder, grid
     el.addEventListener('dblclick', onDblCapture, { capture: true });
     return () => el.removeEventListener('dblclick', onDblCapture, { capture: true });
   }, [id, toggleMaximizeSlot]);
+
+  // Mouse volume for this tile: wheel to change it, middle click to mute. Scoped
+  // to the hovered cell, so each tile is adjusted independently. Persistence
+  // rides the volumechange handler inside useMultiNookPlayer — nothing extra is
+  // written here. Settings are read at event time so a change applies without
+  // rebinding.
+  useEffect(() => {
+    const el = cellRef.current;
+    if (!el) return;
+    const accumulate = createWheelAccumulator();
+    const playerSettings = () => useAppStore.getState().settings.video_player;
+    const volumeTarget = () => playerRef.current ?? videoRef.current;
+
+    // Shift is not special here: the channel About reveal doesn't exist in
+    // MultiNook, so there's nothing for it to disambiguate and Shift + scroll
+    // just adjusts volume like a plain scroll.
+    const onWheel = (e: WheelEvent) => {
+      const s = playerSettings();
+      if (!scrollVolumeOn(s)) return;
+      if (e.deltaY === 0) return; // horizontal scroll isn't ours
+      if (ignoresPlayerMouse(e.target)) return;
+      const target = volumeTarget();
+      if (!target) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const steps = accumulate(e, performance.now());
+      if (steps === 0) return;
+      const next = stepVolume(target, steps, s?.wheel_volume_step ?? WHEEL_VOLUME_STEP);
+      showOsd(next.volume, next.muted);
+    };
+
+    // Middle click also steps aside for tile controls, which sit on top of the
+    // video and have their own meaning. Suppressing the default on mousedown
+    // kills the autoscroll ring without stopping the auxclick that follows.
+    const middleClickBlocked = (e: MouseEvent) => {
+      if (e.button !== 1) return true;
+      if (!(playerSettings()?.middle_click_mute ?? true)) return true;
+      const target = e.target as HTMLElement;
+      return ignoresPlayerMouse(target) || !!target.closest?.('button');
+    };
+
+    const onMouseDown = (e: MouseEvent) => {
+      if (middleClickBlocked(e)) return;
+      e.preventDefault();
+    };
+
+    const onAuxClick = (e: MouseEvent) => {
+      if (middleClickBlocked(e)) return;
+      const target = volumeTarget();
+      if (!target) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const next = toggleVolumeMute(target);
+      showOsd(next.volume, next.muted);
+    };
+
+    el.addEventListener('wheel', onWheel, { passive: false });
+    el.addEventListener('mousedown', onMouseDown, { capture: true });
+    el.addEventListener('auxclick', onAuxClick);
+    return () => {
+      el.removeEventListener('wheel', onWheel);
+      el.removeEventListener('mousedown', onMouseDown, { capture: true });
+      el.removeEventListener('auxclick', onAuxClick);
+    };
+  }, [playerRef, videoRef, showOsd]);
 
   // Map dnd-kit's drag offset cleanly to Framer Motion's coordinate space
   const x = transform ? Math.round(transform.x) : 0;
@@ -430,9 +516,9 @@ const MultiNookCellInner: React.FC<MultiNookCellProps> = ({ slot, cssOrder, grid
 
           {/* Controls Overlay - Top Right */}
           <div className="flex items-center gap-1.5 shrink-0">
-            {/* Follow + Subscribe — focused tile only */}
-            {socialEnabled && (
-              <>
+            {/* Follow + Subscribe — focused tile only, honoring the Player
+                Overlay Buttons setting like the single-stream player */}
+            {showFollowButton && (
                 <Tooltip
                   content={
                     checkingFollowStatus
@@ -463,7 +549,8 @@ const MultiNookCellInner: React.FC<MultiNookCellProps> = ({ slot, cssOrder, grid
                     )}
                   </button>
                 </Tooltip>
-
+            )}
+            {showSubscribeButton && (
                 <Tooltip
                   content={
                     isSubscribed
@@ -494,7 +581,6 @@ const MultiNookCellInner: React.FC<MultiNookCellProps> = ({ slot, cssOrder, grid
                     )}
                   </button>
                 </Tooltip>
-              </>
             )}
 
             {/* Spotlight this stream (fills the space) / restore the grid */}
@@ -538,6 +624,8 @@ const MultiNookCellInner: React.FC<MultiNookCellProps> = ({ slot, cssOrder, grid
           </div>
         </div>
       </div>
+
+      <PlayerVolumeOsd osd={osd} />
     </motion.div>
   );
 };

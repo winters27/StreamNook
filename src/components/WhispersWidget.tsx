@@ -7,6 +7,9 @@ import { useAppStore } from '../stores/AppStore';
 import { getAppleEmojiUrl } from '../services/emojiService';
 import WhisperImportWizard from './WhisperImportWizard';
 import { Tooltip } from './ui/Tooltip';
+import SpellcheckUnderlay from './chat/SpellcheckUnderlay';
+import { useSpellcheck } from '../hooks/useSpellcheck';
+import { warmSpellcheck } from '../utils/spellcheck';
 import type { WhisperConversation, Whisper, UserInfo } from '../types';
 
 import { Logger } from '../utils/logger';
@@ -228,6 +231,12 @@ const WhispersWidget = ({ isOpen, onClose }: WhispersWidgetProps) => {
     const sendingRef = useRef(false);
 
     const { currentUser, settings, setProfileModalUser } = useAppStore();
+
+    // Spell check for the whisper composer. No channel here, so there's no emote
+    // set to consult — only the custom dictionary and the chatter list apply.
+    const spellcheckEnabled = settings.chat_input?.spellcheck_enabled ?? true;
+    const spellUnderlayRef = useRef<HTMLDivElement>(null);
+    const spellRanges = useSpellcheck(message, { enabled: spellcheckEnabled, emoteKey: null });
 
     // Listen for auto-import whisper data event
     useEffect(() => {
@@ -1412,23 +1421,44 @@ const WhispersWidget = ({ isOpen, onClose }: WhispersWidgetProps) => {
                                     <button onClick={() => setShowEmojiPicker(!showEmojiPicker)} className={`p-2.5 rounded-xl transition-colors flex-shrink-0 ${showEmojiPicker ? 'text-accent bg-accent/10 border border-transparent shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--color-accent)_35%,transparent)]' : 'text-textSecondary hover:text-accent hover:bg-surface-hover border border-transparent'}`}>
                                         <Smile size={20} />
                                     </button>
+                                    {/* Wrapper so the spell-check underlay can sit
+                                        over the textarea; the textarea keeps the
+                                        `flex-1` sizing it had on its own. */}
+                                    <div className="relative flex-1 flex">
                                     <textarea
                                         ref={inputRef}
                                         value={message}
                                         onChange={(e) => setMessage(e.target.value)}
                                         onKeyDown={handleKeyDown}
+                                        onFocus={warmSpellcheck}
+                                        spellCheck={false}
+                                        data-spellcheck={spellcheckEnabled ? 'true' : undefined}
                                         placeholder="Type a message..."
                                         disabled={isSending}
                                         maxLength={500}
                                         rows={1}
-                                        className="flex-1 glass-input rounded-xl px-4 py-3 text-sm transition-all duration-200 disabled:opacity-50 resize-none min-h-[44px] max-h-[120px] shadow-sm"
+                                        className="w-full glass-input rounded-xl px-4 py-3 text-sm transition-all duration-200 disabled:opacity-50 resize-none min-h-[44px] max-h-[120px] shadow-sm"
                                         style={{ height: 'auto' }}
+                                        onScroll={(e) => {
+                                            if (spellUnderlayRef.current) {
+                                                spellUnderlayRef.current.scrollTop = e.currentTarget.scrollTop;
+                                            }
+                                        }}
                                         onInput={(e) => {
                                             const target = e.target as HTMLTextAreaElement;
                                             target.style.height = 'auto';
                                             target.style.height = Math.min(target.scrollHeight, 120) + 'px';
                                         }}
                                     />
+                                    {spellRanges.length > 0 && (
+                                        <SpellcheckUnderlay
+                                            innerRef={spellUnderlayRef}
+                                            text={message}
+                                            ranges={spellRanges}
+                                            className="rounded-xl px-4 py-3 text-sm"
+                                        />
+                                    )}
+                                    </div>
                                     <button onClick={handleSend} disabled={!message.trim() || isSending} className="p-2.5 glass-button hover:text-accent disabled:opacity-40 disabled:hover:text-textPrimary disabled:cursor-not-allowed text-textPrimary rounded-xl transition-colors flex-shrink-0">
                                         {isSending ? <Loader2 size={20} className="animate-spin text-accent" /> : <Send size={20} className={`${message.trim() ? 'text-accent drop-shadow-[0_0_8px_rgba(var(--color-accent-rgb),0.4)]' : ''} transition-all`} />}
                                     </button>

@@ -37,9 +37,12 @@ export type { ModerationContext, ClearedUserEntry, RoomState } from '../stores/c
 export interface UseTwitchChatReturn {
   messages: any[];
   connectChat: (channel: string, roomId?: string) => Promise<void>;
+  // `userInfo` is optional only so this shares a call signature with the
+  // provider send path (which needs no Twitch identity). The Twitch send below
+  // still requires it and bails without it, so no caller behavior changes.
   sendMessage: (
     messageText: string,
-    userInfo: SendUserInfo,
+    userInfo?: SendUserInfo,
     replyParentMsgId?: string,
     senderAccount?: SendAsAccount | null,
   ) => Promise<void>;
@@ -103,13 +106,19 @@ export const useTwitchChat = (): UseTwitchChatReturn => {
   const sendMessage = useCallback(
     async (
       messageText: string,
-      userInfo: SendUserInfo,
+      userInfo?: SendUserInfo,
       replyParentMsgId?: string,
       senderAccount?: SendAsAccount | null,
     ) => {
       const channel = currentChannelRef.current;
       if (!channel) {
         Logger.warn('[useTwitchChat] sendMessage called with no active channel');
+        return;
+      }
+      // A Twitch send needs the sender identity for the optimistic echo, so a
+      // missing one is a caller bug rather than something to paper over.
+      if (!userInfo) {
+        Logger.warn('[useTwitchChat] sendMessage called without user info');
         return;
       }
       await sendChannelMessage(channel, messageText, userInfo, replyParentMsgId, senderAccount);

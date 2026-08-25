@@ -13,7 +13,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as R
 import { invoke } from '@tauri-apps/api/core';
 import ChatMessageList from '../ChatMessageList';
 import { ProviderLogo } from '../ProviderLogo';
-import { useChatConnectionStore, sendChannelMessage } from '../../stores/chatConnectionStore';
+import { useChatConnectionStore, sendChannelMessage, injectSystemMessage, systemSourceFor } from '../../stores/chatConnectionStore';
 import { useChatUserStore } from '../../stores/chatUserStore';
 import { useAppStore } from '../../stores/AppStore';
 import { parseKey } from '../../utils/providerKey';
@@ -22,6 +22,7 @@ import { PROVIDERS, PROVIDER_IDS, type ProviderId } from '../../types/providers'
 import { parseMessage, type BackendChatMessage } from '../../services/twitchChat';
 import { initializeBadgeCache } from '../../services/twitchBadges';
 import type { ModerationContext } from '../../hooks/useTwitchChat';
+import { usePlatformAccountStore } from '../../stores/platformAccountStore';
 import HypeTrainBanner from '../HypeTrainBanner';
 import { useBlendedHypeTrains } from './useBlendedHypeTrains';
 import { Logger } from '../../utils/logger';
@@ -82,20 +83,27 @@ async function sendTo(
       },
       reply?.parentId,
     );
-  } else if (prov === 'youtube' && reply) {
-    await invoke('provider_send_message', {
-      provider: prov,
-      channel: c.channel.toLowerCase(),
-      text: `@${reply.parentUser} ${text}`,
-      replyTo: null,
-    });
   } else {
-    await invoke('provider_send_message', {
+    // YouTube live chat has no reply threads, so a reply becomes an @mention.
+    const isYouTubeReply = prov === 'youtube' && !!reply;
+    const outcome = await invoke<{
+      message_id: string | null;
+      is_sent: boolean;
+      drop_reason: string | null;
+    }>('provider_send_message', {
       provider: prov,
       channel: c.channel.toLowerCase(),
-      text,
-      replyTo: reply?.parentId ?? null,
+      text: isYouTubeReply ? `@${reply!.parentUser} ${text}` : text,
+      replyTo: isYouTubeReply ? null : reply?.parentId ?? null,
     });
+    // The platform can accept the request and still refuse the message. Say so
+    // in the pane and rethrow so the composer can restore what was typed.
+    if (outcome && outcome.is_sent === false) {
+      const reason = outcome.drop_reason || 'Message not sent';
+      const key = `${prov}:${c.channel.toLowerCase()}`;
+      injectSystemMessage(key, `Your message was not sent: ${reason}`, undefined, systemSourceFor(key));
+      throw new Error(reason);
+    }
   }
 }
 
@@ -454,8 +462,10 @@ export function BlendedChatPane({ channels }: { channels: BlendedChannel[] }) {
   const [text, setText] = useState('');
   const [sending, setSending] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
-  const [kickConnected, setKickConnected] = useState(false);
-  const [youtubeConnected, setYoutubeConnected] = useState(false);
+  // From the shared event-driven store. Previously two 5s polls per blended pane,
+  // both reading in-memory bools that change only on connect/disconnect.
+  const kickConnected = usePlatformAccountStore((s) => s.kick.connected);
+  const youtubeConnected = usePlatformAccountStore((s) => s.youtube.connected);
   // Right-click-a-name reply target. The send routes to THIS source + account,
   // overriding the multi-select for that one message.
   const [replyingTo, setReplyingTo] = useState<{ messageId: string; username: string; channel: BlendedChannel } | null>(
@@ -528,39 +538,6 @@ export function BlendedChatPane({ channels }: { channels: BlendedChannel[] }) {
     },
     [channels, isOn],
   );
-
-  const hasKick = channels.some((c) => provOf(c) === 'kick');
-
-  useEffect(() => {
-    if (!hasKick) return;
-    let active = true;
-    const check = () =>
-      invoke<boolean>('kick_is_connected')
-        .then((c) => active && setKickConnected(c))
-        .catch(() => {});
-    check();
-    const t = setInterval(check, 5000);
-    return () => {
-      active = false;
-      clearInterval(t);
-    };
-  }, [hasKick]);
-
-  const hasYoutube = channels.some((c) => provOf(c) === 'youtube');
-  useEffect(() => {
-    if (!hasYoutube) return;
-    let active = true;
-    const check = () =>
-      invoke<boolean>('youtube_is_connected')
-        .then((c) => active && setYoutubeConnected(c))
-        .catch(() => {});
-    check();
-    const t = setInterval(check, 5000);
-    return () => {
-      active = false;
-      clearInterval(t);
-    };
-  }, [hasYoutube]);
 
   // Route logins to the Account Connections settings instead of pushing a connect
   // button into the chat space (which shifted the feed). MultiChatWindow listens for

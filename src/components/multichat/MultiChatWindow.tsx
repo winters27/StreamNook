@@ -27,7 +27,7 @@ import { ActivityFeedWidget } from '../activity/ActivityFeedWidget';
 import { startActivityNormalizer, stopActivityNormalizer } from '../../services/activityNormalizer';
 import { useActivityStore } from '../../stores/activityStore';
 import { makeKey, parseKey } from '../../utils/providerKey';
-import { PROVIDERS, type ProviderId } from '../../types/providers';
+import { CHAT_PROVIDERS, PROVIDERS, type ProviderId } from '../../types/providers';
 import { ProviderLogo } from '../ProviderLogo';
 import { BlendedChatPane } from './BlendedChatPane';
 import ModRoomPane from '../modroom/ModRoomPane';
@@ -42,9 +42,11 @@ import ChatOnlySettingsModal from './ChatOnlySettingsModal';
 import MultiChatToasts from './MultiChatToasts';
 import ViewerCounter from './ViewerCounter';
 import CommandPalette from '../CommandPalette';
+import InputContextMenuHost from '../InputContextMenuHost';
 import ClipModal from '../ClipModal';
 import VodModal from './VodModal';
 import { useCommandPaletteHotkey } from '../../hooks/useCommandPaletteHotkey';
+import { usePlatformAccountSync } from '../../hooks/usePlatformAccountSync';
 import { useKeybindings } from '../../keybindings';
 import { startSnippetSync } from '../../stores/snippetStore';
 import PluginUiHost from '../../plugins-ui/PluginUiHost';
@@ -343,6 +345,9 @@ async function minimizeWindow(): Promise<void> {
 
 export default function MultiChatWindow() {
   useCommandPaletteHotkey();
+  // Keeps this window's composers in step with an account connected in the main
+  // window. Event-driven; the periodic session check stays main-window only.
+  usePlatformAccountSync();
   // Keyboard moderation in the popout: the active pane registers the mod
   // controller (see ChatWidget), and this drives the hotkeys against it.
   useKeybindings();
@@ -2242,6 +2247,10 @@ export default function MultiChatWindow() {
           hovering a chat badge or any other tooltip-bearing element in the
           popout produces no UI. */}
       <TooltipManager />
+      {/* Same reason as TooltipManager: the popout is its own React tree, so
+          without a mount here right-clicking the composer falls through to the
+          OS menu instead of StreamNook's (cut/copy/paste + spelling). */}
+      <InputContextMenuHost />
       <CommandPalette />
       <ClipModal />
       <VodModal />
@@ -3235,8 +3244,9 @@ interface AddChannelPanelProps {
 
 // Providers selectable in the add panel today (read-supported). Twitch has rich
 // live-following search; Kick + YouTube are add-by-name / by-link (no public
-// search API to autocomplete).
-const ADDABLE_PROVIDERS: ProviderId[] = ['twitch', 'kick', 'youtube', 'tiktok'];
+// search API to autocomplete). Derived from the chat flags so this list can't
+// drift from what the adapters actually support.
+const ADDABLE_PROVIDERS: ProviderId[] = CHAT_PROVIDERS;
 
 // Extract a stable YouTube source identifier from a pasted link or typed value.
 // Returns `@handle` for a channel (case-insensitive at YouTube) or a verbatim

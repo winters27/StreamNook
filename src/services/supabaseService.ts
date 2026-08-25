@@ -289,10 +289,103 @@ export const upsertUser = async (user: TwitchUser, appVersion?: string): Promise
 
         Logger.debug('[Supabase] User upserted:', user.display_name || user.username);
 
+        // Which client they signed in from. Not awaited: it is telemetry, and
+        // presence is what the user actually notices.
+        void recordClient(user.user_id);
+
         // Also update presence with user info
         await updatePresence(user.user_id, user.display_name || user.username, appVersion);
     } catch (error) {
         Logger.error('[Supabase] Failed to upsert user:', error);
+    }
+};
+
+/**
+ * Which StreamNook client this is.
+ *
+ * Read off the user agent rather than an OS plugin, matching how the Android
+ * port decides its own layout: the Android System WebView always says "Android"
+ * in its UA, so this is synchronous and needs no extra capability entry. Shared
+ * code, so the Android build reports itself correctly with no separate branch.
+ */
+const clientPlatform = (): string =>
+    typeof navigator !== 'undefined' && /android|iphone|ipad|ipod/i.test(navigator.userAgent)
+        ? (/android/i.test(navigator.userAgent) ? 'android' : 'ios')
+        : 'desktop';
+
+/**
+ * Record which client a member signed in from.
+ *
+ * The realtime presence payload already carries this, but presence answers "who
+ * is on Android right now", and the dashboard needs "who uses Android". Without
+ * a persisted row, an Android user who is offline looks like a desktop user.
+ *
+ * Fire-and-forget: telemetry must never be able to fail a sign-in.
+ */
+const recordClient = async (twitchUserId: string): Promise<void> => {
+    if (!supabase || !twitchUserId) return;
+    try {
+        const { error } = await supabase.rpc('record_client', {
+            p_user_id: twitchUserId,
+            p_platform: clientPlatform(),
+        });
+        if (error) Logger.debug('[Supabase] Could not record client:', error);
+    } catch (e) {
+        Logger.debug('[Supabase] Could not record client:', e);
+    }
+};
+
+/**
+ * Record that a member has a non-Twitch platform account connected.
+ *
+ * The dashboard has always been able to see who signed into StreamNook, because
+ * that is a Twitch account and `users` holds it. Kick and YouTube are accounts
+ * too now, and nothing was recording them, so "how many people actually use the
+ * multi-platform support" had no answer.
+ *
+ * Keyed on the Twitch identity, like every other per-member table here. With no
+ * Twitch user signed in there is no member to attach the link to, so this is a
+ * no-op and the caller retries on its next read.
+ *
+ * Fire-and-forget: telemetry must never be able to fail a sign-in.
+ */
+export const recordLinkedAccount = async (
+    twitchUserId: string,
+    provider: string,
+    name: string | null,
+    avatarUrl: string | null,
+): Promise<void> => {
+    if (!supabase || !twitchUserId) return;
+    try {
+        const { error } = await supabase.rpc('record_linked_account', {
+            p_user_id: twitchUserId,
+            p_provider: provider,
+            p_name: name,
+            p_avatar: avatarUrl,
+        });
+        if (error) Logger.debug(`[Supabase] Could not record ${provider} link:`, error);
+    } catch (e) {
+        Logger.debug(`[Supabase] Could not record ${provider} link:`, e);
+    }
+};
+
+/**
+ * Stamp a platform account as disconnected. The row stays, so the dashboard can
+ * tell someone who is connected from someone who tried it and dropped it.
+ */
+export const clearLinkedAccount = async (
+    twitchUserId: string,
+    provider: string,
+): Promise<void> => {
+    if (!supabase || !twitchUserId) return;
+    try {
+        const { error } = await supabase.rpc('clear_linked_account', {
+            p_user_id: twitchUserId,
+            p_provider: provider,
+        });
+        if (error) Logger.debug(`[Supabase] Could not clear ${provider} link:`, error);
+    } catch (e) {
+        Logger.debug(`[Supabase] Could not clear ${provider} link:`, e);
     }
 };
 

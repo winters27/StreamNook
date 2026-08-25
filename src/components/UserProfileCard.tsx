@@ -1,10 +1,12 @@
 import { useState, useEffect, useMemo, useRef, useCallback, useSyncExternalStore } from 'react';
 import { MessageCircle, UserPlus, UserMinus, Loader2, ChevronDown, ChevronUp, Pencil, X, Gift, Share2, Check } from 'lucide-react';
 import { buildShareUrl } from '../utils/shareLink';
+import { providerLabel, type ProviderId } from '../types/providers';
 import { motion, AnimatePresence, useScroll, useTransform, useReducedMotion, useMotionValue, animate } from 'framer-motion';
 import { setUserNickname, setUserColor } from '../utils/userChatOverrides';
 import { invoke } from '@tauri-apps/api/core';
 import { useAppStore } from '../stores/AppStore';
+import { streamProvider } from '../utils/streamProvider';
 import { openBadgesWithPaintInMain, openBadgesOnStreamNookInMain, openBadgesWithBadgeInMain, openBadgesWithTargetInMain, openProfileViewerInMain } from '../utils/openBadgesInMain';
 import { computePaintStyle, getBadgeImageUrls, getBadgeFallbackUrls, queueCosmeticForCaching } from '../services/seventvService';
 import { FallbackImage } from './FallbackImage';
@@ -14,6 +16,7 @@ import {
   getProfileFromMemoryCache,
   getFullProfileWithFallback,
   refreshProfileInBackground,
+  getCosmeticsWithFallback,
   CachedProfile
 } from '../services/cosmeticsCache';
 import { Tooltip } from './ui/Tooltip';
@@ -29,6 +32,8 @@ import {
 import streamNookLogo from '../assets/streamnook-logo.png';
 import { EmoteText, buildEmoteNameMap } from '../utils/emoteText';
 import { useChannelEmotes } from '../stores/chatConnectionStore';
+import { historyKey } from '../utils/chatterIdentity';
+import { usePlatformAccountStore } from '../stores/platformAccountStore';
 
 // messageHistory arrives from two sources:
 //   1. The frontend's in-session userMessageHistory Map (full ParsedMessage shape
@@ -50,6 +55,30 @@ interface ParsedMessage {
   timestamp?: string;
 }
 
+/// Mirrors `ModLogsStatus` in src-tauri/src/commands/justlog.rs.
+type ModLogsStatus =
+  | 'available'
+  | 'no_messages'
+  | 'no_access'
+  | 'auth_required'
+  | 'skipped'
+  | 'failed';
+
+interface ChatLogsResult {
+  messages: { timestamp: string; content: string; id?: string }[];
+  mod_logs_status: ModLogsStatus;
+}
+
+/** One stat row, rendered only when there is a value. Keeps the platform panels
+ *  from growing empty cells for data a platform doesn't publish. */
+const ProviderStatRow = ({ label, value }: { label: string; value: string | null }) =>
+  value ? (
+    <div className="flex items-baseline justify-between gap-3 text-[11px]">
+      <span className="text-textSecondary">{label}</span>
+      <span className="text-textPrimary font-medium tabular-nums">{value}</span>
+    </div>
+  ) : null;
+
 interface UserProfileCardProps {
   userId: string;
   username: string;
@@ -68,6 +97,41 @@ interface UserProfileCardProps {
   viewerIsBroadcaster?: boolean;
   broadcasterId?: string;
   onPreFillCommand?: (cmd: string) => void;
+  /** Which platform this chatter is on. Absent means Twitch, so every existing
+   *  caller keeps its exact behaviour. */
+  provider?: ProviderId;
+}
+
+/** A Kick chatter's card data, from `kick_user_profile`. */
+interface KickProfile {
+  user_id?: number | null;
+  username: string;
+  slug: string;
+  avatar_url?: string | null;
+  bio?: string | null;
+  banner_url?: string | null;
+  verified: boolean;
+  is_staff: boolean;
+  is_channel_owner: boolean;
+  is_moderator: boolean;
+  is_banned: boolean;
+  followers_count?: number | null;
+  following_since?: string | null;
+  created_at?: string | null;
+  subscribed_for: number;
+  badges: Array<{ kind: string; text: string; image_url?: string | null; months?: number | null }>;
+  socials: Array<[string, string]>;
+}
+
+/** A YouTube chatter's channel data, from `youtube_user_profile`. */
+interface YouTubeProfile {
+  channel_id: string;
+  handle?: string | null;
+  title?: string | null;
+  description?: string | null;
+  avatar_url?: string | null;
+  banner_url?: string | null;
+  subscriber_count?: string | null;
 }
 
 interface UserProfileComplete {
@@ -503,8 +567,12 @@ const UserProfileCard = ({
   viewerIsBroadcaster = false,
   broadcasterId,
   onPreFillCommand,
+  provider = 'twitch',
 }: UserProfileCardProps) => {
   const [profileData, setProfileData] = useState<UserProfileComplete | null>(null);
+  // Per-platform card data. Only one is ever populated; the shell is shared.
+  const [kickProfile, setKickProfile] = useState<KickProfile | null>(null);
+  const [youtubeProfile, setYoutubeProfile] = useState<YouTubeProfile | null>(null);
   const [cachedProfile, setCachedProfile] = useState<CachedProfile | null>(null);
   const [isLoadingProfile, setIsLoadingProfile] = useState(true);
   // BetterTTV Pro loyalty badge. Resolved separately from the main profile
@@ -550,6 +618,29 @@ const UserProfileCard = ({
   // do is taken away.
   const blockedTarget = !viewerIsBroadcaster && (targetIsModerator || targetIsBroadcaster);
 
+  // The provider zones need the same protection. Without it, a moderator's own
+  // card offers "Ban" pointed at themselves — one click from being banned from a
+  // channel they moderate. Kick reports the card's subject in the same payload
+  // that told us we can moderate, so compare against the connected account.
+  const connectedKickName = usePlatformAccountStore((s) =>
+    s.kick.connected ? (s.kick.name?.toLowerCase() ?? null) : null,
+  );
+  const connectedYouTubeName = usePlatformAccountStore((s) =>
+    s.youtube.connected ? (s.youtube.name?.toLowerCase() ?? null) : null,
+  );
+  const targetIsSelf =
+    provider === 'kick'
+      ? !!connectedKickName &&
+        [username, kickProfile?.slug, kickProfile?.username].some(
+          (n) => !!n && String(n).toLowerCase() === connectedKickName,
+        )
+      : provider === 'youtube'
+        ? !!connectedYouTubeName &&
+          [displayName, username].some(
+            (n) => !!n && String(n).toLowerCase() === connectedYouTubeName,
+          )
+        : false;
+
   // First saved reason is the one we prefill; the rest are just there to copy.
   const savedBanReasons = useAppStore((s) => s.settings.moderation?.saved_ban_reasons);
   const defaultBanReason = savedBanReasons?.[0]?.trim() || '';
@@ -573,6 +664,11 @@ const UserProfileCard = ({
   // history loaded but never rendered.) A ref set doesn't trigger a re-render.
   const historicalAttemptedRef = useRef(false);
   const [historicalChannelLogged, setHistoricalChannelLogged] = useState(true);
+  // Why Twitch's own deep archive contributed what it did. Twitch only serves it
+  // to moderators of the channel (anyone may always read their OWN history), so
+  // 'no_access' is the ordinary outcome in most channels and needs saying out
+  // loud — otherwise a bare panel reads as StreamNook being broken.
+  const [modLogsStatus, setModLogsStatus] = useState<ModLogsStatus | null>(null);
 
   // Re-render when the StreamNook registry updates so the #N chip appears as soon as it loads
   useSyncExternalStore(subscribeStreamNookRegistryVersion, getStreamNookRegistryVersion, getStreamNookRegistryVersion);
@@ -682,11 +778,18 @@ const UserProfileCard = ({
       return { channelId: propChannelId, channelName: propChannelName };
     }
     const currentStream = useAppStore.getState().currentStream;
+    // Deliberately NO fallback to the viewed user's own id/login. Substituting
+    // them silently asks "what did this user say in their OWN channel", which
+    // returns nothing for almost everyone, resolves badges in the wrong channel
+    // (making every viewer read as the broadcaster), and is indistinguishable
+    // from a genuine empty result. An unknown channel is better reported as
+    // unknown: the emote hook no-ops on an empty channel, and the history
+    // command reports `skipped` so the card can say so.
     return {
-      channelId: currentStream?.user_id || userId,
-      channelName: currentStream?.user_login || username
+      channelId: currentStream?.user_id ?? '',
+      channelName: currentStream?.user_login ?? '',
     };
-  }, [propChannelId, propChannelName, userId, username]);
+  }, [propChannelId, propChannelName]);
 
   // Channel emote set (Twitch native + FFZ/BTTV/7TV), reused from the shared
   // cache the chat renderer fills. In the popout window that cache starts empty,
@@ -694,7 +797,11 @@ const UserProfileCard = ({
   // buildEmoteNameMap gives the name -> emote lookup EmoteText needs to swap
   // emote words for images in the message timeline.
   const { channelId: emoteChannelId, channelName: emoteChannelName } = getChannelContext();
-  const channelEmotes = useChannelEmotes(emoteChannelName, emoteChannelId);
+  // The provider travels with the channel: `getChannelContext` falls back to the
+  // current stream, which on YouTube/Kick yields that platform's id, and the hook
+  // would otherwise default to Twitch and look it up on Helix.
+  const emoteProvider = streamProvider(useAppStore.getState().currentStream);
+  const channelEmotes = useChannelEmotes(emoteChannelName, emoteChannelId, emoteProvider);
   const emoteNameMap = useMemo(() => buildEmoteNameMap(channelEmotes), [channelEmotes]);
 
   // Load cached cosmetics INSTANTLY (synchronous), then fetch fresh data
@@ -706,6 +813,66 @@ const UserProfileCard = ({
     if (cached) {
       Logger.debug('[UserProfileCard] Instant load from cache:', cached);
       setCachedProfile(cached);
+    }
+
+    // Non-Twitch chatters take a different path entirely. `get_user_profile_complete`
+    // is Helix + IVR + 7TV — every one of them answers about TWITCH accounts, so
+    // handing it a Kick numeric id or a YouTube UC id returns a stranger's profile
+    // or nothing. Each platform has its own command with its own shape.
+    if (provider !== 'twitch') {
+      const controller = new AbortController();
+      const fetchProviderProfile = async () => {
+        setIsLoadingProfile(true);
+        // 7TV cosmetics are a 7TV-ACCOUNT property, not a Twitch one: a linked Kick
+        // connection resolves the same paint and badges the person wears anywhere
+        // else. This branch fetched only the platform profile, so a Kick chatter
+        // rendered painted in chat and flat on their own card. Started HERE rather
+        // than awaited after the profile so the card does not get slower.
+        //
+        // Kick only, deliberately: `chatUserStore.addUser` short-circuits YouTube
+        // and TikTok to native decoration instead of 7TV, so resolving them here
+        // would make the card disagree with the chat row next to it.
+        const cosmeticsId = `${provider}:${userId}`;
+        const cosmeticsPromise =
+          provider === 'kick' ? getCosmeticsWithFallback(cosmeticsId).catch(() => null) : null;
+        try {
+          if (provider === 'kick') {
+            const p = await invoke<KickProfile>('kick_user_profile', {
+              room: channelName || '',
+              username,
+            });
+            if (!controller.signal.aborted) setKickProfile(p);
+          } else if (provider === 'youtube') {
+            const p = await invoke<YouTubeProfile>('youtube_user_profile', {
+              channelId: userId,
+            });
+            if (!controller.signal.aborted) setYoutubeProfile(p);
+          }
+        } catch (error) {
+          Logger.warn(`[UserProfileCard] ${provider} profile failed:`, error);
+        } finally {
+          if (!controller.signal.aborted) setIsLoadingProfile(false);
+        }
+        // Feed the cosmetics into the SAME `cachedProfile.seventvCosmetics` slot the
+        // Twitch card already renders from, so the paint and 7TV badge rows need no
+        // provider branch of their own.
+        const cosmetics = await cosmeticsPromise;
+        if (cosmetics && !controller.signal.aborted) {
+          setCachedProfile((prev) => ({
+            userId: cosmeticsId,
+            username,
+            twitchBadges: [],
+            thirdPartyBadges: [],
+            ...(prev ?? {}),
+            seventvCosmetics: cosmetics,
+            lastUpdated: Date.now(),
+          }));
+        }
+      };
+      void fetchProviderProfile();
+      // Closing the card, or clicking a different chatter, must not leave a
+      // response in flight that writes into an unmounted card.
+      return () => controller.abort();
     }
 
     // 2. Fetch full profile from Rust (includes Twitch profile, IVR, etc.)
@@ -792,15 +959,17 @@ const UserProfileCard = ({
 
       // Fast phase: Twitch buffer + robotty + mod logs. Returns in ~1s, so the
       // card fills right away. channelId + userId enable the Twitch GQL sources.
-      const fastP = invoke<{ timestamp: string; content: string; id?: string }[]>(
+      const fastP = invoke<ChatLogsResult>(
         'fetch_user_chat_logs',
         { channel: channelName, username, channelId, userId },
       )
-        .then((messages) => {
+        .then((result) => {
+          const messages = result?.messages ?? [];
           Logger.info(
-            `[UserProfileCard] fast logs: channel=${channelName} user=${username} -> ${messages.length} msgs`,
+            `[UserProfileCard] fast logs: channel=${channelName} user=${username} -> ${messages.length} msgs (modLogs: ${result?.mod_logs_status})`,
           );
           if (!cancelled) {
+            setModLogsStatus(result?.mod_logs_status ?? null);
             setHistoricalMessages((prev) => mergeHistorical(prev, messages));
             if (messages.length > 0) setHistoricalChannelLogged(true);
           }
@@ -849,7 +1018,11 @@ const UserProfileCard = ({
     let cancelled = false;
     const poll = async () => {
       try {
-        const msgs = await invoke<ParsedMessage[]>('get_user_message_history', { userId });
+        const msgs = await invoke<ParsedMessage[]>('get_user_message_history', {
+          // Same namespacing the write side uses; a bare provider id reads the
+          // wrong bucket (or nothing).
+          userId: historyKey(userId, provider),
+        });
         if (cancelled || !msgs?.length) return;
         setLiveMessages((prev) => {
           const seen = new Set(prev.map((m) => m.id).filter(Boolean));
@@ -1120,11 +1293,24 @@ const UserProfileCard = ({
   const login = twitchProfile?.login || username;
 
   // Prefer the user's 7TV animated avatar when they have one; otherwise the
-  // Twitch profile image. 7TV exposes no banner, only this avatar.
-  const avatarUrl = profileData?.seventv_cosmetics?.avatar_url || twitchProfile?.profile_image_url;
+  // platform's own profile image. 7TV exposes no banner, only this avatar.
+  //
+  // `twitchProfile` is null on a provider card by design (the Helix fetch is
+  // skipped), so reading only from it left every Kick and YouTube card with a
+  // blank avatar and banner even though both are fetched and parsed.
+  const avatarUrl =
+    profileData?.seventv_cosmetics?.avatar_url ||
+    twitchProfile?.profile_image_url ||
+    kickProfile?.avatar_url ||
+    youtubeProfile?.avatar_url ||
+    undefined;
 
   const bannerStyle = useMemo(() => {
-    const bannerUrl = twitchProfile?.banner_image_url || twitchProfile?.offline_image_url;
+    const bannerUrl =
+      twitchProfile?.banner_image_url ||
+      twitchProfile?.offline_image_url ||
+      kickProfile?.banner_url ||
+      youtubeProfile?.banner_url;
     if (bannerUrl) {
       return {
         backgroundImage: `url(${bannerUrl})`,
@@ -1136,7 +1322,7 @@ const UserProfileCard = ({
     return {
       backgroundImage: `linear-gradient(135deg, ${accent}40 0%, ${accent}10 50%, color-mix(in srgb, var(--color-accent) 13%, transparent) 100%)`,
     } as const;
-  }, [twitchProfile?.banner_image_url, twitchProfile?.offline_image_url, color]);
+  }, [twitchProfile?.banner_image_url, twitchProfile?.offline_image_url, kickProfile?.banner_url, youtubeProfile?.banner_url, color]);
 
   const handleWhisper = useCallback(async () => {
     const user = {
@@ -1457,16 +1643,29 @@ const UserProfileCard = ({
                       entries.sort((a, b) => a.ts - b.ts);
 
                       if (entries.length === 0 && !historicalLoading && !deepLoading) {
+                        // Say WHY the panel is empty. Twitch serves its own
+                        // multi-year archive only to moderators of the channel,
+                        // so an empty card is usually a permission boundary
+                        // rather than a failure, and silently showing nothing
+                        // made those two look identical.
+                        let reason: string;
+                        if (modLogsStatus === 'no_access') {
+                          reason = "Twitch only shares a viewer's past messages with moderators of this channel.";
+                        } else if (modLogsStatus === 'auth_required') {
+                          reason = 'Reconnect your Twitch account to load messages from Twitch history.';
+                        } else if (modLogsStatus === 'failed') {
+                          reason = 'Could not reach Twitch for older messages.';
+                        } else if (historicalChannelLogged) {
+                          reason = 'New messages from this user will appear here.';
+                        } else {
+                          reason = 'No historical messages available for this channel.';
+                        }
                         return (
                           <div className="px-2">
                             <div className="flex flex-col items-center justify-center py-12 text-center">
                               <MessageCircle size={32} className="text-textSecondary/30 mb-2" />
                               <p className="text-sm text-textSecondary">No messages found</p>
-                              <p className="text-xs text-textSecondary/60 mt-1">
-                                {historicalChannelLogged
-                                  ? 'New messages from this user will appear here.'
-                                  : 'No historical messages available for this channel.'}
-                              </p>
+                              <p className="text-xs text-textSecondary/60 mt-1">{reason}</p>
                             </div>
                           </div>
                         );
@@ -1559,11 +1758,81 @@ const UserProfileCard = ({
                 <h3 className="text-xl font-bold leading-tight" style={usernameStyle}>{displayName}</h3>
                 {identityChips}
               </div>
-              <p className="text-sm text-textSecondary mt-0.5">@{login}</p>
+              <p className="text-sm text-textSecondary mt-0.5">
+                {provider === 'youtube' ? (youtubeProfile?.handle ?? `@${login}`) : `@${login}`}
+              </p>
               {twitchProfile?.description && (
                 <p className="text-sm text-textPrimary/85 mt-2.5 leading-relaxed">{twitchProfile.description}</p>
               )}
+              {provider === 'kick' && kickProfile?.bio && (
+                <p className="text-sm text-textPrimary/85 mt-2.5 leading-relaxed">{kickProfile.bio}</p>
+              )}
+              {provider === 'youtube' && youtubeProfile?.description && (
+                <p className="text-sm text-textPrimary/85 mt-2.5 leading-relaxed line-clamp-4">
+                  {youtubeProfile.description}
+                </p>
+              )}
             </div>
+
+            {/* Platform stats. Deliberately its own block rather than branches
+                threaded through the Twitch panel below: that panel is built on
+                Helix + IVR shapes, and every row in it would need a null-guard for
+                data these platforms simply do not have. Twitch-only rows (Chatters,
+                Last live, whispers) are HIDDEN here rather than repurposed —
+                better no row than a wrong one. */}
+            {provider === 'kick' && kickProfile && (
+              <div className="glass-panel rounded-md px-3 py-2 space-y-1">
+                <ProviderStatRow label="Joined Kick" value={kickProfile.created_at ? formatDate(kickProfile.created_at) : null} />
+                <ProviderStatRow label="Following since" value={kickProfile.following_since ? formatDate(kickProfile.following_since) : null} />
+                <ProviderStatRow
+                  label="Subscribed"
+                  value={kickProfile.subscribed_for > 0 ? `${kickProfile.subscribed_for} month${kickProfile.subscribed_for === 1 ? '' : 's'}` : null}
+                />
+                <ProviderStatRow
+                  label="Followers"
+                  value={kickProfile.followers_count != null ? kickProfile.followers_count.toLocaleString() : null}
+                />
+                {kickProfile.is_banned && <ProviderStatRow label="Status" value="Banned in this channel" />}
+              </div>
+            )}
+            {provider === 'youtube' && youtubeProfile && (
+              <div className="glass-panel rounded-md px-3 py-2 space-y-1">
+                <ProviderStatRow label="Subscribers" value={youtubeProfile.subscriber_count ?? null} />
+              </div>
+            )}
+
+            {/* Badges worn in THIS room, straight off the message payload. */}
+            {provider === 'kick' && !!kickProfile?.badges.length && (
+              <div className="flex flex-wrap items-center gap-1.5">
+                {kickProfile.badges.map((b) => (
+                  <span
+                    key={`${b.kind}-${b.text}`}
+                    className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] bg-white/[0.06] text-textSecondary"
+                  >
+                    {b.image_url && <img src={b.image_url} alt="" className="w-3.5 h-3.5" />}
+                    {b.text}
+                    {b.months ? ` · ${b.months}mo` : ''}
+                  </span>
+                ))}
+              </div>
+            )}
+
+            {/* One action, and only one that actually works on that platform. */}
+            {provider !== 'twitch' && (
+              <button
+                onClick={async () => {
+                  const { open } = await import('@tauri-apps/plugin-shell');
+                  const url =
+                    provider === 'kick'
+                      ? `https://kick.com/${kickProfile?.slug || login}`
+                      : `https://www.youtube.com/channel/${youtubeProfile?.channel_id || userId}`;
+                  await open(url).catch((e) => Logger.error('Failed to open channel:', e));
+                }}
+                className="glass-button w-full py-2 text-sm font-medium rounded-lg"
+              >
+                Open on {providerLabel(provider)}
+              </button>
+            )}
 
             {/* Relationship: a single compact stats panel + the sub/mod/vip pills.
                 Each row only renders if we have the data, so the panel grows
@@ -1611,7 +1880,7 @@ const UserProfileCard = ({
                       <div className="glass-panel rounded-md px-3 py-2 space-y-1">
                         {rows.joinDate && (
                           <div className="flex items-baseline justify-between gap-3 text-[11px]">
-                            <span className="text-textSecondary">Joined Twitch</span>
+                            <span className="text-textSecondary">Joined {providerLabel(provider)}</span>
                             <span className="text-textPrimary font-medium tabular-nums">
                               {formatDate(twitchProfile!.created_at)}
                               <RelativeSuffix iso={twitchProfile!.created_at} show={showRelative} />
@@ -1836,7 +2105,16 @@ const UserProfileCard = ({
             {/* Personal nickname + chat color (only visible to this user).
                 Doesn't change @mention behavior — Twitch IRC still resolves
                 real logins, and color is purely a display-layer override. */}
-            <NicknameEditor userId={userId} username={username} displayName={displayName} twitchColor={color} />
+            {/* The override key must match what the chat renderer LOOKS UP, which
+                is the namespaced cosmetics key for a provider chatter and the bare
+                id for Twitch. Writing a bare Kick/YouTube id here would save an
+                override that could never be found again. */}
+            <NicknameEditor
+              userId={provider && provider !== 'twitch' ? `${provider}:${userId}` : userId}
+              username={username}
+              displayName={displayName}
+              twitchColor={color}
+            />
 
             {/* Actions: 2x2 grid + messages toggle */}
             <div className="space-y-2">
@@ -1930,8 +2208,139 @@ const UserProfileCard = ({
             </button>
           </div>
 
+            {/* YouTube mod zone. Addressed by CHANNEL IDENTIFIER (what channel_meta
+                is keyed by, i.e. propChannelName / user_login) and the chatter's
+                UC id — not the broadcaster id, which is a different value here.
+                YouTube's timeout is a single fixed length, so there is one Timeout
+                button rather than a duration grid; "Hide" is its permanent ban. */}
+            {isModerator && provider === 'youtube' && propChannelName && !targetIsSelf && (
+              <div className="pt-3 border-t border-error/20">
+                <div className="flex items-center gap-1.5 mb-2.5">
+                  <svg className="w-3.5 h-3.5 text-error" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>
+                  <span className="text-[10px] uppercase font-bold text-error tracking-wider">Moderator Actions</span>
+                </div>
+                <div className="grid grid-cols-3 gap-2">
+                  {([
+                    { label: 'Timeout', kind: 'timeout', title: 'Time out (YouTube sets the length)' },
+                    { label: 'Hide', kind: 'ban', title: 'Hide this user from chat permanently' },
+                    { label: 'Unhide', kind: 'unban', title: 'Let this user back into chat' },
+                  ] as const).map((action) => (
+                    <Tooltip key={action.label} content={action.title} side="top">
+                      <button
+                        onClick={async () => {
+                          try {
+                            const { invoke } = await import('@tauri-apps/api/core');
+                            const args = { channel: propChannelName, targetChannelId: userId };
+                            if (action.kind === 'unban') {
+                              await invoke('youtube_unban_user', args);
+                            } else {
+                              await invoke('youtube_ban_user', {
+                                ...args,
+                                durationSeconds: action.kind === 'timeout' ? 300 : null,
+                              });
+                            }
+                            useAppStore
+                              .getState()
+                              .addToast(
+                                action.kind === 'unban'
+                                  ? `${displayName || login} can chat again`
+                                  : action.kind === 'timeout'
+                                    ? `Timed out ${displayName || login}`
+                                    : `Hid ${displayName || login} from chat`,
+                                'success',
+                              );
+                            onClose();
+                          } catch (err) {
+                            Logger.error('[UserProfileCard] YouTube mod action failed:', err);
+                            useAppStore
+                              .getState()
+                              .addToast(`Couldn't ${action.label.toLowerCase()} ${displayName || login}`, 'error');
+                          }
+                        }}
+                        className={`w-full py-1.5 glass-button text-xs font-semibold text-white/70 hover:text-white rounded flex items-center justify-center transition-colors border ${
+                          action.kind === 'ban'
+                            ? 'hover:bg-error/20 hover:border-error/30'
+                            : 'hover:bg-warning/20 hover:border-warning/30'
+                        }`}
+                      >
+                        {action.label}
+                      </button>
+                    </Tooltip>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Kick mod zone. Kick has no VIP/mod-grant API for us and no
+                cross-mod protection rule to explain, so it is the four actions
+                that DO exist rather than a greyed-out copy of Twitch's grid.
+                Durations are whole minutes because that is Kick's unit. */}
+            {isModerator && broadcasterId && provider === 'kick' && !targetIsSelf && (
+              <div className="pt-3 border-t border-error/20">
+                <div className="flex items-center gap-1.5 mb-2.5">
+                  <svg className="w-3.5 h-3.5 text-error" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>
+                  <span className="text-[10px] uppercase font-bold text-error tracking-wider">Moderator Actions</span>
+                </div>
+                <div className="grid grid-cols-4 gap-2">
+                  {([
+                    { label: '10m', minutes: 10, title: 'Time out for 10 minutes', danger: false },
+                    { label: '24h', minutes: 1440, title: 'Time out for 24 hours', danger: false },
+                    { label: 'Ban', minutes: null, title: 'Ban permanently', danger: true },
+                    { label: 'Unban', minutes: undefined, title: 'Remove a ban or timeout', danger: false },
+                  ] as const).map((action) => (
+                    <Tooltip key={action.label} content={action.title} side="top">
+                      <button
+                        onClick={async () => {
+                          try {
+                            const { invoke } = await import('@tauri-apps/api/core');
+                            const ids = {
+                              broadcasterUserId: Number(broadcasterId),
+                              targetUserId: Number(userId),
+                            };
+                            if (!Number.isFinite(ids.broadcasterUserId) || !Number.isFinite(ids.targetUserId)) {
+                              useAppStore.getState().addToast('Kick did not give us an id for that user', 'error');
+                              return;
+                            }
+                            if (action.minutes === undefined) {
+                              await invoke('kick_unban_user', ids);
+                              useAppStore.getState().addToast(`Lifted the ban on ${login}`, 'success');
+                            } else {
+                              await invoke('kick_ban_user', {
+                                ...ids,
+                                durationMinutes: action.minutes,
+                                reason: null,
+                              });
+                              useAppStore
+                                .getState()
+                                .addToast(
+                                  action.minutes === null
+                                    ? `Banned ${login}`
+                                    : `Timed out ${login} for ${action.label}`,
+                                  'success',
+                                );
+                            }
+                            onClose();
+                          } catch (err) {
+                            Logger.error('[UserProfileCard] Kick mod action failed:', err);
+                            useAppStore.getState().addToast(`Couldn't ${action.label.toLowerCase()} ${login}`, 'error');
+                          }
+                        }}
+                        className={`w-full py-1.5 glass-button text-xs font-semibold text-white/70 hover:text-white rounded flex items-center justify-center transition-colors border ${
+                          action.danger
+                            ? 'hover:bg-error/20 hover:border-error/30'
+                            : 'hover:bg-warning/20 hover:border-warning/30'
+                        }`}
+                      >
+                        {action.label}
+                      </button>
+                    </Tooltip>
+                  ))}
+                </div>
+              </div>
+            )}
+
             {/* Mod zone. Kept inside body container; red top border is the only divider we keep, as a semantic danger-zone signal */}
-            {isModerator && broadcasterId && (
+            {isModerator && broadcasterId && provider === 'twitch' && (
               <div className="pt-3 border-t border-error/20">
                 <div className="flex items-center gap-1.5 mb-2.5">
                   <svg className="w-3.5 h-3.5 text-error" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>

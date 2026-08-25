@@ -45,6 +45,11 @@ const IntegrationsSettings = () => {
         </p>
       </div>
 
+        {/* Kick and YouTube used to be listed here, which made them read as
+            integrations alongside Discord. They are accounts — they live in
+            Settings → Profile → Accounts with the Twitch ones. Integrations is
+            Discord RPC and plugins. */}
+
         {/* Integration cards (room to stack as more land here) */}
         <div className="w-full space-y-3">
         <div className="glass-panel rounded-lg p-4">

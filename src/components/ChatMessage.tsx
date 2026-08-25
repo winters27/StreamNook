@@ -29,6 +29,8 @@ import { MAJOR_COLOGNE_THEME_ID } from '../services/cologneEvent';
 import { matchHighlightPhrase, matchHighlightUser, matchHighlightBadge, type HighlightMatch } from '../utils/chatHighlightMatcher';
 import { flashTitle } from '../utils/titleFlasher';
 import { playSoundThrottled } from '../utils/notificationSound';
+import { chatterId, chatterProvider } from '../utils/chatterIdentity';
+import type { ProviderId } from '../types/providers';
 import { getDisplayedName, getColorOverride } from '../utils/userChatOverrides';
 import { CHANNEL_SPECIFIC_TWITCH_BADGES, orderTwitchBadges } from '../utils/badgeOrder';
 import { LinkPreviewCard } from './chat/LinkPreviewCard';
@@ -213,7 +215,12 @@ const parseTextWithEmoteSets = (text: string, emotes?: EmoteSet | null): EmoteSe
       ? emotes['7tv'].find((e: Emote) => e.name === word) ||
         emotes.bttv.find((e: Emote) => e.name === word) ||
         emotes.ffz.find((e: Emote) => e.name === word) ||
-        emotes.twitch.find((e: Emote) => e.name === word)
+        emotes.twitch.find((e: Emote) => e.name === word) ||
+        // Provider-native sets. A Kick reply preview arrives as plain text with
+        // its emote tokens already reduced to names, so without these the
+        // parent's emotes render as bare words.
+        emotes.kick?.find((e: Emote) => e.name === word) ||
+        emotes.youtube?.find((e: Emote) => e.name === word)
       : undefined;
 
     if (emote) {
@@ -294,6 +301,7 @@ function getTwitchBadgeUrl(badgeKey: string, badgeInfo: { localUrl?: string; url
 import { BackendChatMessage } from '../services/twitchChat';
 
 import { Logger } from '../utils/logger';
+import { kickTimeoutMinutes } from '../utils/kickTimeout';
 
 interface ChatMessageProps {
   message: string | BackendChatMessage; // Raw IRC message or Backend Message Object
@@ -304,7 +312,10 @@ interface ChatMessageProps {
     color: string,
     badges: Array<{ key: string; info: { url?: string; image_url_4x?: string } }>,
 
-    event: React.MouseEvent
+    event: React.MouseEvent,
+    /** Which platform `userId` belongs to. Absent means Twitch, so every existing
+     *  caller is unchanged. Without it the card would look a Kick id up on Helix. */
+    provider?: ProviderId,
   ) => void;
   onReplyClick?: (parentMsgId: string) => void;
   isHighlighted?: boolean;
@@ -650,6 +661,18 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
   // Extract userId once to prevent re-renders
   const userId = useMemo(() => parsed.tags.get('user-id'), [parsed.tags]);
 
+  // The id to open a PROFILE with, which is not the same thing on every platform.
+  // Twitch carries it as the `user-id` IRC tag; Kick and YouTube send no such tag
+  // and put the chatter's id on `providerUserId`. Every click site used to read
+  // the tag and bail when it was missing, so clicking a Kick or YouTube chatter
+  // did nothing at all — not the wrong card, no card.
+  const clickProvider = chatterProvider(parsed as never);
+  const clickUserId = useMemo(
+    () => chatterId(parsed as never),
+    // `parsed` is rebuilt per message, so this is stable per row.
+    [parsed],
+  );
+
   // 7TV cosmetics key. Cosmetics are a 7TV-account property that syncs across all
   // of a user's linked platforms, but we resolve them per chatter by platform id.
   // Non-Twitch ids are namespaced (`kick:123`) so a Twitch id and a Kick id of the
@@ -698,7 +721,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
       if (parsed.provider === 'kick') {
         if (!providerUserId || !broadcasterId) return;
         const durationMinutes =
-          durationSeconds == null ? null : Math.max(1, Math.round(durationSeconds / 60));
+          durationSeconds == null ? null : kickTimeoutMinutes(durationSeconds);
         await invoke('kick_ban_user', {
           broadcasterUserId: Number(broadcasterId),
           targetUserId: Number(providerUserId),
@@ -782,8 +805,8 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
     [parsed.tags, parsed.displayName, parsed.username],
   );
   const effectiveDisplayName = useMemo(
-    () => getDisplayedName(userId, originalDisplayName, userOverrides),
-    [userId, originalDisplayName, userOverrides],
+    () => getDisplayedName(cosmeticsKey ?? userId, originalDisplayName, userOverrides),
+    [cosmeticsKey, userId, originalDisplayName, userOverrides],
   );
   // The author name shown on a normal message. Twitch keeps its exact existing
   // value (its `username` already holds the cased display name), so Twitch
@@ -800,8 +823,8 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
   // (the paint computes against this base color), or replaces parsed.color
   // outright when no paint is in play.
   const effectiveColor = useMemo(
-    () => getColorOverride(userId, userOverrides) ?? parsed.color,
-    [userId, userOverrides, parsed.color],
+    () => getColorOverride(cosmeticsKey ?? userId, userOverrides) ?? parsed.color,
+    [cosmeticsKey, userId, userOverrides, parsed.color],
   );
 
   // Paint + 7TV badge are now derived from chatUserStore: ChatWidget's addUser
@@ -822,11 +845,11 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
   // of the earlier lag/paint-starvation). Empty for non-members and for members
   // who haven't opted any badge into their loadout.
   const thirdPartyBadges = useChatUserStore((s) =>
-    userId ? s.users.get(userId)?.thirdPartyBadges ?? EMPTY_THIRD_PARTY : EMPTY_THIRD_PARTY,
+    cosmeticsKey ? s.users.get(cosmeticsKey)?.thirdPartyBadges ?? EMPTY_THIRD_PARTY : EMPTY_THIRD_PARTY,
   );
   // The member's StreamNook Atmosphere (if any) -> the SAME animated wash as
   // their profile backdrop, rendered behind their message.
-  const atmosphereId = useChatUserStore((s) => (userId ? s.users.get(userId)?.atmosphereId ?? null : null));
+  const atmosphereId = useChatUserStore((s) => (cosmeticsKey ? s.users.get(cosmeticsKey)?.atmosphereId ?? null : null));
   const atmosphere = atmosphereId ? getAtmosphere(atmosphereId) : null;
   // Frost behind the text only when the atmosphere declares it needs it (busy
   // washes); subtle ones render the text bare.
@@ -834,7 +857,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
   // CS2 Major Cologne event cosmetics this member applied (null = none). Takes
   // precedence over the Atmosphere wash when present. The chrome asset URLs live
   // on the Cologne atmosphere row (R2), shared by every wearer.
-  const cologne = useChatUserStore((s) => (userId ? s.users.get(userId)?.cologne ?? null : null));
+  const cologne = useChatUserStore((s) => (cosmeticsKey ? s.users.get(cosmeticsKey)?.cologne ?? null : null));
   const cologneAtm = cologne ? getAtmosphere(MAJOR_COLOGNE_THEME_ID) : null;
   const [broadcasterType] = useState<string | null>(null);
   const [isMentioned, setIsMentioned] = useState(false);
@@ -1712,8 +1735,19 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
     });
   }
 
+  // YouTube's paid highlights. They are donations with a comment attached, which
+  // is exactly the shape of the charity-donation card, and the overlay already
+  // classifies them alongside cheers/bits. Without this they fell through to a
+  // PLAIN chat row, so a Super Chat read as ordinary text.
+  const isSuperChat =
+    msgId === 'superchat' ||
+    msgId === 'supersticker' ||
+    sourceMsgId === 'superchat' ||
+    sourceMsgId === 'supersticker';
+  const isSuperSticker = msgId === 'supersticker' || sourceMsgId === 'supersticker';
+
   // Check if this is a charity donation message
-  const isDonation = msgId === 'charitydonation' || sourceMsgId === 'charitydonation';
+  const isDonation = msgId === 'charitydonation' || sourceMsgId === 'charitydonation' || isSuperChat;
 
   // Check if this is a viewer milestone (watch streak) message
   const isViewerMilestone = msgId === 'viewermilestone' || sourceMsgId === 'viewermilestone';
@@ -1904,7 +1938,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
     // effective display name (so nicknames apply); the click payload keeps
     // the real display name so the profile card opens to the true identity.
     const renderClickableUsername = (username: string, displayName?: string) => {
-      const userIdForClick = userId;
+      const userIdForClick = clickUserId;
       return (
         <Tooltip content="Click to view profile" side="top">
           <span
@@ -1918,7 +1952,8 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
                   displayName || username,
                   parsed.color,
                   parsed.badges,
-                  e
+                  e,
+                  clickProvider
                 );
               }
             }}
@@ -2066,10 +2101,25 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
     const actualAmount = donationAmount ? (parseInt(donationAmount, 10) / Math.pow(10, exponent)) : 0;
 
     // Format the amount with currency symbol
-    const formattedAmount = new Intl.NumberFormat('en-US', {
+    const twitchAmount = new Intl.NumberFormat('en-US', {
       style: 'currency',
       currency: donationCurrency,
     }).format(actualAmount);
+    // YouTube carries its own amount tags (`sc-currency` is already a symbol, so it
+    // is prepended rather than run through Intl, which would need an ISO code).
+    // Falling back to the stamped system message keeps the card correct even if a
+    // future payload omits the numeric tags.
+    const scCurrency = parsed.tags.get('sc-currency') ?? '';
+    const scAmount = parsed.tags.get('sc-amount');
+    // Prefer YouTube's own formatted string: rebuilding it from the numeric tags
+    // drops the currency's conventions ("$2.00" becomes "$2").
+    const superChatAmount =
+      parsed.tags.get('sc-display') || (scAmount ? `${scCurrency}${scAmount}` : null);
+    const formattedAmount = isSuperChat ? (superChatAmount ?? '') : twitchAmount;
+    // The adapter prefixes the message body with "Super Chat - $2.00  " so a plain
+    // row still reads correctly. This card puts the amount in its header, so render
+    // the RAW comment instead or the amount appears twice.
+    const superChatComment = parsed.tags.get('sc-message') ?? '';
 
     // Check if this is a shared chat notice (from another channel)
     const isSharedChat = msgId === 'sharedchatnotice';
@@ -2079,7 +2129,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
     // effective display name (so nicknames apply); the click payload keeps
     // the real display name so the profile card opens to the true identity.
     const renderClickableUsername = (username: string, displayName?: string) => {
-      const userIdForClick = userId;
+      const userIdForClick = clickUserId;
       return (
         <Tooltip content="Click to view profile" side="top">
           <span
@@ -2093,7 +2143,8 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
                   displayName || username,
                   parsed.color,
                   parsed.badges,
-                  e
+                  e,
+                  clickProvider
                 );
               }
             }}
@@ -2223,10 +2274,17 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
 
         <div className="flex items-center gap-2.5">
           <div className="flex-shrink-0">
-            {/* Heart/Charity icon */}
-            <svg className="w-5 h-5 text-success" fill="currentColor" viewBox="0 0 20 20">
-              <path fillRule="evenodd" d="M3.172 5.172a4 4 0 015.656 0L10 6.343l1.172-1.171a4 4 0 115.656 5.656L10 17.657l-6.828-6.829a4 4 0 010-5.656z" clipRule="evenodd" />
-            </svg>
+            {isSuperChat ? (
+              /* Coin: a heart reads as charity, which a Super Chat is not. */
+              <svg className="w-5 h-5 text-success" fill="currentColor" viewBox="0 0 20 20">
+                <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.94 6.94a.75.75 0 011.06 0l2.5 2.5a.75.75 0 010 1.06l-2.5 2.5a.75.75 0 11-1.06-1.06L10.38 10 8.94 8.56a.75.75 0 010-1.06z" clipRule="evenodd" />
+              </svg>
+            ) : (
+              /* Heart/Charity icon */
+              <svg className="w-5 h-5 text-success" fill="currentColor" viewBox="0 0 20 20">
+                <path fillRule="evenodd" d="M3.172 5.172a4 4 0 015.656 0L10 6.343l1.172-1.171a4 4 0 115.656 5.656L10 17.657l-6.828-6.829a4 4 0 010-5.656z" clipRule="evenodd" />
+              </svg>
+            )}
           </div>
           <div
             className="flex-1 min-w-0 flex flex-col leading-relaxed"
@@ -2235,14 +2293,30 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
             <p className="text-white font-semibold leading-relaxed">
               {renderBadges()}
               {renderClickableUsername(parsed.username, parsed.tags.get('display-name') || parsed.username)}
-              <span className="text-success font-bold"> donated {formattedAmount}</span>
-              {charityName && <span className="text-textSecondary"> to support {charityName}</span>}
+              {isSuperChat ? (
+                <span className="text-success font-bold">
+                  {formattedAmount
+                    ? ` sent a ${formattedAmount} ${isSuperSticker ? 'Super Sticker' : 'Super Chat'}`
+                    : ` sent a ${isSuperSticker ? 'Super Sticker' : 'Super Chat'}`}
+                </span>
+              ) : (
+                <>
+                  <span className="text-success font-bold"> donated {formattedAmount}</span>
+                  {charityName && <span className="text-textSecondary"> to support {charityName}</span>}
+                </>
+              )}
             </p>
-            {parsed.content && (
-              <p className="text-textSecondary mt-1 leading-relaxed break-words">
-                {renderContent(contentWithEmotes)}
-              </p>
-            )}
+            {isSuperChat
+              ? superChatComment && (
+                  <p className="text-textSecondary mt-1 leading-relaxed break-words">
+                    {superChatComment}
+                  </p>
+                )
+              : parsed.content && (
+                  <p className="text-textSecondary mt-1 leading-relaxed break-words">
+                    {renderContent(contentWithEmotes)}
+                  </p>
+                )}
           </div>
         </div>
       </div>
@@ -2261,7 +2335,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
 
     // Helper function to render username as clickable
     const renderClickableUsername = (username: string, displayNameProp?: string) => {
-      const userIdForClick = userId;
+      const userIdForClick = clickUserId;
       return (
         <Tooltip content="Click to view profile" side="top">
           <span
@@ -2275,7 +2349,8 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
                   displayNameProp || username,
                   parsed.color,
                   parsed.badges,
-                  e
+                  e,
+                  clickProvider
                 );
               }
             }}
@@ -3203,7 +3278,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
                     style={{ fontWeight: 700 }}
                     className="cursor-pointer hover:underline inline-block"
                     onClick={(e) => {
-                      const userId = parsed.tags.get('user-id');
+                      const userId = clickUserId;
                       const displayName = parsed.tags.get('display-name') || parsed.username;
                       if (userId && onUsernameClick) {
                         onUsernameClick(
@@ -3212,7 +3287,8 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
                           displayName,
                           parsed.color,
                           parsed.badges,
-                          e
+                          e,
+                          clickProvider
                         );
                       }
                     }}
@@ -3250,7 +3326,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
                   accentColor={prefixAccentColor}
                   interactive
                   onClick={(e) => {
-                    const userId = parsed.tags.get('user-id');
+                    const userId = clickUserId;
                     const displayName = parsed.tags.get('display-name') || parsed.username;
                     if (userId && onUsernameClick) {
                       onUsernameClick(
@@ -3259,7 +3335,8 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
                         displayName,
                         parsed.color,
                         parsed.badges,
-                        e
+                        e,
+                          clickProvider
                       );
                     }
                   }}

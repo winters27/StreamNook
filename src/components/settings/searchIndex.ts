@@ -66,6 +66,34 @@ export const SETTINGS_INDEX: SettingsIndexEntry[] = [
   },
   {
     tab: 'Player',
+    section: 'Mouse Controls',
+    sectionId: 'settings-section-mouse-controls',
+    title: 'Scroll to change volume',
+    description: 'Scroll the mouse wheel over the video to change volume up or down, louder quieter, one handed mouse only control.'
+  },
+  {
+    tab: 'Player',
+    section: 'Mouse Controls',
+    sectionId: 'settings-section-mouse-controls',
+    title: 'Scroll to open Channel About',
+    description: 'Scroll down over the player to reveal the channel about panel. Hold shift and scroll down when scroll to change volume is also on, since both gestures share the wheel.'
+  },
+  {
+    tab: 'Player',
+    section: 'Mouse Controls',
+    sectionId: 'settings-section-mouse-controls',
+    title: 'Middle-click to mute',
+    description: 'Click the scroll wheel or middle mouse button over the player to mute and unmute the stream without the keyboard.'
+  },
+  {
+    tab: 'Player',
+    section: 'Mouse Controls',
+    sectionId: 'settings-section-mouse-controls',
+    title: 'Volume Step',
+    description: 'How much one mouse wheel notch changes the volume, from 1 to 25 percent. Also used by the volume up and volume down keyboard shortcuts.'
+  },
+  {
+    tab: 'Player',
     section: 'Auto-Switch',
     sectionId: 'settings-section-auto-switch',
     title: 'Auto-Switch',
@@ -306,6 +334,13 @@ export const SETTINGS_INDEX: SettingsIndexEntry[] = [
     section: 'Channel Points',
     title: 'Auto-claim bonus chests',
     description: 'Automatically collect the bonus chest on the stream you are watching. When off, a claim button appears on the points icon.'
+  },
+  {
+    tab: 'Chat',
+    section: 'YouTube Chat',
+    sectionId: 'settings-section-youtube-chat',
+    title: 'Which chat to read',
+    description: 'YouTube live chat or top chat. Live is every message; top is YouTube’s filtered view, which drops low-quality messages and repeats so a fast chat stays readable. YouTube chat flooding, too many messages, slow down YouTube chat.'
   },
   {
     tab: 'Chat',
@@ -554,6 +589,18 @@ export const SETTINGS_INDEX: SettingsIndexEntry[] = [
     section: 'Chat Input',
     title: 'Quick Send (Ctrl+Enter keeps message)',
     description: 'Hold Ctrl while pressing Enter to send the message and leave it in the input box so you can re-send fast.'
+  },
+  {
+    tab: 'Chat',
+    section: 'Chat Input',
+    title: 'Check spelling as you type',
+    description: 'Underline misspelled words in the message box and offer corrections when you right-click one. Emotes, chatters, commands and links are left alone.'
+  },
+  {
+    tab: 'Chat',
+    section: 'Chat Input',
+    title: 'Spell check dictionary',
+    description: 'Words you have taught the spell checker so it stops flagging them. Add or remove entries here.'
   },
   {
     tab: 'Chat',
@@ -1014,8 +1061,26 @@ export const SETTINGS_INDEX: SettingsIndexEntry[] = [
   {
     tab: 'Overlay',
     section: 'Messages',
-    title: 'Reply context',
-    description: 'Show or hide the small "Replying to" line above reply messages on the overlay. Reply thread, reply preview.'
+    title: 'Replies',
+    description: 'How a reply renders on the overlay: the "Replying to" context line, just the @username in front of the message the way old Twitch chat did, or nothing. Reply thread, reply preview, reply context.'
+  },
+  {
+    tab: 'Overlay',
+    section: 'Messages',
+    title: 'Links',
+    description: 'Give links on the overlay their own accent color or leave them in the body text color, and turn the underline on or off. Blue links, url color, hyperlink styling.'
+  },
+  {
+    tab: 'Overlay',
+    section: 'Emotes & badges',
+    title: '7TV personal emotes',
+    description: "Show or hide 7TV personal emotes on the overlay. A subscriber's own set works in every channel, so chatters show emotes your channel never added. Unknown emotes, random emotes, emotes not in my channel."
+  },
+  {
+    tab: 'Overlay',
+    section: 'Events',
+    title: 'Custom event text',
+    description: 'Write your own wording for subs, gifts, raids, bits, milestones, follows and announcements on the overlay, using {username}, {months}, {streak}, {tier}, {recipient}, {count}, {bits} and {viewers} tokens. Custom message, event template, resub message, welcome message.'
   },
   {
     tab: 'Overlay',
@@ -1179,7 +1244,17 @@ export const SETTINGS_INDEX: SettingsIndexEntry[] = [
     description: 'Choose the window size when entering Compact View mode. Perfect for fitting the app on a second monitor.'
   },
 
+  // === Profile ===
+  {
+    tab: 'Profile',
+    section: 'Accounts',
+    title: 'Platform accounts',
+    description: 'Connect or disconnect Kick and YouTube. Sign in, link platform, add account, multi-platform, Kick account, YouTube account, followed channels, subscriptions.'
+  },
+
   // === Integrations ===
+  // Platform accounts used to be indexed here; they moved to Profile → Accounts
+  // with the Twitch ones, so searching "Kick" lands where the accounts are.
   {
     tab: 'Integrations',
     section: 'Discord Rich Presence',

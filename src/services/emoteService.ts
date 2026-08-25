@@ -7,7 +7,7 @@ export interface Emote {
   id: string;
   name: string;
   url: string;
-  provider: 'twitch' | 'bttv' | '7tv' | 'ffz' | 'kick';
+  provider: 'twitch' | 'bttv' | '7tv' | 'ffz' | 'kick' | 'youtube';
   isZeroWidth?: boolean;
   localUrl?: string;
   /** Type of emote: "globals", "subscriptions", "bitstier", "follower", "channelpoints", etc. */
@@ -22,6 +22,14 @@ export interface Emote {
   modifierFlags?: number;
   /** FFZ effect emote composable only by FFZ subscribers (rendering ungated) */
   ffzSubOnly?: boolean;
+  /** Composition is gated for this account (YouTube members-only emoji). Shown
+   *  in the grid with the same lock treatment as `ffzSubOnly`. */
+  locked?: boolean;
+  /** Badge text for the lock, e.g. "Members only". Only read when `locked`. */
+  lockedLabel?: string;
+  /** What to put in the composer when it differs from the display name. YouTube
+   *  unicode emoji insert the literal character; everything else inserts `name`. */
+  insertText?: string;
 }
 
 export interface EmoteSet {
@@ -31,6 +39,9 @@ export interface EmoteSet {
   ffz: Emote[];
   /** Kick's own native emotes (channel sub set + Global + Emojis). Empty for Twitch. */
   kick: Emote[];
+  /** YouTube custom emoji, learned from chat rather than fetched: YouTube exposes
+   *  no channel emote-set endpoint, so this fills in as the channel uses them. */
+  youtube: Emote[];
 }
 
 // Module-level registry of cached emote files (cacheKey -> localPath).
@@ -429,6 +440,8 @@ export async function fetchAllEmotes(channelName?: string, channelId?: string): 
       '7tv': enhanceWithLocalUrls(emoteSet['7tv']),
       ffz: enhanceWithLocalUrls(emoteSet.ffz),
       kick: enhanceWithLocalUrls(emoteSet.kick ?? []),
+      // Learned from chat, not fetched — merged in by the picker at render time.
+      youtube: [],
     };
 
     // Count how many emotes got local URLs
@@ -459,6 +472,7 @@ export async function fetchAllEmotes(channelName?: string, channelId?: string): 
       '7tv': [],
       ffz: [],
       kick: [],
+      youtube: [],
     };
   }
 }
@@ -493,10 +507,49 @@ export async function fetchKickChannelEmotes(slug: string): Promise<EmoteSet> {
       '7tv': enhance(emoteSet['7tv']),
       ffz: enhance(emoteSet.ffz),
       kick: enhance(emoteSet.kick),
+      youtube: [],
     };
   } catch (error) {
     Logger.warn('[EmoteService] Failed to fetch Kick channel emotes:', error);
-    return { twitch: [], bttv: [], '7tv': [], ffz: [], kick: [] };
+    return { twitch: [], bttv: [], '7tv': [], ffz: [], kick: [], youtube: [] };
+  }
+}
+
+/**
+ * A YouTube channel's 7TV emotes for the picker. Separate from the channel's
+ * OWN emoji (seeded into providerEmoteStore from the chat page) — a channel can
+ * have either, both, or neither, so the picker merges the two.
+ */
+export async function fetchYouTubeChannelEmotes(channel: string): Promise<EmoteSet> {
+  await ensureEmoteFileCache();
+  try {
+    const emoteSet = await invoke<EmoteSet>('get_youtube_channel_emotes', { channel });
+    Logger.info(
+      `[EmoteService] YouTube 7TV emotes for "${channel}": ${emoteSet['7tv']?.length ?? 0}`,
+    );
+    const enhance = (emotes: any[]) =>
+      (emotes ?? []).map((emote) => {
+        const localPath = cachedEmoteFiles.get(emoteCacheKey(emote.id, emote.provider));
+        const zeroWidth = emote.is_zero_width !== undefined ? emote.is_zero_width : emote.isZeroWidth;
+        return {
+          ...emote,
+          isZeroWidth: zeroWidth,
+          modifierFlags: emote.modifier_flags ?? emote.modifierFlags,
+          ffzSubOnly: emote.ffz_sub_only ?? emote.ffzSubOnly,
+          localUrl: localPath ? convertFileSrc(localPath) : undefined,
+        };
+      });
+    return {
+      twitch: [],
+      bttv: [],
+      '7tv': enhance(emoteSet['7tv']),
+      ffz: [],
+      kick: [],
+      youtube: [],
+    };
+  } catch (error) {
+    Logger.warn('[EmoteService] Failed to fetch YouTube channel emotes:', error);
+    return { twitch: [], bttv: [], '7tv': [], ffz: [], kick: [], youtube: [] };
   }
 }
 

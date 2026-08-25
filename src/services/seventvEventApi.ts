@@ -6,14 +6,16 @@
 // injects the in-chat notice into its own chat store, so main and any MultiChat
 // popout showing the channel both update independently.
 
-import { injectSystemMessage, refreshChannelEmotes } from '../stores/chatConnectionStore';
+import { injectSystemMessage, refreshChannelEmotes, systemSourceFor } from '../stores/chatConnectionStore';
+import type { ProviderId } from '../types/providers';
 import { forceRefreshCosmetics } from '../services/cosmeticsCache';
 import { useAppStore } from '../stores/AppStore';
 import { Logger } from '../utils/logger';
 
 export interface EmoteSetUpdatePayload {
-  channel: string; // lowercase twitch login (chat key)
-  channel_id: string; // twitch channel id
+  channel: string; // lowercase channel key (login / slug / identifier)
+  channel_id: string; // the platform's own channel id
+  platform?: string; // 'twitch' (default) | 'kick' | 'youtube'
   actor_name: string;
   added: string[];
   removed: string[];
@@ -27,13 +29,19 @@ export interface EmoteSetUpdatePayload {
  */
 export async function handleSeventvEmoteSetUpdate(payload: EmoteSetUpdatePayload): Promise<void> {
   const { channel, channel_id, actor_name, added, removed, renamed } = payload;
+  // 7TV supports all three platforms, so an update can be for any of them. The
+  // chat slice is keyed by the composite key for a provider and by the bare
+  // login for Twitch, and the emote refresh needs the provider so it hits that
+  // platform's store rather than Twitch's Helix.
+  const platform = (payload.platform || 'twitch') as ProviderId;
+  const chatKey = platform === 'twitch' ? channel : `${platform}:${channel}`;
 
   // Refresh this window's emote cache from the (already refreshed) Rust cache.
   // refreshChannelEmotes busts the per-window cache and notifies subscribers,
   // so the emote picker and autocomplete repaint; chat does render-time emote
   // lookup, so new messages get the change with no extra work.
   try {
-    await refreshChannelEmotes(channel, channel_id);
+    await refreshChannelEmotes(channel, channel_id, platform);
   } catch (e) {
     Logger.warn('[7TV EventAPI] failed to refresh emotes for', channel, e);
   }
@@ -43,14 +51,15 @@ export async function handleSeventvEmoteSetUpdate(payload: EmoteSetUpdatePayload
   if (!noticesEnabled) return;
 
   const actor = actor_name || 'Someone';
+  const source = systemSourceFor(chatKey);
   for (const name of added) {
-    injectSystemMessage(channel, `${actor} added the emote ${name}`);
+    injectSystemMessage(chatKey, `${actor} added the emote ${name}`, undefined, source);
   }
   for (const name of removed) {
-    injectSystemMessage(channel, `${actor} removed the emote ${name}`);
+    injectSystemMessage(chatKey, `${actor} removed the emote ${name}`, undefined, source);
   }
   for (const r of renamed) {
-    injectSystemMessage(channel, `${actor} renamed the emote ${r.old} to ${r.new}`);
+    injectSystemMessage(chatKey, `${actor} renamed the emote ${r.old} to ${r.new}`, undefined, source);
   }
 }
 

@@ -3,6 +3,7 @@
 // (shortcut hints), and the Keybindings settings tab.
 
 import { useAppStore } from '../stores/AppStore';
+import { WATCHABLE_PROVIDERS, type ProviderId } from '../types/providers';
 import { getPlayerControls, isPlayerControllable } from './playerControls';
 import { getChatModController } from './chatModController';
 import type { BindableCommand } from './types';
@@ -46,6 +47,16 @@ const startRelativeFollow = (dir: 1 | -1): void => {
     curIdx === -1 ? (dir === 1 ? 0 : list.length - 1) : (curIdx + dir + list.length) % list.length;
   const target = list[nextIdx];
   if (target) void s.startStream(target.user_login, target);
+};
+
+/** Step the app to the next platform context, wrapping back to the unified
+ *  view. No toast: the title-bar seam wipes to the new colour and the anchor
+ *  renames itself, which is the feedback. */
+const cyclePlatform = (): void => {
+  const s = app();
+  const order: (ProviderId | 'all')[] = ['all', ...WATCHABLE_PROVIDERS];
+  const idx = order.indexOf(s.activePlatform);
+  s.setActivePlatform(order[(idx + 1) % order.length]);
 };
 
 let cache: BindableCommand[] | null = null;
@@ -217,6 +228,18 @@ function build(): BindableCommand[] {
       keywords: 'previous prev followed channel switch surf cycle',
       isAvailable: () => (app().followedStreams?.length ?? 0) > 0,
       run: () => startRelativeFollow(-1),
+    },
+    {
+      id: 'nav.cyclePlatform',
+      label: 'Next platform',
+      description: 'Cycle the app between all platforms and each one on its own.',
+      category: 'Navigation',
+      context: 'global',
+      defaultBindings: ['Alt+S'],
+      keywords: 'platform provider twitch kick youtube switch scope cycle service',
+      // Hidden on a Twitch-only build, same rule the seam itself follows.
+      isAvailable: () => WATCHABLE_PROVIDERS.length > 1,
+      run: () => cyclePlatform(),
     },
 
     // ---------------- Player ----------------
