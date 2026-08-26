@@ -4,7 +4,7 @@ import { CSS } from '@dnd-kit/utilities';
 import { usemultiNookStore } from '../../stores/multiNookStore';
 import { useTutorialStore } from '../../stores/tutorialStore';
 import { MultiNookSlot } from '../../types';
-import { Plus, Maximize2, Minimize2, MessageSquare, MessageSquareOff, Loader2, X, ArrowLeft, RefreshCcw, ShieldCheck, Search, Radio } from 'lucide-react';
+import { Plus, Maximize2, Minimize2, MessageSquare, MessageSquareOff, Loader2, X, ArrowLeft, RefreshCcw, ShieldCheck, Search, Radio, Volume2, VolumeX } from 'lucide-react';
 import { Tooltip } from '../ui/Tooltip';
 import { useAppStore } from '../../stores/AppStore';
 import { ChannelItem, useChannelSearch } from './channelSearch';
@@ -22,7 +22,7 @@ const MultiNookToolbar: React.FC<MultiNookToolbarProps> = ({
   dockDropId = 'dock-drop-zone',
   dockedPrefix = 'docked::',
 }) => {
-  const { slots, addSlot, undockSlot, swapDockedSlot, isChatHidden, toggleChatHidden, toggleMultiNook, resyncAllSlots } = usemultiNookStore();
+  const { slots, addSlot, undockSlot, swapDockedSlot, isChatHidden, toggleChatHidden, toggleMultiNook, resyncAllSlots, isAllMuted, toggleAllMuted } = usemultiNookStore();
   const minimizedSlots = slots.filter(s => s.isMinimized);
   const { isDocked: isTutorialDocked, setIsDocked: setTutorialDocked } = useTutorialStore();
 
@@ -420,6 +420,23 @@ const MultiNookToolbar: React.FC<MultiNookToolbarProps> = ({
                 className={`w-8 h-8 flex items-center justify-center transition-all duration-200 glass-button text-textSecondary hover:text-accent active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed`}
               >
                 <RefreshCcw size={15} />
+              </button>
+            </Tooltip>
+
+            {/* Mute All Toggle — cuts audio on every tile at once. Per-tile mute
+                state is untouched, so unmuting restores the previous audio focus. */}
+            <Tooltip content={isAllMuted ? 'Unmute All' : 'Mute All'} delay={200} side="bottom">
+              <button
+                onClick={toggleAllMuted}
+                disabled={slots.length === 0}
+                aria-pressed={isAllMuted}
+                className={`w-8 h-8 flex items-center justify-center transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed ${
+                  isAllMuted
+                    ? 'glass-button-active text-error drop-shadow-md'
+                    : 'glass-button text-textSecondary hover:text-error'
+                }`}
+              >
+                {isAllMuted ? <VolumeX size={15} /> : <Volume2 size={15} />}
               </button>
             </Tooltip>
 

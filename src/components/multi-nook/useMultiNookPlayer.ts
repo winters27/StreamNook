@@ -345,9 +345,19 @@ export const useMultiNookPlayer = ({
           playerRef.current.on('volumechange', () => {
             if (!playerRef.current) return;
             // Prevent syncing changes if we are minimized (docked streams are forced mute)
-            const currentState = usemultiNookStore.getState().slots.find(s => s.id === streamId);
+            const store = usemultiNookStore.getState();
+            const currentState = store.slots.find(s => s.id === streamId);
             if (currentState?.isMinimized) return;
-            
+
+            // Toolbar mute-all forces the player muted without touching slot.muted
+            // (that state is what unmute-all restores), so never sync the forced
+            // mute back. A hands-on unmute of this tile while mute-all is engaged
+            // is an explicit break-out: lift the global mute and sync normally.
+            if (store.isAllMuted) {
+              if (playerRef.current.muted) return;
+              store.setAllMuted(false);
+            }
+
             const newVol = playerRef.current.volume;
             const newMuted = playerRef.current.muted;
             usemultiNookStore.getState().updateSlot(streamId, { volume: newVol, muted: newMuted });
@@ -355,7 +365,7 @@ export const useMultiNookPlayer = ({
 
           playerRef.current.on('controlsshown', () => setShowControls(true));
           playerRef.current.on('controlshidden', () => setShowControls(false));
-          
+
           // Initial state
           setShowControls(true);
         }
@@ -494,9 +504,17 @@ export const useMultiNookPlayer = ({
           // Sync backwards to store
           playerRef.current.on('volumechange', () => {
             if (!playerRef.current) return;
-            const currentState = usemultiNookStore.getState().slots.find(s => s.id === streamId);
+            const store = usemultiNookStore.getState();
+            const currentState = store.slots.find(s => s.id === streamId);
             if (currentState?.isMinimized) return;
-            
+
+            // Same mute-all guard as the hls path: never sync the forced mute
+            // back; a hands-on unmute of this tile breaks out of mute-all.
+            if (store.isAllMuted) {
+              if (playerRef.current.muted) return;
+              store.setAllMuted(false);
+            }
+
             const newVol = playerRef.current.volume;
             const newMuted = playerRef.current.muted;
             usemultiNookStore.getState().updateSlot(streamId, { volume: newVol, muted: newMuted });

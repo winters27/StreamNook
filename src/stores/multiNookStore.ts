@@ -108,6 +108,10 @@ interface MultiNookState {
    *  maximized tile is restyled in place (no remount) so its HLS player keeps
    *  running; the other tiles stay mounted but hidden behind it. */
   maximizedSlotId: string | null;
+  /** True while the toolbar's mute-all is engaged. Overrides every tile's audio
+   *  without touching per-slot muted state, so lifting it restores exactly the
+   *  focus/mute mix that was playing before. Ephemeral: never persisted. */
+  isAllMuted: boolean;
   slots: MultiNookSlot[];
   flyingAnimation: { x: number; y: number; id: number } | null;
   suckUpLogin: string | null;
@@ -132,6 +136,10 @@ interface MultiNookState {
   toggleMaximizeSlot: (id: string) => void;
   /** Directly set (or clear with null) the maximized tile. Used by Esc / teardown. */
   setMaximizedSlot: (id: string | null) => void;
+  /** Toggle mute-all on/off. Per-slot muted flags are deliberately left alone. */
+  toggleAllMuted: () => void;
+  /** Directly set mute-all. Used by the tile-level break-out (user unmutes a tile by hand). */
+  setAllMuted: (muted: boolean) => void;
   dockSlot: (id: string) => void;
   undockSlot: (id: string) => void;
   swapDockedSlot: (id: string) => void;
@@ -164,6 +172,7 @@ export const usemultiNookStore = create<MultiNookState>((set, get) => ({
   activeChatChannelId: null,
   activePresetId: null,
   maximizedSlotId: null,
+  isAllMuted: false,
   slots: [],
   flyingAnimation: null,
   suckUpLogin: null,
@@ -414,7 +423,7 @@ export const usemultiNookStore = create<MultiNookState>((set, get) => ({
         invoke('unregister_active_channel', { channelId: slot.channelId }).catch(() => {});
       }
     }
-    set({ slots: [], activeChatChannelId: null, activePresetId: null, maximizedSlotId: null });
+    set({ slots: [], activeChatChannelId: null, activePresetId: null, maximizedSlotId: null, isAllMuted: false });
 
     // Revert presence to idle since nothing is playing.
     const settings = useAppStore.getState().settings;
@@ -554,7 +563,7 @@ export const usemultiNookStore = create<MultiNookState>((set, get) => ({
         }
       }
 
-      set({ activeChatChannelId: null, slots: [], maximizedSlotId: null }); // Maintain chat hidden state
+      set({ activeChatChannelId: null, slots: [], maximizedSlotId: null, isAllMuted: false }); // Maintain chat hidden state
 
       // Restore Home view if no single stream is playing
       if (!useAppStore.getState().streamUrl) {
@@ -834,6 +843,14 @@ export const usemultiNookStore = create<MultiNookState>((set, get) => ({
 
   setMaximizedSlot: (id: string | null) => {
     set({ maximizedSlotId: id });
+  },
+
+  toggleAllMuted: () => {
+    set((state) => ({ isAllMuted: !state.isAllMuted }));
+  },
+
+  setAllMuted: (muted: boolean) => {
+    set({ isAllMuted: muted });
   },
 
   dockSlot: (id: string) => {

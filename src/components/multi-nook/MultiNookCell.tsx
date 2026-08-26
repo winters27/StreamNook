@@ -58,11 +58,16 @@ const MultiNookCellInner: React.FC<MultiNookCellProps> = ({ slot, cssOrder, grid
   // Offline tiles show the offline overlay instead of an endless loading spinner.
   const isLoading = !streamUrl && !loadError;
 
+  // Toolbar mute-all overrides this tile's audio without touching slot.muted,
+  // so unmuting restores the focus/mute mix that was playing before. Selector
+  // subscription: the tile only re-renders when the flag itself flips.
+  const isAllMuted = usemultiNookStore((s) => s.isAllMuted);
+
   const { videoRef, playerRef, isPlaying, isBuffering, error } = useMultiNookPlayer({
     streamUrl,
     streamId: id,
     volume,
-    muted,
+    muted: muted || isAllMuted,
     isMinimized,
   });
 
