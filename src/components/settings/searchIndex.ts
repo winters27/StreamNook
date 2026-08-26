@@ -1210,6 +1210,20 @@ export const SETTINGS_INDEX: SettingsIndexEntry[] = [
   },
   {
     tab: 'Interface',
+    section: 'Discover Feed',
+    sectionId: 'settings-section-discover',
+    title: 'Personalized recommendations',
+    description: 'Opt in to account-personalized Discover recommendations, or stay anonymous. Privacy, tracking, tailored suggestions.'
+  },
+  {
+    tab: 'Interface',
+    section: 'Discover Feed',
+    sectionId: 'settings-section-discover',
+    title: 'Languages',
+    description: 'Filter the Discover tab and sidebar recommended streams by broadcast language: only show streams in english, french, german, spanish, or any other language you pick.'
+  },
+  {
+    tab: 'Interface',
     section: 'Motion',
     sectionId: 'settings-section-motion',
     title: 'Animations',
@@ -1506,6 +1520,12 @@ export const SETTINGS_INDEX: SettingsIndexEntry[] = [
     section: 'Community Discord',
     title: 'Join the Discord',
     description: 'Open the StreamNook community Discord invite.'
+  },
+  {
+    tab: 'Support',
+    section: 'Diagnostics',
+    title: 'Verbose diagnostic logging',
+    description: 'Log level, debug logging, error reporting. Records connection, playback and chat activity to the log file so there is something to attach to a bug report.'
   },
 
   // === Backup ===

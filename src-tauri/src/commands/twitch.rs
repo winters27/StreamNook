@@ -1136,10 +1136,18 @@ pub async fn get_recommended_streams_paginated(
     state: State<'_, AppState>,
     cursor: Option<String>,
     limit: u32,
+    languages: Option<Vec<String>>,
+    personalized: Option<bool>,
 ) -> Result<(Vec<TwitchStream>, Option<String>), String> {
-    TwitchService::get_recommended_streams_paginated(&state, cursor, limit)
-        .await
-        .map_err(|e| e.to_string())
+    TwitchService::get_recommended_streams_paginated(
+        &state,
+        cursor,
+        limit,
+        languages.unwrap_or_default(),
+        personalized.unwrap_or(false),
+    )
+    .await
+    .map_err(|e| e.to_string())
 }
 
 #[tauri::command]

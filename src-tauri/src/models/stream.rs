@@ -25,6 +25,10 @@ pub struct TwitchStream {
     // "Speedrun"). Powers the category tag filter.
     #[serde(default)]
     pub tags: Option<Vec<String>>,
+    // Broadcast language in Helix form ("en", "fr", "zh-hk"). GQL paths must
+    // normalize their enum spelling (FR, ZH_HK) to this form.
+    #[serde(default)]
+    pub language: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]

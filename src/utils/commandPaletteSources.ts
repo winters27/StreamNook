@@ -907,6 +907,8 @@ const SETTINGS_CATALOG: SettingsEntry[] = [
   // Interface
   { tab: 'Interface', keywords: 'interface sidebar motion animations settings window compact view chrome layout' },
   { tab: 'Interface', section: 'Sidebar', sectionId: 'settings-section-sidebar', keywords: 'sidebar nav navigation rail display mode expanded compact hidden disabled expand on hover recommended streams' },
+  { tab: 'Interface', section: 'Discover Feed', sectionId: 'settings-section-discover', label: 'Languages', keywords: 'discover feed recommended streams languages language filter broadcast english french german spanish region locale' },
+  { tab: 'Interface', section: 'Discover Feed', sectionId: 'settings-section-discover', label: 'Personalized recommendations', keywords: 'discover personalized recommendations anonymous privacy tracking account tailored opt in' },
   { tab: 'Interface', section: 'Motion', sectionId: 'settings-section-motion', keywords: 'motion animations reduce motion accessibility performance disable transitions full reduced off snappy' },
   { tab: 'Interface', section: 'Closing the Window', sectionId: 'settings-section-window-close', label: 'Close button', keywords: 'close button minimize to tray system tray close to tray quit exit x button background keep running notification area popouts' },
   { tab: 'Interface', section: 'Keep on Top', sectionId: 'settings-section-window-on-top', keywords: 'always on top pin keep window above float stay in front overlay floating player behind browser buried sinks disappears compact view mini player picture in picture alternative' },
@@ -954,6 +956,7 @@ const SETTINGS_CATALOG: SettingsEntry[] = [
   // Support
   { tab: 'Support', keywords: 'support help community discord join invite feature request updates' },
   { tab: 'Support', section: 'Community Discord', keywords: 'community discord join invite server help feature request' },
+  { tab: 'Support', section: 'Diagnostics', keywords: 'diagnostics diagnostic log logs logging verbose debug error reporting bug report troubleshoot' },
 
   // What's New
   { tab: "What's New", keywords: 'whats new changelog release notes updates' },

@@ -1481,7 +1481,9 @@ export const useAppStore = create<AppState>((set, get) => ({
     try {
       const result = await invoke('get_recommended_streams_paginated', {
         cursor: null,
-        limit: 20
+        limit: 20,
+        languages: get().settings.discovery_languages ?? [],
+        personalized: get().settings.discovery_personalized ?? false
       }) as [TwitchStream[], string | null];
 
       const [streams, cursor] = result;
@@ -1513,7 +1515,9 @@ export const useAppStore = create<AppState>((set, get) => ({
     try {
       const result = await invoke('get_recommended_streams_paginated', {
         cursor: recommendedCursor,
-        limit: 20
+        limit: 20,
+        languages: get().settings.discovery_languages ?? [],
+        personalized: get().settings.discovery_personalized ?? false
       }) as [TwitchStream[], string | null];
 
       const [newStreams, cursor] = result;

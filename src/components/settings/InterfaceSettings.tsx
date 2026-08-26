@@ -2,6 +2,8 @@ import { useState, useEffect } from 'react';
 import { Eye, EyeOff, Columns, X, Sparkles, Gauge, Zap } from 'lucide-react';
 import CompactViewSettings from './CompactViewSettings';
 import { SettingsSection, SettingsRow, SegmentedSelect } from './_primitives';
+import { GlassMultiSelect } from '../ui/GlassMultiSelect';
+import { DISCOVERY_LANGUAGES } from '../../utils/discoveryLanguages';
 import { useAppStore } from '../../stores/AppStore';
 import type { MotionMode, CloseToTrayMode } from '../../types';
 
@@ -123,6 +125,22 @@ const InterfaceSettings = () => {
         saveSidebarSettings(sidebarMode, expandOnHover, enabled);
     };
 
+    const applyDiscoveryLanguages = async (languages: string[]) => {
+        // Read the store fresh at write time so rapid toggles never clobber a
+        // setting changed elsewhere in the meantime. The await is load-bearing:
+        // updateSettings commits to the store only after the save completes,
+        // and the reload below reads the filter back out of the store.
+        const current = useAppStore.getState().settings;
+        await updateSettings({ ...current, discovery_languages: languages });
+        void useAppStore.getState().loadRecommendedStreams();
+    };
+
+    const applyDiscoveryPersonalized = async (enabled: boolean) => {
+        const current = useAppStore.getState().settings;
+        await updateSettings({ ...current, discovery_personalized: enabled });
+        void useAppStore.getState().loadRecommendedStreams();
+    };
+
     const modeDescription = (() => {
         switch (sidebarMode) {
             case 'expanded':
@@ -185,6 +203,37 @@ const InterfaceSettings = () => {
                         <Toggle
                             enabled={showRecommended}
                             onChange={() => handleShowRecommendedChange(!showRecommended)}
+                        />
+                    }
+                />
+            </SettingsSection>
+
+            <SettingsSection
+                id="settings-section-discover"
+                label="Discover Feed"
+                description="What the Discover tab and the sidebar's Recommended section show."
+            >
+                <SettingsRow
+                    title="Personalized recommendations"
+                    description="Use your Twitch account to tailor Discover to what you watch. When off, recommendations are anonymous and based only on your region."
+                    control={
+                        <Toggle
+                            enabled={settings.discovery_personalized ?? false}
+                            onChange={() => void applyDiscoveryPersonalized(!(settings.discovery_personalized ?? false))}
+                        />
+                    }
+                />
+
+                <SettingsRow
+                    title="Languages"
+                    description="Only show recommended streams in these languages. Empty means any language."
+                    onReset={(settings.discovery_languages?.length ?? 0) > 0 ? () => void applyDiscoveryLanguages([]) : undefined}
+                    control={
+                        <GlassMultiSelect
+                            values={settings.discovery_languages ?? []}
+                            onChange={(v) => void applyDiscoveryLanguages(v)}
+                            options={DISCOVERY_LANGUAGES}
+                            emptyLabel="Any language"
                         />
                     }
                 />

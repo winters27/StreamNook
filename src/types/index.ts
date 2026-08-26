@@ -843,6 +843,15 @@ export interface Settings {
   // Whether the sidebar merges platforms into one list or groups them into
   // collapsible per-platform sections. Frontend-only, rides `extra`.
   sidebar_provider_grouping?: 'unified' | 'grouped';
+  /** Broadcast-language filter for the Discover feed and sidebar Recommended
+   *  section (Helix codes, e.g. ["fr", "de"]). Empty or absent = no filter.
+   *  Frontend-only, passed to the backend per-call, so it rides Rust's
+   *  settings catch-all as a top-level key. */
+  discovery_languages?: string[];
+  /** Opt-in account personalization for the Discover feed. Off (default) =
+   *  recommendations stay anonymous: no account credentials are ever sent.
+   *  Frontend-only, passed to the backend per-call, rides `extra`. */
+  discovery_personalized?: boolean;
 }
 
 /** A channel the user follows inside StreamNook. Mirrors the Rust struct. */
@@ -950,6 +959,8 @@ export interface TwitchStream {
   is_live?: boolean;
   // Free-form stream tags (e.g. "English", "Speedrun"); used by the category tag filter.
   tags?: string[];
+  /** Broadcast language in Helix form ("en", "fr", "zh-hk"). */
+  language?: string;
   /** Source platform. ABSENT = twitch (every pre-existing producer). */
   provider?: ProviderId;
   /** Canonical platform watch URL, set by provider rows; drives `start_stream`. */
