@@ -77,39 +77,28 @@ pub trait StreamSource: Send + Sync {
     async fn channel_meta(&self, channel: &str) -> Result<ProviderStream>;
 
     /// Browse: live directory, optionally scoped to a category id/name.
+    /// Required, not defaulted: a default body here once masked YouTube's real
+    /// implementations sitting outside the trait impl block, with every browse
+    /// surface answering "not supported" while the code looked present.
     async fn directory(
         &self,
-        _category: Option<&str>,
-        _cursor: Option<&str>,
-        _limit: u32,
-    ) -> Result<StreamPage> {
-        Err(anyhow::anyhow!("directory is not supported on {}", self.id()))
-    }
+        category: Option<&str>,
+        cursor: Option<&str>,
+        limit: u32,
+    ) -> Result<StreamPage>;
 
-    async fn search(&self, _query: &str) -> Result<StreamPage> {
-        Err(anyhow::anyhow!("search is not supported on {}", self.id()))
-    }
+    async fn search(&self, query: &str) -> Result<StreamPage>;
 
     /// Browsable categories, most-watched first. This is what the Categories tab
     /// shows; `directory(Some(category_id), ..)` then lists the streams inside
-    /// one. A platform with no category system leaves this unsupported and the
-    /// UI falls back to a plain live grid.
-    async fn categories(&self, _cursor: Option<&str>, _limit: u32) -> Result<CategoryPage> {
-        Err(anyhow::anyhow!(
-            "categories are not supported on {}",
-            self.id()
-        ))
-    }
+    /// one. A platform with no category system implements this with an explicit
+    /// `Err` and the UI falls back to a plain live grid.
+    async fn categories(&self, cursor: Option<&str>, limit: u32) -> Result<CategoryPage>;
 
     /// Which of these channels are live right now (the who's-live poll).
     /// Implementations batch where the platform allows and stagger where not.
     async fn live_check(&self, channels: &[String]) -> Result<Vec<ProviderStream>>;
 
     /// Platform-side followed-live list. Only when `caps().native_follows`.
-    async fn followed_live(&self) -> Result<Vec<ProviderStream>> {
-        Err(anyhow::anyhow!(
-            "followed_live is not supported on {}",
-            self.id()
-        ))
-    }
+    async fn followed_live(&self) -> Result<Vec<ProviderStream>>;
 }

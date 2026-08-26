@@ -571,6 +571,12 @@ impl StreamSource for KickSource {
         }
     }
 
+    async fn followed_live(&self) -> Result<Vec<ProviderStream>> {
+        // Never called while `native_follows` is false: Kick follows are
+        // imported by `kick_account` and swept by `live_check`.
+        Err(anyhow::anyhow!("followed_live is not supported on kick"))
+    }
+
     async fn live_check(&self, channels: &[String]) -> Result<Vec<ProviderStream>> {
         if channels.is_empty() {
             return Ok(vec![]);

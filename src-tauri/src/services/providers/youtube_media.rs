@@ -1004,6 +1004,83 @@ impl StreamSource for YouTubeSource {
             Err(e) => Err(e),
         }
     }
+
+    /// YouTube's own games directory (`/gaming/games`), which is a REAL category
+    /// list with box art and live viewer counts, not something synthesised here.
+    ///
+    /// Read off the page rather than through InnerTube `browse`: the API call for
+    /// the same surface comes back empty (measured), while the page carries the
+    /// full `gameCardRenderer` grid. `FEgaming` is a 400.
+    async fn categories(&self, _cursor: Option<&str>, limit: u32) -> Result<CategoryPage> {
+        let html = youtube::fetch_youtube_html(&HTTP, GAMES_URL, "gaming").await?;
+        let data = youtube::extract_json(&html, "ytInitialData")
+            .ok_or_else(|| anyhow!("couldn't read YouTube's games directory"))?;
+        let mut categories = categories_from_game_cards(&data);
+        if categories.is_empty() {
+            return Err(anyhow!("YouTube's games directory had no entries"));
+        }
+        categories.truncate(limit.clamp(1, 100) as usize);
+        Ok(CategoryPage {
+            categories,
+            // The page ships one grid; there is no cursor to continue it with.
+            cursor: None,
+        })
+    }
+
+    async fn directory(
+        &self,
+        category: Option<&str>,
+        cursor: Option<&str>,
+        limit: u32,
+    ) -> Result<StreamPage> {
+        let mut page = match category {
+            // A category id is a game's TOPIC channel. Its `/live` page is the
+            // per-game live grid, which is the closest thing YouTube has to
+            // Twitch's "streams in this category".
+            Some(id) if is_channel_id_str(id) => {
+                let url = format!("https://www.youtube.com/channel/{}/live", id);
+                let html = youtube::fetch_youtube_html(&HTTP, &url, id).await?;
+                let data = youtube::extract_json(&html, "ytInitialData")
+                    .ok_or_else(|| anyhow!("couldn't read the live grid for '{}'", id))?;
+                StreamPage {
+                    streams: rows_from_renderers(&data),
+                    cursor: None,
+                }
+            }
+            // No category (or an id we don't recognise): "what's live" overall,
+            // which on YouTube is a search for live content. One search page is
+            // only ~20 rows, so follow continuations until the caller's limit is
+            // met — a Discover grid asking for 100 should get 100, not 20.
+            _ => {
+                let want = limit.clamp(1, MAX_DIRECTORY_ROWS) as usize;
+                let mut streams: Vec<ProviderStream> = Vec::new();
+                let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+                let mut token = cursor.map(String::from);
+                for _ in 0..MAX_SEARCH_PAGES {
+                    let (rows, next) = live_search_page("live", token.as_deref()).await?;
+                    let fetched = rows.len();
+                    // Pages can overlap as the live set shifts under us.
+                    for row in rows {
+                        if seen.insert(row.id.clone()) {
+                            streams.push(row);
+                        }
+                    }
+                    token = next;
+                    // Stop on: enough rows, no continuation, or a page that added
+                    // nothing (which would otherwise spin through every page).
+                    if streams.len() >= want || token.is_none() || fetched == 0 {
+                        break;
+                    }
+                }
+                StreamPage {
+                    streams,
+                    cursor: token,
+                }
+            }
+        };
+        page.streams.truncate(limit.clamp(1, MAX_DIRECTORY_ROWS) as usize);
+        Ok(page)
+    }
 }
 
 impl YouTubeSource {
@@ -1102,83 +1179,6 @@ impl YouTubeSource {
         let mut seen = std::collections::HashSet::new();
         rows.retain(|r| seen.insert(r.id.clone()));
         Ok(rows)
-    }
-
-    /// YouTube's own games directory (`/gaming/games`), which is a REAL category
-    /// list with box art and live viewer counts, not something synthesised here.
-    ///
-    /// Read off the page rather than through InnerTube `browse`: the API call for
-    /// the same surface comes back empty (measured), while the page carries the
-    /// full `gameCardRenderer` grid. `FEgaming` is a 400.
-    async fn categories(&self, _cursor: Option<&str>, limit: u32) -> Result<CategoryPage> {
-        let html = youtube::fetch_youtube_html(&HTTP, GAMES_URL, "gaming").await?;
-        let data = youtube::extract_json(&html, "ytInitialData")
-            .ok_or_else(|| anyhow!("couldn't read YouTube's games directory"))?;
-        let mut categories = categories_from_game_cards(&data);
-        if categories.is_empty() {
-            return Err(anyhow!("YouTube's games directory had no entries"));
-        }
-        categories.truncate(limit.clamp(1, 100) as usize);
-        Ok(CategoryPage {
-            categories,
-            // The page ships one grid; there is no cursor to continue it with.
-            cursor: None,
-        })
-    }
-
-    async fn directory(
-        &self,
-        category: Option<&str>,
-        cursor: Option<&str>,
-        limit: u32,
-    ) -> Result<StreamPage> {
-        let mut page = match category {
-            // A category id is a game's TOPIC channel. Its `/live` page is the
-            // per-game live grid, which is the closest thing YouTube has to
-            // Twitch's "streams in this category".
-            Some(id) if is_channel_id_str(id) => {
-                let url = format!("https://www.youtube.com/channel/{}/live", id);
-                let html = youtube::fetch_youtube_html(&HTTP, &url, id).await?;
-                let data = youtube::extract_json(&html, "ytInitialData")
-                    .ok_or_else(|| anyhow!("couldn't read the live grid for '{}'", id))?;
-                StreamPage {
-                    streams: rows_from_renderers(&data),
-                    cursor: None,
-                }
-            }
-            // No category (or an id we don't recognise): "what's live" overall,
-            // which on YouTube is a search for live content. One search page is
-            // only ~20 rows, so follow continuations until the caller's limit is
-            // met — a Discover grid asking for 100 should get 100, not 20.
-            _ => {
-                let want = limit.clamp(1, MAX_DIRECTORY_ROWS) as usize;
-                let mut streams: Vec<ProviderStream> = Vec::new();
-                let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-                let mut token = cursor.map(String::from);
-                for _ in 0..MAX_SEARCH_PAGES {
-                    let (rows, next) = live_search_page("live", token.as_deref()).await?;
-                    let fetched = rows.len();
-                    // Pages can overlap as the live set shifts under us.
-                    for row in rows {
-                        if seen.insert(row.id.clone()) {
-                            streams.push(row);
-                        }
-                    }
-                    token = next;
-                    // Stop on: enough rows, no continuation, or a page that added
-                    // nothing (which would otherwise spin through every page).
-                    if streams.len() >= want || token.is_none() || fetched == 0 {
-                        break;
-                    }
-                }
-                StreamPage {
-                    streams,
-                    cursor: token,
-                }
-            }
-        };
-        page.streams.truncate(limit.clamp(1, MAX_DIRECTORY_ROWS) as usize);
-        Ok(page)
     }
 }
 
