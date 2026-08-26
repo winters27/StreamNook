@@ -1,8 +1,21 @@
 import { useState, useEffect, type CSSProperties } from 'react';
 import { DiscordGlyph } from '../ui/DiscordGlyph';
 import streamnookLogo from '../../assets/streamnook-logo.png';
+import { SettingsSection, SettingsRow } from './_primitives';
+import { useAppStore } from '../../stores/AppStore';
 
 import { Logger } from '../../utils/logger';
+
+const Toggle = ({ enabled, onChange }: { enabled: boolean; onChange: () => void }) => (
+    <button
+        onClick={onChange}
+        className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors flex-shrink-0 ${enabled ? 'bg-accent' : 'bg-gray-600'}`}
+    >
+        <span
+            className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${enabled ? 'translate-x-6' : 'translate-x-1'}`}
+        />
+    </button>
+);
 
 const COMMUNITY_DISCORD_INVITE_CODE = '2xvuF9TES7';
 const COMMUNITY_DISCORD_INVITE = `https://discord.gg/${COMMUNITY_DISCORD_INVITE_CODE}`;
@@ -213,7 +226,47 @@ const SupportSettings = () => {
                 </div>
                 </div>
             </div>
+
+            <DiagnosticLoggingSection />
         </div>
+    );
+};
+
+/**
+ * The diagnostic logging toggle.
+ *
+ * `error_reporting_enabled` already drove `set_diagnostics_enabled` from
+ * AppStore, but it had no control anywhere in the app, so the only way to raise
+ * the log level was to edit settings.json by hand. That is precisely the moment
+ * someone needs it: they are trying to produce a log for a bug report and the
+ * file is empty apart from the watchdog line.
+ *
+ * Lives on Support because that is where a person goes when something is wrong,
+ * and it is the page a maintainer will point them at.
+ */
+const DiagnosticLoggingSection = () => {
+    const { settings, updateSettings } = useAppStore();
+    // Absent means ON, matching how AppStore reads it (`!== false`), so an
+    // existing install is not silently switched off by adding this control.
+    const enabled = settings.error_reporting_enabled !== false;
+
+    return (
+        <SettingsSection
+            id="settings-section-diagnostics"
+            label="Diagnostics"
+            description="Controls how much detail the app writes to its log file."
+        >
+            <SettingsRow
+                title="Verbose diagnostic logging"
+                description="Records connection, playback and chat activity to the log file. Leave this on if you are reporting a bug, otherwise the log holds almost nothing to send. Turn it off for a quieter log."
+                control={
+                    <Toggle
+                        enabled={enabled}
+                        onChange={() => updateSettings({ ...settings, error_reporting_enabled: !enabled })}
+                    />
+                }
+            />
+        </SettingsSection>
     );
 };
 
