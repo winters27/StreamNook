@@ -10,7 +10,9 @@ const GQL_URL: &str = "https://gql.twitch.tv/gql";
 
 /// Create headers for GQL requests (no auth required for read operations)
 fn create_gql_headers() -> HeaderMap {
-    let device_id = Uuid::new_v4().to_string().replace("-", "");
+    // Stable per-install device id: Twitch keys anonymous recommendation
+    // context and rate-limit buckets off X-Device-Id.
+    let device_id = crate::services::twitch_service::gql_device_id();
     let session_id = Uuid::new_v4().to_string().replace("-", "");
 
     let mut headers = HeaderMap::new();
@@ -288,4 +290,163 @@ pub async fn get_channel_about_data(channel_login: String) -> Result<ChannelAbou
         stream_title,
         game_name,
     })
+}
+
+// ============================================================================
+// VIEWERS ALSO WATCH (similar channels)
+// ============================================================================
+
+/// One live channel from Twitch's "Viewers of X also watch" recommendation
+/// set (GQL personalSections SIMILAR_SECTION).
+#[derive(Debug, Clone, Serialize)]
+pub struct SimilarChannel {
+    pub user_id: String,
+    pub user_login: String,
+    pub display_name: String,
+    pub profile_image_url: Option<String>,
+    pub viewer_count: u32,
+    pub game_name: Option<String>,
+    /// Templated preview URL ("...{width}x{height}.jpg"), same shape the GQL
+    /// browse paths return; the frontend fills the template.
+    pub thumbnail_url: Option<String>,
+}
+
+/// Fetch the live channels Twitch shows under "Viewers of X also watch".
+/// Anonymous, best-effort: every failure mode returns an empty list so the
+/// UI can simply hide the section.
+#[tauri::command]
+pub async fn get_similar_channels(channel_login: String) -> Result<Vec<SimilarChannel>, String> {
+    let login = channel_login.trim().to_lowercase();
+    // Twitch login charset; also makes inlining into the query injection-proof.
+    if login.is_empty()
+        || login.len() > 25
+        || !login
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+    {
+        return Ok(Vec::new());
+    }
+
+    // Selecting the section title tokens can server-error, so the label is
+    // hardcoded client-side and only the items are selected here.
+    let query = format!(
+        r#"query {{ personalSections(input: {{
+            sectionInputs: [SIMILAR_SECTION],
+            recommendationContext: {{ platform: "web", clientApp: "twilight", location: "channel_home" }},
+            contextChannelName: "{login}" }}) {{
+          type
+          items {{ ... on PersonalSectionChannel {{
+            user {{ id login displayName profileImageURL(width: 70) }}
+            content {{ __typename ... on Stream {{ id viewersCount previewImageURL game {{ name displayName }} }} }}
+          }} }}
+        }} }}"#
+    );
+
+    let client = Client::new();
+    let response = client
+        .post(GQL_URL)
+        .headers(create_gql_headers())
+        .json(&serde_json::json!({ "query": query }))
+        .send()
+        .await;
+
+    let json: serde_json::Value = match response {
+        Ok(resp) => match resp.json().await {
+            Ok(j) => j,
+            Err(e) => {
+                debug!("[SimilarChannels] parse failed for {}: {}", login, e);
+                return Ok(Vec::new());
+            }
+        },
+        Err(e) => {
+            debug!("[SimilarChannels] request failed for {}: {}", login, e);
+            return Ok(Vec::new());
+        }
+    };
+
+    if let Some(errors) = json.get("errors") {
+        debug!("[SimilarChannels] GQL errors for {}: {}", login, errors);
+        return Ok(Vec::new());
+    }
+
+    let mut channels = Vec::new();
+    let sections = json
+        .pointer("/data/personalSections")
+        .and_then(|s| s.as_array())
+        .cloned()
+        .unwrap_or_default();
+    for section in sections {
+        let items = section
+            .get("items")
+            .and_then(|i| i.as_array())
+            .cloned()
+            .unwrap_or_default();
+        for item in items {
+            let content = item.get("content").filter(|c| !c.is_null());
+            let is_live = content
+                .and_then(|c| c.get("__typename"))
+                .and_then(|t| t.as_str())
+                .map(|t| t == "Stream")
+                .unwrap_or(false);
+            if !is_live {
+                continue;
+            }
+            let user = match item.get("user").filter(|u| !u.is_null()) {
+                Some(u) => u,
+                None => continue,
+            };
+            let user_login = user
+                .get("login")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            if user_login.is_empty() {
+                continue;
+            }
+            let display_name = user
+                .get("displayName")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .unwrap_or(&user_login)
+                .to_string();
+            channels.push(SimilarChannel {
+                user_id: user
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                user_login,
+                display_name,
+                profile_image_url: user
+                    .get("profileImageURL")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string()),
+                viewer_count: content
+                    .and_then(|c| c.get("viewersCount"))
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0) as u32,
+                game_name: content
+                    .and_then(|c| c.get("game"))
+                    .filter(|g| !g.is_null())
+                    .and_then(|g| {
+                        g.get("displayName")
+                            .and_then(|v| v.as_str())
+                            .filter(|s| !s.is_empty())
+                            .or_else(|| g.get("name").and_then(|v| v.as_str()))
+                    })
+                    .map(|s| s.to_string()),
+                thumbnail_url: content
+                    .and_then(|c| c.get("previewImageURL"))
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string()),
+            });
+        }
+    }
+
+    debug!(
+        "[SimilarChannels] {} live similar channels for {}",
+        channels.len(),
+        login
+    );
+    Ok(channels)
 }

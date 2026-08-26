@@ -1223,6 +1223,7 @@ fn main() {
             get_my_past_subscriptions,
             // Channel Panels commands
             get_channel_about_data,
+            get_similar_channels,
             // Pinned Chat commands
             get_pinned_chat_messages,
             // Diagnostic Logging commands
