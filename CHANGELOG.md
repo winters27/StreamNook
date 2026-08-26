@@ -1,3 +1,20 @@
+## [8.5.1] - 2026-08-25
+
+## 🎉 New: A smarter Discover feed
+> The Discover tab and the sidebar's Recommended section now start from Twitch's real recommendation feed, the same one twitch.tv uses, instead of a plain most-viewers list. Recommendations are anonymous by default, nothing tied to your account is sent unless you choose otherwise, and you can now limit them to the languages you actually speak.
+
+---
+
+### ✨ Features
+- **Recommendations, anonymous by default.** Out of the box, StreamNook asks Twitch for recommendations without attaching your account, so suggestions come from broad signals like your region and what's popular, not from who you are or what you watch. If you would rather have suggestions tailored to your account, turn on Personalized recommendations under Settings, Interface, Discover Feed. It stays off until you enable it, and switching it back off returns you to fully anonymous recommendations.
+- **Pick your stream languages.** The new Languages filter in the same Discover Feed section limits the Discover tab and the sidebar's Recommended section to broadcast languages you choose, like English, French, or German. Select as many as you want, or leave it empty to see every language. Scrolling past the recommendations still continues into the global top streams, and the filter applies there too.
+- **Mute everything in MultiNook at once.** A new speaker button in the MultiNook toolbar silences every tile in one click, handy when someone walks in or a call comes through. Unmuting brings back exactly the audio you had before, and unmuting a single tile by hand also lifts the global mute.
+- **Easier bug reports.** A new Diagnostics toggle on the Support page controls verbose logging, so you can produce a useful log file without editing settings by hand.
+
+### 🐛 Bug Fixes
+- **Browsing YouTube works again.** The YouTube Categories and Discover views and the sidebar section reported "not supported" in 8.5.0. They now load as intended, and the underlying cause can no longer regress silently.
+- **Clicking a sidebar channel while in MultiNook now takes you to that stream.** Previously the click appeared to do nothing and left you in the grid. Reminder: Ctrl+click does the opposite and adds the channel as a new MultiNook tile instead of leaving.
+
 ## [8.5.0] - 2026-08-25
 
 ## 🎉 New: Kick and YouTube join Twitch
