@@ -665,7 +665,7 @@ const Sidebar = ({ side = 'left' }: { side?: 'left' | 'right' }) => {
     // constant) so memoized StreamItem rows aren't invalidated by a new callback
     // identity each render. Reactive store values are read via getState() at call
     // time rather than captured in deps.
-    const handleStreamClick = useCallback((e: React.MouseEvent, stream: TwitchStream) => {
+    const handleStreamClick = useCallback(async (e: React.MouseEvent, stream: TwitchStream) => {
         // Ctrl/Cmd+click adds the stream to multinook instead of switching to it.
         // The flying-card animation originates from the click point so it visually
         // matches the right-click context-menu "Add to MultiNook" action.
@@ -687,6 +687,23 @@ const Sidebar = ({ side = 'left' }: { side?: 'left' | 'right' }) => {
         if (isHomeActive) {
             toggleHome();
         }
+
+        // Leave MultiNook too. `App.tsx` gates the entire player on
+        // `isMultiNookActive`, so the grid renders OVER the single-stream view:
+        // starting a stream without leaving it ran the resolve for real, showed
+        // its loading indicator for as long as that took, and then left the
+        // viewer in the grid with nothing visibly changed.
+        //
+        // AWAITED, and the Home flag cleared afterwards, because the exit path
+        // sets `isHomeActive` whenever no single stream is playing, which is
+        // exactly the case here. Firing `startStream` before that resolves lands
+        // the viewer on Home instead of the channel they clicked.
+        const multiNook = usemultiNookStore.getState();
+        if (multiNook.isMultiNookActive) {
+            await multiNook.toggleMultiNook();
+            useAppStore.setState({ isHomeActive: false });
+        }
+
         // The row carries its platform, so startStream routes correctly.
         startStream(stream.user_login, stream);
     }, []);
