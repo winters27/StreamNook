@@ -1288,11 +1288,19 @@ impl TwitchService {
                 ));
             }
         };
+        // Helix /channels accepts broadcaster_id ONLY. There is no
+        // broadcaster_login parameter, so querying by login always came back
+        // with an empty `data` array and surfaced as "Channel not found" for
+        // channels that plainly exist. That failure is why a channel the user
+        // does not follow rendered chat with no Twitch badges: without an id
+        // the badge metadata cache is never populated for the room, so every
+        // badge resolves to no image. Resolve the login to an id first.
+        let broadcaster_id = Self::get_user_by_login(channel_name).await?.id;
         let client = crate::services::http::client().clone();
         let response = client
             .get(format!(
-                "https://api.twitch.tv/helix/channels?broadcaster_login={}",
-                channel_name
+                "https://api.twitch.tv/helix/channels?broadcaster_id={}",
+                broadcaster_id
             ))
             .header(AUTHORIZATION, format!("Bearer {}", token))
             .header("Client-Id", CLIENT_ID)

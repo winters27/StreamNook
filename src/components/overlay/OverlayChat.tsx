@@ -345,7 +345,7 @@ const OverlaySegment = ({ segment, style, emoteScale, giant = false }: { segment
   if (segment.type === 'cheermote') {
     return (
       <span className="inline-flex items-center align-middle" style={{ margin: '0 0.125rem' }}>
-        <FallbackImg src={segment.cheermote_url} alt={segment.content} className="inline-block align-middle" style={{ height: `calc(1.75em * ${emoteScale})` }} />
+        <FallbackImg src={segment.cheermote_url} alt={segment.content} className="inline-block align-middle" style={{ height: `calc(1.75em * ${scale})` }} />
         <span style={{ color: segment.color, fontWeight: 700, marginLeft: 2 }}>{segment.bits}</span>
       </span>
     );
@@ -709,16 +709,6 @@ const OverlayRow = ({ message, style, expiring }: { message: OverlayMessage; sty
   // normal chat row: their badges + paint-decorated name.
   const badgesNode = anyBadge ? (
     <span className="inline-flex items-center" style={{ gap: '0.2em', verticalAlign: '-0.18em', ...(provider === 'youtube' ? { marginLeft: '0.3em', marginRight: '0.15em' } : { marginRight: '0.4em' }) }}>
-      {/* StreamNook identity badge leads the row, mirroring the real chat row. */}
-      {showSnBadge && (
-        <FallbackImg
-          src={message.streamNookBadgeUrl || SN_DEFAULT_LOGO}
-          alt="StreamNook"
-          loading="lazy"
-          className="inline-block align-middle"
-          style={{ height: badgeSize, width: badgeSize, objectFit: 'contain' }}
-        />
-      )}
       {showNativeBadges && nativeBadges.map((b, i) => {
         // YouTube rows resolve role badges (no API image) to their own platform
         // art; everything else uses the badge's resolved image.
@@ -734,6 +724,17 @@ const OverlayRow = ({ message, style, expiring }: { message: OverlayMessage; sty
       {showExtraBadges && visibleExtraBadges.map((b, i) => (
         <FallbackImg key={`tp-${i}`} src={b.url} alt={b.title || 'badge'} className="inline-block align-middle" style={{ height: badgeSize, width: badgeSize }} />
       ))}
+      {/* StreamNook identity badge sits rightmost, next to the name, mirroring
+          the real chat row (see utils/badgeOrder in the app repo). */}
+      {showSnBadge && (
+        <FallbackImg
+          src={message.streamNookBadgeUrl || SN_DEFAULT_LOGO}
+          alt="StreamNook"
+          loading="lazy"
+          className="inline-block align-middle"
+          style={{ height: badgeSize, width: badgeSize, objectFit: 'contain' }}
+        />
+      )}
     </span>
   ) : null;
 

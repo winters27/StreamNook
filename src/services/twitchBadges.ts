@@ -45,22 +45,6 @@ export async function fetchChannelBadges(channelId: string, _clientId?: string, 
  * @deprecated Badge info is now included in the UserBadgesResponse from getAllUserBadges()
  * This stub returns null to maintain backwards compatibility
  */
-export function getBadgeInfo(_badgeKey: string, _channelId?: string): any | null {
-  Logger.warn('[twitchBadges] getBadgeInfo() is deprecated. Use getAllUserBadges() instead');
-  return null;
-}
-
-/**
- * @deprecated Badge initialization is now automatic
- */
-export async function initializeBadges(_clientId: string, _token: string, channelId?: string): Promise<void> {
-  Logger.warn('[twitchBadges] initializeBadges() is deprecated. Badges initialize automatically');
-  // Pre-fetch channel badges if provided
-  if (channelId) {
-    const { prefetchChannelBadges } = await import('./badgeService');
-    await prefetchChannelBadges(channelId);
-  }
-}
 
 // In-memory cache for badge metadata
 // Global badges come from `commands/badges.rs` (universal cache)

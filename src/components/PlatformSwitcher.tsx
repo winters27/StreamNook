@@ -25,7 +25,8 @@
 // Renders nothing until a second platform's watch support ships, so a
 // Twitch-only build is untouched.
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { AnimatePresence, motion } from 'framer-motion';
 import { ChevronsUpDown } from 'lucide-react';
 import { useAppStore } from '../stores/AppStore';
@@ -124,6 +125,29 @@ export default function PlatformSwitcher() {
   const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const anchorRef = useRef<HTMLButtonElement | null>(null);
   const itemRefs = useRef<Array<HTMLButtonElement | null>>([]);
+  const menuRef = useRef<HTMLDivElement | null>(null);
+  const [menuPos, setMenuPos] = useState<{ top: number; left: number } | null>(null);
+
+  // Portalled to <body> so the flyout escapes the title bar's stacking context
+  // (relative z-50): rendered inline, the sidebar overlay (also z-50, later in
+  // the DOM) paints over it. Fixed viewport coordinates from the anchor rect,
+  // same recipe as the drops hover preview in TitleBar.
+  useLayoutEffect(() => {
+    if (!open) return;
+    const reposition = () => {
+      const el = anchorRef.current;
+      if (!el) return;
+      const r = el.getBoundingClientRect();
+      setMenuPos({ top: Math.round(r.bottom + 8), left: Math.round(r.left) });
+    };
+    reposition();
+    window.addEventListener('resize', reposition);
+    window.addEventListener('scroll', reposition, true);
+    return () => {
+      window.removeEventListener('resize', reposition);
+      window.removeEventListener('scroll', reposition, true);
+    };
+  }, [open]);
 
   // How many of your follows are live per platform. Twitch's list is Helix's
   // (already live-only); every other platform's comes from the who's-live
@@ -220,7 +244,10 @@ export default function PlatformSwitcher() {
         setOpen(true);
       }}
       onBlur={(e) => {
-        if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setOpen(false);
+        // The flyout lives in a body portal, so DOM containment against the
+        // wrapper misses it; check both trees by ref.
+        const t = e.relatedTarget as Node | null;
+        if (!(anchorRef.current?.contains(t) || menuRef.current?.contains(t))) setOpen(false);
       }}
       onKeyDown={(e) => {
         if (e.key === 'Escape' && open) {
@@ -303,17 +330,19 @@ export default function PlatformSwitcher() {
         />
       </button>
 
+      {createPortal(
       <AnimatePresence>
-        {open && (
+        {open && menuPos && (
           <motion.div
+            ref={menuRef}
             role="menu"
             aria-label="Platform"
             // glass-flyout, not glass-panel: this hangs over live video, and
             // the panel recipe thins out to a translucent sheet at low
             // Glassiness. The flyout recipe keeps a real frost at every slider
             // position (see globals.css for the why).
-            className="glass-flyout absolute left-0 z-50 w-[196px] overflow-hidden"
-            style={{ top: 'calc(100% + 8px)', transformOrigin: 'top left' }}
+            className="glass-flyout w-[196px] overflow-hidden"
+            style={{ position: 'fixed', top: menuPos.top, left: menuPos.left, zIndex: 9999, transformOrigin: 'top left' }}
             initial={{ opacity: 0, scale: 0.96, y: -5 }}
             animate={{ opacity: 1, scale: 1, y: 0 }}
             exit={{ opacity: 0, scale: 0.97, y: -4, transition: { duration: 0.12, ease: 'easeIn' } }}
@@ -428,7 +457,8 @@ export default function PlatformSwitcher() {
             )}
           </motion.div>
         )}
-      </AnimatePresence>
+      </AnimatePresence>,
+      document.body)}
     </div>
   );
 }

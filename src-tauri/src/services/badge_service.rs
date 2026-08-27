@@ -1194,39 +1194,47 @@ impl BadgeService {
         let cache = self.cache.read().await;
         let mut badges = Vec::new();
 
-        // FFZ badges
+        // FFZ badges. `users` is keyed by badge_id (as a string) -> [numeric
+        // user_id] (same shape get_all_third_party_badges reads), so resolve
+        // per-user by scanning each badge's holder list.
         if let Some(ffz) = &cache.third_party.ffz {
-            if let Some(badge_ids) = ffz.users.get(user_id) {
-                for &badge_id in badge_ids {
-                    if let Some(badge) = ffz.badges.iter().find(|b| b.id == badge_id) {
-                        let image_url = badge
-                            .urls
-                            .get("4")
-                            .or_else(|| badge.urls.get("2"))
-                            .or_else(|| badge.urls.get("1"))
-                            .cloned()
-                            .unwrap_or_default();
-
-                        badges.push(UserBadge {
-                            badge_info: BadgeInfo {
-                                id: format!("ffz-{}", badge_id),
-                                set_id: "ffz".to_string(),
-                                version: badge_id.to_string(),
-                                title: badge
-                                    .title
-                                    .clone()
-                                    .or_else(|| badge.name.clone())
-                                    .unwrap_or_else(|| format!("FFZ Badge {}", badge_id)),
-                                description: String::new(),
-                                image_1x: badge.urls.get("1").cloned().unwrap_or_default(),
-                                image_2x: badge.urls.get("2").cloned().unwrap_or_default(),
-                                image_4x: image_url,
-                                click_action: None,
-                                click_url: Some("https://www.frankerfacez.com/badges".to_string()),
-                            },
-                            provider: BadgeProvider::FFZ,
-                        });
+            if let Ok(uid) = user_id.parse::<u32>() {
+                for badge in &ffz.badges {
+                    let holds = ffz
+                        .users
+                        .get(&badge.id.to_string())
+                        .map(|h| h.contains(&uid))
+                        .unwrap_or(false);
+                    if !holds {
+                        continue;
                     }
+                    let image_url = badge
+                        .urls
+                        .get("4")
+                        .or_else(|| badge.urls.get("2"))
+                        .or_else(|| badge.urls.get("1"))
+                        .cloned()
+                        .unwrap_or_default();
+
+                    badges.push(UserBadge {
+                        badge_info: BadgeInfo {
+                            id: format!("ffz-{}", badge.id),
+                            set_id: "ffz".to_string(),
+                            version: badge.id.to_string(),
+                            title: badge
+                                .title
+                                .clone()
+                                .or_else(|| badge.name.clone())
+                                .unwrap_or_else(|| format!("FFZ Badge {}", badge.id)),
+                            description: String::new(),
+                            image_1x: badge.urls.get("1").cloned().unwrap_or_default(),
+                            image_2x: badge.urls.get("2").cloned().unwrap_or_default(),
+                            image_4x: image_url,
+                            click_action: None,
+                            click_url: Some("https://www.frankerfacez.com/badges".to_string()),
+                        },
+                        provider: BadgeProvider::FFZ,
+                    });
                 }
             }
         }

@@ -417,7 +417,7 @@ export const SAMPLE_MESSAGES: OverlayMessage[] = [
   // row inline, 'event' promotes it to the cheer card. The channel-prefix cheermote is
   // deliberate — those are the ones that used to fall through as plain text.
   base('m30', 'twitch', 'bitsbaron', 'BitsBaron', '#f6c445',
-    [cm('mathox1Cheer100', 'mathox1cheer', 100, '100', '#9c3ee8'), t('take my money, this play was unreal')],
+    [cm('mathox1Cheer100', 'mathox1cheer', 100, '100', '#9c3ee8'), t(' take my money, this play was unreal')],
     {
       metadata: {
         is_action: false, is_mentioned: false, is_first_message: false, is_from_shared_chat: false,
