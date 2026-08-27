@@ -100,7 +100,6 @@ interface ParsedMessage {
   emotes: string;
 }
 
-import { EMOJI_CATEGORIES, EMOJI_KEYWORDS } from '../services/emojiCategories';
 import { usemultiNookStore } from '../stores/multiNookStore';
 import { usePinStore } from '../stores/pinStore';
 import { useVodReplayStore, useVodReplaySnapshot, nudgeVodReplay } from '../stores/vodReplayStore';
@@ -3806,7 +3805,6 @@ const ChatWidget = ({ channelOverride, hypeTrainOverride }: ChatWidgetProps = {}
     }
   }, [isPaused, setChatPaused]);
 
-  const emojiCategories = EMOJI_CATEGORIES;
 
 
 

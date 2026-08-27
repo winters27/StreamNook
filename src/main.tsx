@@ -23,13 +23,6 @@ import './utils/multichatTrayBridge';
 // (the woff2 itself only downloads when rendered). The italic axis is only
 // used by the tier-badge rank number and rides StreamNookBadge.tsx instead.
 import '@fontsource-variable/fraunces';
-// Plyr's CSS must load BEFORE globals.css: our `.video-player-container .plyr__*`
-// overrides have EQUAL specificity to Plyr's own defaults, so whichever stylesheet
-// loads last wins. The video player is lazy-loaded, so without this eager import
-// Plyr's CSS injects AFTER globals.css at runtime and its default (tall, gradient)
-// control bar overrides our styled one. Eager-importing it here (deduped with the
-// lazy player's own import) restores the pre-lazy-load order so our overrides win.
-import 'plyr/dist/plyr.css';
 import './styles/globals.css';
 import { initLogCapture } from './services/logService';
 

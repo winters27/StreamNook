@@ -24,7 +24,13 @@ import {
   addFavoriteEmote,
   removeFavoriteEmote,
 } from '../../services/favoriteEmoteService';
-import { EMOJI_CATEGORIES, EMOJI_KEYWORDS } from '../../services/emojiCategories';
+// The emoji dataset is ~110KB of source; it hydrates on first picker open so
+// it rides its own chunk instead of the boot bundle.
+type EmojiData = {
+  EMOJI_CATEGORIES: Record<string, string[]>;
+  EMOJI_KEYWORDS: Record<string, string[]>;
+};
+let emojiDataCache: EmojiData | null = null;
 import { getAppleEmojiUrl } from '../../services/emojiService';
 import { useAppStore } from '../../stores/AppStore';
 import { Logger } from '../../utils/logger';
@@ -361,9 +367,27 @@ export function EmotePickerPanel({
     if (scrollRef.current) scrollRef.current.scrollTop = 0;
   }, [selectedProvider, searchQuery]);
 
+  const [emojiData, setEmojiData] = useState<EmojiData | null>(emojiDataCache);
+  useEffect(() => {
+    if (!open || emojiData) return;
+    let alive = true;
+    void import('../../services/emojiCategories').then((mod) => {
+      emojiDataCache = mod;
+      if (alive) setEmojiData(mod);
+    });
+    return () => {
+      alive = false;
+    };
+  }, [open, emojiData]);
+
   const allEmojis = useMemo(
-    () => Object.entries(EMOJI_CATEGORIES).flatMap(([category, emojis]) => emojis.map((emoji) => ({ emoji, category }))),
-    [],
+    () =>
+      emojiData
+        ? Object.entries(emojiData.EMOJI_CATEGORIES).flatMap(([category, emojis]) =>
+            emojis.map((emoji) => ({ emoji, category })),
+          )
+        : [],
+    [emojiData],
   );
 
   const filteredEmotes = useMemo((): Emote[] => {
@@ -485,7 +509,7 @@ export function EmotePickerPanel({
     const query = searchQuery.toLowerCase();
     return allEmojis.filter(({ emoji, category }) => {
       if (category.toLowerCase().includes(query)) return true;
-      const keywords = EMOJI_KEYWORDS[emoji];
+      const keywords = emojiData?.EMOJI_KEYWORDS[emoji];
       return keywords ? keywords.some((k) => k.includes(query)) : false;
     });
   }, [searchQuery, allEmojis]);
@@ -653,7 +677,7 @@ export function EmotePickerPanel({
             <div className="flex items-center justify-center h-32"><p className="text-xs text-textSecondary">No emojis found</p></div>
           ) : (
             <div className="flex flex-col gap-4 pt-2">
-              {Object.entries(EMOJI_CATEGORIES).map(([category, emojis]) => {
+              {Object.entries(emojiData?.EMOJI_CATEGORIES ?? {}).map(([category, emojis]) => {
                 const filteredCategoryEmojis = searchQuery
                   ? emojis.filter((emoji) => emoji.includes(searchQuery) || category.toLowerCase().includes(searchQuery.toLowerCase()))
                   : emojis;

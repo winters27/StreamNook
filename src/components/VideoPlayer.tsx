@@ -3,7 +3,8 @@ import { useShallow } from 'zustand/react/shallow';
 import { invoke } from '@tauri-apps/api/core';
 import Hls from 'hls.js';
 import Plyr from 'plyr';
-import 'plyr/dist/plyr.css';
+// Plyr's CSS ships once, layered, via globals.css (@import ... layer(vendor));
+// a second unlayered copy here would beat the app's control-bar overrides.
 import { motion, AnimatePresence } from 'framer-motion';
 import { Loader2, RefreshCcw, Home, LayoutGrid, Shield, ShieldCheck, ShieldAlert, Clapperboard, Music, Share2, Check } from 'lucide-react';
 import { Heart, HeartBreak, ArrowLeft, X as XIcon } from 'phosphor-react';
