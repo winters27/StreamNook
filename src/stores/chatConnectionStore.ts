@@ -20,6 +20,7 @@
 
 import { useEffect, useState } from 'react';
 import { create } from 'zustand';
+import { useShallow } from 'zustand/react/shallow';
 import { PROVIDERS, type ProviderId } from '../types/providers';
 import { makeKey, parseKey } from '../utils/providerKey';
 import { streamProvider } from '../utils/streamProvider';
@@ -3175,6 +3176,28 @@ export function useChannelEmotes(
 /** React hook returning the per-channel snapshot. Pass `null` while no channel
  *  is acquired — the hook returns an empty snapshot in that case so callers
  *  don't need to null-guard the entire return object. */
+/** Low-frequency slice fields for the widget chrome (header, composer,
+ *  room-state chips). Shallow-compared, so per-message flushes evaluate the
+ *  selector (cheap: one Map.get) but re-render the subscriber only when one of
+ *  these fields actually changed. Every writer of these fields already lands a
+ *  setState (withSlice / bumpRevision / setSlice), so no extra signal is
+ *  needed and no writer can be missed. */
+export function useChannelChatMeta(channel: string | null | undefined) {
+  const key = channel ? channel.toLowerCase() : null;
+  return useChatConnectionStore(
+    useShallow((state) => {
+      const slice = key ? state.channels.get(key) : undefined;
+      return {
+        isConnected: slice?.isConnected ?? false,
+        error: slice?.error ?? null,
+        roomState: slice?.roomState ?? EMPTY_ROOM_STATE,
+        userBadges: slice?.userBadges ?? null,
+        pinnedMessage: slice?.pinnedMessage ?? null,
+      };
+    }),
+  );
+}
+
 export function useChannelChat(channel: string | null | undefined): ChannelChatSnapshot {
   const key = channel ? channel.toLowerCase() : null;
   // Subscribe to revision to drive updates; read the slice imperatively to

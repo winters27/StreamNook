@@ -16,7 +16,7 @@ const ChannelPointsIcon = ({ className = "", size = 14 }: { className?: string; 
 );
 import { DropProgressStatus } from '../types';
 import { useTwitchChat, type ModerationContext } from '../hooks/useTwitchChat';
-import { useChannelEmotes, ensureChannelEmotes, getChannelEmotes, emoteCacheKey, refreshChannelEmotes, useChannelChat, setChannelPaused, injectRedemptionMessage, injectSystemMessage, systemSourceFor } from '../stores/chatConnectionStore';
+import { useChannelEmotes, ensureChannelEmotes, getChannelEmotes, emoteCacheKey, refreshChannelEmotes, useChannelChat, useChannelChatMeta, useChatConnectionStore, setChannelPaused, injectRedemptionMessage, injectSystemMessage, systemSourceFor } from '../stores/chatConnectionStore';
 import { useSpellcheck } from '../hooks/useSpellcheck';
 import { warmSpellcheck } from '../utils/spellcheck';
 import SpellcheckUnderlay from './chat/SpellcheckUnderlay';
@@ -294,10 +294,22 @@ interface ChatMessagesPanelSource {
   clearedUserContexts: Map<string, { context: ModerationContext; affectedMessageIds: Set<string> }>;
 }
 
+const USER_HISTORY_MAX_USERS = 300;
+
 interface ChatMessagesPanelProps {
   /** Live slice key (bare Twitch login / composite provider key); ignored when
    *  an override snapshot is supplied. */
   channelKey: string | null;
+  provider: ProviderId;
+  providerKey: string | null;
+  stream: TwitchStream | null | undefined;
+  kickAccountName: string | null;
+  onKickModeratorDetected: () => void;
+  setIsSharedChat: (v: boolean) => void;
+  userMessageHistoryRef: React.MutableRefObject<Map<string, ParsedMessage[]>>;
+  sharedRoomsRef: React.MutableRefObject<Set<string>>;
+  processedIdsRef: React.MutableRefObject<Set<string>>;
+  messagesRef: React.MutableRefObject<(string | BackendChatMessage)[]>;
   /** Replay-mode snapshot; null in live mode. */
   override: ChatMessagesPanelSource | null;
   isPaused: boolean;
@@ -321,6 +333,16 @@ interface ChatMessagesPanelProps {
 
 const ChatMessagesPanel = ({
   channelKey,
+  provider,
+  providerKey,
+  stream,
+  kickAccountName,
+  onKickModeratorDetected,
+  setIsSharedChat,
+  userMessageHistoryRef,
+  sharedRoomsRef,
+  processedIdsRef,
+  messagesRef,
   override,
   isPaused,
   onPauseIntent,
@@ -342,6 +364,178 @@ const ChatMessagesPanel = ({
 }: ChatMessagesPanelProps) => {
   const live = useChannelChat(override ? null : channelKey);
   const src: ChatMessagesPanelSource = override ?? live;
+  const addUser = useChatUserStore((state) => state.addUser);
+
+  // Keyboard moderation reads the visible messages synchronously through this
+  // ref; the panel owns the snapshot now, so it keeps the ref fresh.
+  useEffect(() => {
+    messagesRef.current = src.messages;
+  }, [src.messages, src.renderToken, messagesRef]);
+
+  // Process new messages for user history tracking.
+  // Iterate the full message array and skip any whose ID is already in
+  // processedMessageIdsRef. CRITICAL: extract the message ID cheaply (regex
+  // on raw IRC tags or the object's `id` field) BEFORE invoking the much
+  // more expensive parseMessage. In a fast chat (50+ msg/s) the old code
+  // would parse all 100 cap-bounded messages on every render even though
+  // 99% were already processed — that stalled the main thread and produced
+  // the "burst then freeze" pattern. Now we only parse new messages.
+  useEffect(() => {
+    const seen = processedIdsRef.current;
+    const currentIds = new Set<string>();
+
+    for (const message of src.messages) {
+      // Cheap ID extraction first, no full parse.
+      let msgId: string | undefined;
+      if (typeof message === 'string') {
+        const m = message.match(/(?:^@|;)id=([^;\s]+)/);
+        msgId = m ? m[1] : undefined;
+      } else {
+        msgId = message.id;
+      }
+
+      if (msgId) {
+        currentIds.add(msgId);
+        if (seen.has(msgId)) continue; // Already processed — skip the parse + side effects.
+        seen.add(msgId);
+      }
+
+      try {
+        let parsed: ParsedMessage;
+        let userId: string | undefined;
+        let username: string | undefined;
+        let displayName: string | undefined;
+        let userColor: string | undefined;
+
+        if (typeof message === 'string') {
+          const channelIdMatch = message.match(/room-id=([^;]+)/);
+          const channelId = channelIdMatch ? channelIdMatch[1] : undefined;
+          parsed = parseMessage(message, channelId);
+          userId = parsed.tags.get('user-id');
+          username = parsed.username;
+          displayName = parsed.tags.get('display-name') || parsed.username;
+          userColor = parsed.color;
+        } else {
+          // Backend message object
+          parsed = parseMessage(message);
+          userId = message.tags['user-id'] || message.user_id;
+          username = message.username;
+          displayName = message.display_name || message.username;
+          userColor = message.color || parsed.color;
+        }
+
+        // YouTube ships each custom emoji inline with the message that uses it and
+        // offers no set to fetch, so the picker learns them here. Segments come off
+        // the BACKEND message (Rust pre-parses them); `parsed` doesn't carry them.
+        if (provider === 'youtube' && providerKey && typeof message !== 'string') {
+          const segments = message.segments;
+          if (segments?.length) {
+            useProviderEmoteStore.getState().harvest(providerKey, segments);
+          }
+        }
+
+        // Shared-chat detection, incremental: a cross-room message flips the
+        // sticky flag and prefetches the source room's badge metadata ONCE
+        // (subscriber/bits/founder badges render blank without that prefetch).
+        if (provider === 'twitch') {
+          const srcRoom =
+            typeof message === 'string'
+              ? parsed.tags.get('source-room-id')
+              : message.tags['source-room-id'];
+          const ownRoom =
+            typeof message === 'string'
+              ? parsed.tags.get('room-id')
+              : message.tags['room-id'];
+          if (srcRoom && ownRoom && srcRoom !== ownRoom) {
+            setIsSharedChat(true);
+            if (!sharedRoomsRef.current.has(srcRoom)) {
+              sharedRoomsRef.current.add(srcRoom);
+              prefetchChannelBadges(srcRoom).catch((err) =>
+                Logger.warn('[ChatWidget] Failed to prefetch badges for shared channel:', srcRoom, err),
+              );
+            }
+          }
+        }
+
+        if (
+          provider !== 'twitch' &&
+          kickAccountName &&
+          typeof message !== 'string' &&
+          ((message.username as string) || '').toLowerCase() === kickAccountName
+        ) {
+          const mBadges = (message.badges as Array<{ name?: string }> | undefined) || [];
+          if (mBadges.some((b) => b.name === 'moderator' || b.name === 'broadcaster')) {
+            onKickModeratorDetected();
+          }
+        }
+
+        if (userId) {
+          // Namespaced for non-Twitch. `message.user_id` is a RAW platform id, so
+          // Kick user 676 and Twitch user 676 are different people who would
+          // otherwise share one history bucket and show each other's messages.
+          const historyKey = provider === 'twitch' ? userId : `${provider}:${userId}`;
+          const history = userMessageHistoryRef.current.get(historyKey) || [];
+          history.push(parsed);
+          if (history.length > 50) history.shift();
+          // Delete-then-set keeps Map insertion order as a recency order, so
+          // the eviction below always drops the longest-silent chatter.
+          userMessageHistoryRef.current.delete(historyKey);
+          userMessageHistoryRef.current.set(historyKey, history);
+          if (userMessageHistoryRef.current.size > USER_HISTORY_MAX_USERS) {
+            const oldest = userMessageHistoryRef.current.keys().next().value;
+            if (oldest !== undefined) userMessageHistoryRef.current.delete(oldest);
+          }
+
+          // Add user to mention autocomplete store. Channel context drives
+          // third-party badge resolution inside the store.
+          if (username && displayName) {
+            const channelId =
+              parsed.tags.get('source-room-id') ||
+              parsed.tags.get('room-id') ||
+              stream?.user_id ||
+              '';
+            const channelName =
+              stream?.user_login ||
+              stream?.user_name ||
+              parsed.tags.get('room') ||
+              '';
+            addUser(
+              {
+                // Namespace non-Twitch chatters so their 7TV cosmetics resolve
+                // under the right platform and never collide with a Twitch id of
+                // the same number. Twitch stays the bare id (byte-identical). This
+                // matches ChatMessage's `cosmeticsKey`.
+                userId: provider === 'twitch' ? userId : `${provider}:${userId}`,
+                username,
+                displayName,
+                color: userColor || '#9147FF',
+              },
+              channelId ? { channelId, channelName } : undefined,
+            );
+          }
+        }
+      } catch (err) {
+        Logger.error('[ChatWidget] Failed to parse message:', err, message);
+      }
+    }
+
+    // Drop processed-IDs for messages that have rolled out of the array.
+    // Without this the set would grow unbounded across the session.
+    for (const id of seen) {
+      if (!currentIds.has(id)) seen.delete(id);
+    }
+    // `renderToken` is load-bearing, NOT redundant with `messages`. The provider
+    // snapshot hands over its message array BY REFERENCE and mutates it in place
+    // (the memo above says so: re-renders ride `renderToken`, not array identity).
+    // With `messages` alone this effect ran exactly once, on whatever was buffered
+    // at channel join, and never again — so every chatter who spoke after that was
+    // never added to the chat-user store and never resolved 7TV cosmetics. That is
+    // why paints and badges were missing on Kick and YouTube, including your own.
+    // Re-running per flush is cheap: `processedMessageIdsRef` skips every message
+    // already handled, so each new message is parsed exactly once.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [src.messages, src.renderToken, addUser]);
+
   return (
     <div
       className="flex-1 overflow-hidden animate-panel-slide-down"
@@ -382,6 +576,30 @@ const ChatMessagesPanel = ({
   );
 };
 
+// "N new since paused": anchored to the channel's MONOTONIC live-message
+// counter at the instant pause begins (accurate under buffer trimming, unlike
+// a messages.length diff). Isolated here so its per-flush subscription
+// re-renders only this span, never the widget.
+const PausedNewCount = ({ channelKey, isPaused }: { channelKey: string | null; isPaused: boolean }) => {
+  const key = channelKey ? channelKey.toLowerCase() : null;
+  useChatConnectionStore((state) => (key && isPaused ? state.revisionByChannel[key] ?? 0 : 0));
+  // Anchor captured once per pause via effect (never a render-time ref write).
+  const [anchor, setAnchor] = useState<number | null>(null);
+  useEffect(() => {
+    if (!isPaused || !key) {
+      setAnchor(null);
+      return;
+    }
+    setAnchor(
+      (a) => a ?? useChatConnectionStore.getState().channels.get(key)?.liveMessageCount ?? 0,
+    );
+  }, [isPaused, key]);
+  if (!isPaused || !key || anchor === null) return null;
+  const liveCount = useChatConnectionStore.getState().channels.get(key)?.liveMessageCount ?? 0;
+  const delta = Math.max(0, liveCount - anchor);
+  return delta > 0 ? <> ({delta} new)</> : null;
+};
+
 const ChatWidget = ({ channelOverride, hypeTrainOverride }: ChatWidgetProps = {}) => {
   // Single source of truth for the source platform. Twitch (the default) runs the
   // entire native path below unchanged; a non-twitch provider reads the shared
@@ -400,7 +618,7 @@ const ChatWidget = ({ channelOverride, hypeTrainOverride }: ChatWidgetProps = {}
   const twitchChat = useTwitchChat();
   const providerKey =
     !isTwitch && channelOverride ? makeKey(provider, channelOverride.user_login.toLowerCase()) : null;
-  const providerSnapshot = useChannelChat(providerKey);
+  const providerMeta = useChannelChatMeta(providerKey);
   // Hoisted out of the memo below so their identities survive a flush. The memo
   // now recomputes on every renderToken bump, so functions declared inline in it
   // would churn per frame and destabilize everything downstream (setChatPaused
@@ -420,7 +638,10 @@ const ChatWidget = ({ channelOverride, hypeTrainOverride }: ChatWidgetProps = {}
       // YouTube's own client would send. Resolved here because the backend keeps
       // no parent-message cache to look the display name up in.
       if (provider === 'youtube' && replyParentMsgId) {
-        const parent = providerSnapshot.messages.find(
+        const sliceMsgs = providerKey
+          ? useChatConnectionStore.getState().channels.get(providerKey)?.messages ?? []
+          : [];
+        const parent = sliceMsgs.find(
           (m) => typeof m !== 'string' && (m as BackendChatMessage).id === replyParentMsgId,
         ) as BackendChatMessage | undefined;
         const parentName = parent?.display_name || parent?.username;
@@ -445,7 +666,7 @@ const ChatWidget = ({ channelOverride, hypeTrainOverride }: ChatWidgetProps = {}
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [provider, channelOverride, providerSnapshot.messages],
+    [provider, channelOverride, providerKey],
   );
   const providerSetPaused = useCallback(
     (paused: boolean) => {
@@ -453,39 +674,23 @@ const ChatWidget = ({ channelOverride, hypeTrainOverride }: ChatWidgetProps = {}
     },
     [providerKey],
   );
+  // Meta + actions only: the panel owns the per-flush snapshot now, so the
+  // provider path no longer routes messages through the parent at all.
   const providerChat = useMemo(
     () => ({
-      // Passed through by reference. The list's re-render is driven by
-      // `renderToken`, not by array identity, so the defensive copy this used to
-      // make (up to ~1150 elements, rebuilt on every ChatWidget render because
-      // `providerSnapshot` is a fresh object each time) is no longer needed.
-      messages: providerSnapshot.messages,
       connectChat: providerConnectChat,
       sendMessage: providerSendMessage,
-      isConnected: providerSnapshot.isConnected,
-      error: providerSnapshot.error,
+      isConnected: providerMeta.isConnected,
+      error: providerMeta.error,
       setPaused: providerSetPaused,
-      deletedMessageIds: providerSnapshot.deletedMessageIds,
-      clearedUserContexts: providerSnapshot.clearedUserContexts,
-      roomState: providerSnapshot.roomState,
-      userBadges: providerSnapshot.userBadges,
-      liveMessageCount: providerSnapshot.liveMessageCount,
-      renderToken: providerSnapshot.renderToken,
+      roomState: providerMeta.roomState,
+      userBadges: providerMeta.userBadges,
     }),
-    // Depend on the individual fields, NOT on `providerSnapshot` itself:
-    // useChannelChat returns a fresh object every render, so a dep on the
-    // snapshot meant this memo never held and re-ran on every keystroke.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
     [
-      providerSnapshot.messages,
-      providerSnapshot.isConnected,
-      providerSnapshot.error,
-      providerSnapshot.deletedMessageIds,
-      providerSnapshot.clearedUserContexts,
-      providerSnapshot.roomState,
-      providerSnapshot.userBadges,
-      providerSnapshot.liveMessageCount,
-      providerSnapshot.renderToken,
+      providerMeta.isConnected,
+      providerMeta.error,
+      providerMeta.roomState,
+      providerMeta.userBadges,
       providerConnectChat,
       providerSendMessage,
       providerSetPaused,
@@ -504,7 +709,7 @@ const ChatWidget = ({ channelOverride, hypeTrainOverride }: ChatWidgetProps = {}
   const isVodReplay = !channelOverride && replayActive;
   const [chatMode, setChatMode] = useState<'replay' | 'live'>('replay');
   const chat = isVodReplay && chatMode === 'replay' ? replayChat : isTwitch ? twitchChat : providerChat;
-  const { messages, connectChat, sendMessage, isConnected, error, setPaused: setBufferPaused, deletedMessageIds, clearedUserContexts, roomState, userBadges, liveMessageCount, renderToken } = chat;
+  const { connectChat, sendMessage, isConnected, error, setPaused: setBufferPaused, roomState, userBadges } = chat;
 
   // A new VOD always starts in replay (beginVodReplay bumps sessionId).
   useEffect(() => {
@@ -671,28 +876,24 @@ const ChatWidget = ({ channelOverride, hypeTrainOverride }: ChatWidgetProps = {}
   // Kick has no USERSTATE, so derive our role from our OWN messages: if one of
   // them (matched by the connected Kick username) carries a moderator/broadcaster
   // badge, we can moderate this channel. Covers both the broadcaster and mods.
-  const kickIsModerator = useMemo(() => {
-    if (isTwitch || !kickAccountName) return false;
-    for (const m of messages) {
-      if (typeof m === 'string') continue;
-      if (((m.username as string) || '').toLowerCase() !== kickAccountName) continue;
-      const badges = (m.badges as Array<{ name?: string }> | undefined) || [];
-      if (badges.some((b) => b.name === 'moderator' || b.name === 'broadcaster')) return true;
-    }
-    return false;
-  }, [isTwitch, kickAccountName, messages]);
+  // Kick has no USERSTATE; the panel's per-new-message loop spots our own
+  // moderator/broadcaster badge and reports it once (sticky until the channel
+  // changes). Equivalent to the old whole-buffer memo: the loop sees every
+  // buffered and backfilled message exactly once.
+  const [kickModDetected, setKickModDetected] = useState(false);
+  const onKickModeratorDetected = useCallback(() => setKickModDetected(true), []);
   const isModerator = useMemo(() => {
     if (provider === 'youtube') return youtubeCanModerate;
     // The API answer wins once it arrives, but the badge heuristic stays as an OR:
     // a promotion made during this session shows up in our badges long before the
     // cached probe expires.
     if (provider === 'kick') {
-      return kickCanModerate === null ? kickIsModerator : kickCanModerate || kickIsModerator;
+      return kickCanModerate === null ? kickModDetected : kickCanModerate || kickModDetected;
     }
     if (!isTwitch) return false; // tiktok + other read-only providers: no mod actions
     if (!userBadges) return false;
     return userBadges.includes('moderator') || userBadges.includes('broadcaster');
-  }, [provider, youtubeCanModerate, isTwitch, kickIsModerator, kickCanModerate, userBadges]);
+  }, [provider, youtubeCanModerate, isTwitch, kickModDetected, kickCanModerate, userBadges]);
   
   // UI state
   const [messageInput, setMessageInput] = useState('');
@@ -845,7 +1046,7 @@ const ChatWidget = ({ channelOverride, hypeTrainOverride }: ChatWidgetProps = {}
       .then((list) => {
         if (cancelled) return;
         if (!list?.length) {
-          if (providerSnapshot.isConnected) {
+          if (providerMeta.isConnected) {
             // Connected and still nothing: a signed-out session (YouTube only
             // ships the emoji set to viewers who can type) or a channel with no
             // emoji. Say so once instead of leaving a silently empty tab.
@@ -879,7 +1080,7 @@ const ChatWidget = ({ channelOverride, hypeTrainOverride }: ChatWidgetProps = {}
     return () => {
       cancelled = true;
     };
-  }, [provider, providerKey, channelOverride?.user_login, providerSnapshot.isConnected, showEmotePicker]);
+  }, [provider, providerKey, channelOverride?.user_login, providerMeta.isConnected, showEmotePicker]);
   const emotes = useMemo(() => {
     if (provider !== 'youtube') return baseEmotes;
     // `baseEmotes` now carries the channel's 7TV set (fetched like Kick's), but
@@ -926,9 +1127,6 @@ const ChatWidget = ({ channelOverride, hypeTrainOverride }: ChatWidgetProps = {}
   // counter (liveMessageCount) at the instant we enter pause, then shown as a
   // delta — accurate even when the buffer is capped/trimmed, unlike a
   // messages.length diff. See the capture effect below.
-  const liveCountAtPauseRef = useRef(0);
-  const prevPausedRef = useRef(false);
-  const [newSincePause, setNewSincePause] = useState(0);
   const isHoveringChatRef = useRef<boolean>(false);
   const lastResumeTimeRef = useRef<number>(0);
   const lastNavigationTimeRef = useRef<number>(0); // Track scrollToMessage navigation
@@ -1055,7 +1253,6 @@ const ChatWidget = ({ channelOverride, hypeTrainOverride }: ChatWidgetProps = {}
   const userMessageHistory = useRef<Map<string, ParsedMessage[]>>(new Map());
   // Profile-card history is the only consumer; bound the tracked chatters so a
   // big channel session can't retain parsed messages for thousands of users.
-  const USER_HISTORY_MAX_USERS = 300;
   // Source rooms whose badges were already prefetched this channel session -
   // shared-chat detection runs incrementally per NEW message (it used to
   // rescan the whole buffer every flush).
@@ -1089,7 +1286,7 @@ const ChatWidget = ({ channelOverride, hypeTrainOverride }: ChatWidgetProps = {}
   // from inside a global keystroke handler.
   const [modFocusId, setModFocusId] = useState<string | null>(null);
   const modFocusIdRef = useRef<string | null>(null);
-  const messagesRef = useRef(messages);
+  const messagesRef = useRef<(string | BackendChatMessage)[]>([]);
   const isModeratorRef = useRef(isModerator);
   const broadcasterIdRef = useRef<string | undefined>(undefined);
   const [isSharedChat, setIsSharedChat] = useState<boolean>(false);
@@ -1465,169 +1662,27 @@ const ChatWidget = ({ channelOverride, hypeTrainOverride }: ChatWidgetProps = {}
   }, [messageInput, currentStream?.user_login, isModerator]);
 
   // Messages to render
-  const visibleMessages = messages;
-  // Panel wiring (C7 checkpoint B): the live key mirrors the acquisition keys
-  // used by connectChat; replay mode passes the replay snapshot through since
-  // it has no live slice.
+  // Panel wiring: the live key mirrors the acquisition keys used by
+  // connectChat; replay mode passes the replay snapshot through since it has
+  // no live slice. This is the only parent-side touch of message data, and it
+  // changes only on replay ticks / mode flips.
   const panelChannelKey = isTwitch
     ? currentStream?.user_login?.toLowerCase() ?? null
     : providerKey;
   const panelOverride =
     isVodReplay && chatMode === 'replay'
-      ? { messages, renderToken, deletedMessageIds, clearedUserContexts }
+      ? {
+          messages: replayChat.messages,
+          renderToken: replayChat.renderToken,
+          deletedMessageIds: replayChat.deletedMessageIds,
+          clearedUserContexts: replayChat.clearedUserContexts,
+        }
       : null;
-
-
-  // Process new messages for user history tracking.
-  // Iterate the full message array and skip any whose ID is already in
-  // processedMessageIdsRef. CRITICAL: extract the message ID cheaply (regex
-  // on raw IRC tags or the object's `id` field) BEFORE invoking the much
-  // more expensive parseMessage. In a fast chat (50+ msg/s) the old code
-  // would parse all 100 cap-bounded messages on every render even though
-  // 99% were already processed — that stalled the main thread and produced
-  // the "burst then freeze" pattern. Now we only parse new messages.
   useEffect(() => {
-    const seen = processedMessageIdsRef.current;
-    const currentIds = new Set<string>();
+    setKickModDetected(false);
+  }, [panelChannelKey]);
 
-    for (const message of messages) {
-      // Cheap ID extraction first, no full parse.
-      let msgId: string | undefined;
-      if (typeof message === 'string') {
-        const m = message.match(/(?:^@|;)id=([^;\s]+)/);
-        msgId = m ? m[1] : undefined;
-      } else {
-        msgId = message.id;
-      }
 
-      if (msgId) {
-        currentIds.add(msgId);
-        if (seen.has(msgId)) continue; // Already processed — skip the parse + side effects.
-        seen.add(msgId);
-      }
-
-      try {
-        let parsed: ParsedMessage;
-        let userId: string | undefined;
-        let username: string | undefined;
-        let displayName: string | undefined;
-        let userColor: string | undefined;
-
-        if (typeof message === 'string') {
-          const channelIdMatch = message.match(/room-id=([^;]+)/);
-          const channelId = channelIdMatch ? channelIdMatch[1] : undefined;
-          parsed = parseMessage(message, channelId);
-          userId = parsed.tags.get('user-id');
-          username = parsed.username;
-          displayName = parsed.tags.get('display-name') || parsed.username;
-          userColor = parsed.color;
-        } else {
-          // Backend message object
-          parsed = parseMessage(message);
-          userId = message.tags['user-id'] || message.user_id;
-          username = message.username;
-          displayName = message.display_name || message.username;
-          userColor = message.color || parsed.color;
-        }
-
-        // YouTube ships each custom emoji inline with the message that uses it and
-        // offers no set to fetch, so the picker learns them here. Segments come off
-        // the BACKEND message (Rust pre-parses them); `parsed` doesn't carry them.
-        if (provider === 'youtube' && providerKey && typeof message !== 'string') {
-          const segments = message.segments;
-          if (segments?.length) {
-            useProviderEmoteStore.getState().harvest(providerKey, segments);
-          }
-        }
-
-        // Shared-chat detection, incremental: a cross-room message flips the
-        // sticky flag and prefetches the source room's badge metadata ONCE
-        // (subscriber/bits/founder badges render blank without that prefetch).
-        if (provider === 'twitch') {
-          const srcRoom =
-            typeof message === 'string'
-              ? parsed.tags.get('source-room-id')
-              : message.tags['source-room-id'];
-          const ownRoom =
-            typeof message === 'string'
-              ? parsed.tags.get('room-id')
-              : message.tags['room-id'];
-          if (srcRoom && ownRoom && srcRoom !== ownRoom) {
-            setIsSharedChat(true);
-            if (!sharedRoomsSeenRef.current.has(srcRoom)) {
-              sharedRoomsSeenRef.current.add(srcRoom);
-              prefetchChannelBadges(srcRoom).catch((err) =>
-                Logger.warn('[ChatWidget] Failed to prefetch badges for shared channel:', srcRoom, err),
-              );
-            }
-          }
-        }
-
-        if (userId) {
-          // Namespaced for non-Twitch. `message.user_id` is a RAW platform id, so
-          // Kick user 676 and Twitch user 676 are different people who would
-          // otherwise share one history bucket and show each other's messages.
-          const historyKey = provider === 'twitch' ? userId : `${provider}:${userId}`;
-          const history = userMessageHistory.current.get(historyKey) || [];
-          history.push(parsed);
-          if (history.length > 50) history.shift();
-          // Delete-then-set keeps Map insertion order as a recency order, so
-          // the eviction below always drops the longest-silent chatter.
-          userMessageHistory.current.delete(historyKey);
-          userMessageHistory.current.set(historyKey, history);
-          if (userMessageHistory.current.size > USER_HISTORY_MAX_USERS) {
-            const oldest = userMessageHistory.current.keys().next().value;
-            if (oldest !== undefined) userMessageHistory.current.delete(oldest);
-          }
-
-          // Add user to mention autocomplete store. Channel context drives
-          // third-party badge resolution inside the store.
-          if (username && displayName) {
-            const channelId =
-              parsed.tags.get('source-room-id') ||
-              parsed.tags.get('room-id') ||
-              currentStream?.user_id ||
-              '';
-            const channelName =
-              currentStream?.user_login ||
-              currentStream?.user_name ||
-              parsed.tags.get('room') ||
-              '';
-            addUser(
-              {
-                // Namespace non-Twitch chatters so their 7TV cosmetics resolve
-                // under the right platform and never collide with a Twitch id of
-                // the same number. Twitch stays the bare id (byte-identical). This
-                // matches ChatMessage's `cosmeticsKey`.
-                userId: provider === 'twitch' ? userId : `${provider}:${userId}`,
-                username,
-                displayName,
-                color: userColor || '#9147FF',
-              },
-              channelId ? { channelId, channelName } : undefined,
-            );
-          }
-        }
-      } catch (err) {
-        Logger.error('[ChatWidget] Failed to parse message:', err, message);
-      }
-    }
-
-    // Drop processed-IDs for messages that have rolled out of the array.
-    // Without this the set would grow unbounded across the session.
-    for (const id of seen) {
-      if (!currentIds.has(id)) seen.delete(id);
-    }
-    // `renderToken` is load-bearing, NOT redundant with `messages`. The provider
-    // snapshot hands over its message array BY REFERENCE and mutates it in place
-    // (the memo above says so: re-renders ride `renderToken`, not array identity).
-    // With `messages` alone this effect ran exactly once, on whatever was buffered
-    // at channel join, and never again — so every chatter who spoke after that was
-    // never added to the chat-user store and never resolved 7TV cosmetics. That is
-    // why paints and badges were missing on Kick and YouTube, including your own.
-    // Re-running per flush is cheap: `processedMessageIdsRef` skips every message
-    // already handled, so each new message is parsed exactly once.
-  }, [messages, renderToken, addUser]);
 
   // Reliably resolve the CURRENT USER's own 7TV cosmetics when chat connects.
   //
@@ -1781,7 +1836,6 @@ const ChatWidget = ({ channelOverride, hypeTrainOverride }: ChatWidgetProps = {}
       connectedRoomIdRef.current = currentStream.user_id || null;
       // Reset pause state when switching channels - ensures chat starts anchored to bottom
       setChatPaused(false, { force: true });
-      setNewSincePause(0);
       mountTimeRef.current = Date.now(); // Reset grace period on channel switch
       // Pass roomId (user_id) to enable fetching recent messages from IVR API.
       // Skipped for a VOD in replay mode: chat is read-only historical, so we
@@ -2209,9 +2263,9 @@ const ChatWidget = ({ channelOverride, hypeTrainOverride }: ChatWidgetProps = {}
   // slice, not fetched — feed that into the same pinned banner.
   useEffect(() => {
     if (isTwitch) return;
-    const pin = providerSnapshot.pinnedMessage;
+    const pin = providerMeta.pinnedMessage;
     setPinnedMessages(pin ? [pin] : []);
-  }, [isTwitch, providerSnapshot.pinnedMessage]);
+  }, [isTwitch, providerMeta.pinnedMessage]);
 
   // Listen for channel points updates from backend events. Twitch-only: points
   // do not exist on other platforms, and without this the handlers compared a
@@ -2377,7 +2431,7 @@ const ChatWidget = ({ channelOverride, hypeTrainOverride }: ChatWidgetProps = {}
   useEffect(() => {
     const handler = () => {
       const ids = new Set<string>();
-      messages.forEach((m) => {
+      messagesRef.current.forEach((m) => {
         const id = getMessageId(m);
         if (id) ids.add(id);
       });
@@ -2385,7 +2439,7 @@ const ChatWidget = ({ channelOverride, hypeTrainOverride }: ChatWidgetProps = {}
     };
     window.addEventListener('streamnook-clear-local-chat', handler);
     return () => window.removeEventListener('streamnook-clear-local-chat', handler);
-  }, [messages, getMessageId]);
+  }, [getMessageId]);
 
   // Shift-clicking a message's timeout/ban control drops the command into the
   // composer instead of firing it, so the reason can be edited before sending.
@@ -2427,17 +2481,6 @@ const ChatWidget = ({ channelOverride, hypeTrainOverride }: ChatWidgetProps = {}
   // counter. Anchor the baseline exactly on the not-paused -> paused edge (so a
   // brief pause flicker can't corrupt it), zero it while live, and recompute the
   // delta as messages keep arriving while paused.
-  useEffect(() => {
-    if (isPaused && !prevPausedRef.current) {
-      liveCountAtPauseRef.current = liveMessageCount;
-      setNewSincePause(0);
-    } else if (!isPaused) {
-      setNewSincePause(0);
-    } else {
-      setNewSincePause(Math.max(0, liveMessageCount - liveCountAtPauseRef.current));
-    }
-    prevPausedRef.current = isPaused;
-  }, [isPaused, liveMessageCount]);
 
 
   const handleResume = () => {
@@ -2464,7 +2507,7 @@ const ChatWidget = ({ channelOverride, hypeTrainOverride }: ChatWidgetProps = {}
     Logger.debug('[ChatWidget] scrollToMessage called:', { messageId, highlight, align });
 
     // Find the message index
-    const messageIndex = messages.findIndex(msg => getMessageId(msg) === messageId);
+    const messageIndex = messagesRef.current.findIndex(msg => getMessageId(msg) === messageId);
 
     if (messageIndex === -1) {
       Logger.warn('[ChatWidget] Message not found in buffer. ID:', messageId);
@@ -2550,7 +2593,7 @@ const ChatWidget = ({ channelOverride, hypeTrainOverride }: ChatWidgetProps = {}
     }
 
     return true;
-  }, [messages, getMessageId, setChatPaused]);
+  }, [getMessageId, setChatPaused]);
 
   const handleReplyClick = useCallback((parentMsgId: string) => {
     Logger.debug('[ChatWidget] handleReplyClick called for parentMsgId:', parentMsgId);
@@ -2568,7 +2611,6 @@ const ChatWidget = ({ channelOverride, hypeTrainOverride }: ChatWidgetProps = {}
   // opt out so they never clobber the single registered controller.
   const scrollToMessageRef = useRef(scrollToMessage);
   useEffect(() => { scrollToMessageRef.current = scrollToMessage; }, [scrollToMessage]);
-  useEffect(() => { messagesRef.current = messages; }, [messages]);
   useEffect(() => { isModeratorRef.current = isModerator; }, [isModerator]);
   useEffect(() => { broadcasterIdRef.current = currentStream?.user_id; }, [currentStream?.user_id]);
   useEffect(() => { modFocusIdRef.current = modFocusId; }, [modFocusId]);
@@ -2872,8 +2914,9 @@ const ChatWidget = ({ channelOverride, hypeTrainOverride }: ChatWidgetProps = {}
     // name->id lookup, so a user who hasn't spoken recently can't be targeted.
     const findTarget = (name: string) => {
       const wanted = name.replace(/^@/, '').toLowerCase();
-      for (let i = messages.length - 1; i >= 0; i--) {
-        const m = messages[i];
+      const buffered = messagesRef.current;
+      for (let i = buffered.length - 1; i >= 0; i--) {
+        const m = buffered[i];
         if (typeof m === 'string') continue;
         const bm = m as BackendChatMessage;
         if (!bm.user_id) continue;
@@ -3926,7 +3969,13 @@ const ChatWidget = ({ channelOverride, hypeTrainOverride }: ChatWidgetProps = {}
     );
   }
 
-  const showLoadingScreen = !isConnected && messages.length === 0;
+  // isConnected (meta) drives the exit from this screen; the length read is a
+  // one-shot getState peek, which is enough because connect always re-renders.
+  const showLoadingScreen =
+    !isConnected &&
+    (panelChannelKey
+      ? useChatConnectionStore.getState().channels.get(panelChannelKey)?.messages.length ?? 0
+      : 0) === 0;
   if (showLoadingScreen) {
     return (
       <div className="h-full bg-secondary backdrop-blur-md flex items-center justify-center p-4">
@@ -4552,6 +4601,16 @@ const ChatWidget = ({ channelOverride, hypeTrainOverride }: ChatWidgetProps = {}
         {activeView === 'chat' && (
           <ChatMessagesPanel
             channelKey={panelChannelKey}
+            provider={provider}
+            providerKey={providerKey}
+            stream={currentStream}
+            kickAccountName={kickAccountName}
+            onKickModeratorDetected={onKickModeratorDetected}
+            setIsSharedChat={setIsSharedChat}
+            userMessageHistoryRef={userMessageHistory}
+            sharedRoomsRef={sharedRoomsSeenRef}
+            processedIdsRef={processedMessageIdsRef}
+            messagesRef={messagesRef}
             override={panelOverride}
             isPaused={isPaused}
             onPauseIntent={handlePauseIntent}
@@ -4578,7 +4637,7 @@ const ChatWidget = ({ channelOverride, hypeTrainOverride }: ChatWidgetProps = {}
           <div className="absolute bottom-[60px] left-1/2 transform -translate-x-1/2 z-50 pointer-events-auto">
             <button onClick={handleResume} className="flex items-center gap-2 px-4 py-2 glass-button text-white text-sm font-medium rounded-full shadow-lg">
               <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
-              <span>Chat Paused{newSincePause > 0 ? ` (${newSincePause} new)` : ''}</span>
+              <span>Chat Paused<PausedNewCount channelKey={panelOverride ? null : panelChannelKey} isPaused={isPaused} /></span>
               <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
             </button>
           </div>

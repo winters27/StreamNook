@@ -22,7 +22,7 @@ import {
   releaseChannel,
   sendChannelMessage,
   setChannelPaused,
-  useChannelChat,
+  useChannelChatMeta,
   type ClearedUserEntry,
   type RoomState,
   type SendUserInfo,
@@ -34,8 +34,12 @@ import { Logger } from '../utils/logger';
 // keep working: ChatWidget pulls this from various places.
 export type { ModerationContext, ClearedUserEntry, RoomState } from '../stores/chatConnectionStore';
 
+// C7 checkpoint C: the snapshot fields (messages, renderToken, deletion
+// marks, liveMessageCount) left this shape - the self-subscribing
+// ChatMessagesPanel and PausedNewCount own them now, so the widget's parent
+// no longer re-renders per chat flush. This hook returns actions + the
+// low-frequency meta the chrome renders.
 export interface UseTwitchChatReturn {
-  messages: any[];
   connectChat: (channel: string, roomId?: string) => Promise<void>;
   // `userInfo` is optional only so this shares a call signature with the
   // provider send path (which needs no Twitch identity). The Twitch send below
@@ -49,17 +53,8 @@ export interface UseTwitchChatReturn {
   isConnected: boolean;
   error: string | null;
   setPaused: (paused: boolean) => void;
-  deletedMessageIds: Set<string>;
-  clearedUserContexts: Map<string, ClearedUserEntry>;
   roomState: RoomState;
   userBadges: string | null;
-  /** Monotonic count of live messages received on the active channel. Reliable
-   *  baseline for the "N new since paused" badge (unlike `messages.length`,
-   *  which is capped and trimmed). */
-  liveMessageCount: number;
-  /** Re-render signal for the memoized message list. See ChannelChatSnapshot —
-   *  `messages` identity is NOT a reliable change signal. */
-  renderToken: number;
 }
 
 export const useTwitchChat = (): UseTwitchChatReturn => {
@@ -70,7 +65,7 @@ export const useTwitchChat = (): UseTwitchChatReturn => {
   // underlying IRC connection.
   const currentChannelRef = useRef<string | null>(null);
 
-  const snapshot = useChannelChat(currentChannelRef.current);
+  const meta = useChannelChatMeta(currentChannelRef.current);
 
   const connectChat = useCallback(async (channel: string, roomId?: string) => {
     const targetKey = channel.toLowerCase();
@@ -145,17 +140,12 @@ export const useTwitchChat = (): UseTwitchChatReturn => {
   }, []);
 
   return {
-    messages: snapshot.messages,
     connectChat,
     sendMessage,
-    isConnected: snapshot.isConnected,
-    error: snapshot.error,
+    isConnected: meta.isConnected,
+    error: meta.error,
     setPaused,
-    deletedMessageIds: snapshot.deletedMessageIds,
-    clearedUserContexts: snapshot.clearedUserContexts,
-    roomState: snapshot.roomState,
-    userBadges: snapshot.userBadges,
-    liveMessageCount: snapshot.liveMessageCount,
-    renderToken: snapshot.renderToken,
+    roomState: meta.roomState,
+    userBadges: meta.userBadges,
   };
 };
