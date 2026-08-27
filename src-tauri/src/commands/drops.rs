@@ -31,20 +31,13 @@ pub async fn update_drops_settings(
         app_settings.drops = settings.clone();
     }
 
-    // Save to disk
+    // Save to disk through the shared (debounced) settings writer; the state
+    // update above is what the flusher snapshots.
     let settings_to_save = {
         let app_settings = state.settings.lock().map_err(|e| e.to_string())?;
         app_settings.clone()
     };
-
-    // Use the save_settings logic to persist to file
-    let app_dir = crate::services::cache_service::get_app_data_dir()
-        .map_err(|e| format!("Failed to get app data directory: {}", e))?;
-    let settings_path = app_dir.join("settings.json");
-    let json = serde_json::to_string_pretty(&settings_to_save)
-        .map_err(|e| format!("Failed to serialize settings: {}", e))?;
-    std::fs::write(&settings_path, json)
-        .map_err(|e| format!("Failed to write settings file: {}", e))?;
+    crate::commands::settings::write_settings_to_disk(&settings_to_save)?;
 
     // Keep the realtime points socket in line with the automation master toggle so
     // the plugin's background earns start (or stop) producing channel-points

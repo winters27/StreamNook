@@ -364,7 +364,256 @@ struct ThirdPartyCache {
     chatsen: Option<Vec<ChatsenBadge>>,
     chatty: Option<Vec<ChattyBadge>>,
     dankchat: Option<Vec<DankChatBadge>>,
+    /// Inverted index over every provider feed: user_id -> the badges that
+    /// user holds. Rebuilt once per feed refresh so per-chatter lookups are a
+    /// single HashMap get instead of a scan over every holder list. One
+    /// Arc<UserBadge> exists per distinct badge, shared across its holders.
+    by_user: HashMap<String, Vec<Arc<UserBadge>>>,
     last_updated: SystemTime,
+}
+
+impl ThirdPartyCache {
+    /// Build the user_id -> badges index from the current provider feeds.
+    /// Providers run in the same order the old per-chatter scan checked them
+    /// (FFZ, BTTV, Chatterino, Homies, Chatsen, Chatty, DankChat), and within
+    /// a provider in feed order, so each user's Vec preserves the exact badge
+    /// order the scan produced. A holder is skipped when they already carry a
+    /// badge with the same title (case-insensitive), which reproduces the
+    /// scan's keep-first title dedupe (FFZ badges re-hosted by Chatty,
+    /// duplicate per-user feed entries sharing one title).
+    fn build_by_user_index(&self) -> HashMap<String, Vec<Arc<UserBadge>>> {
+        let mut by_user: HashMap<String, Vec<Arc<UserBadge>>> = HashMap::new();
+
+        fn push(
+            by_user: &mut HashMap<String, Vec<Arc<UserBadge>>>,
+            user_id: String,
+            badge: &Arc<UserBadge>,
+            title_lower: &str,
+        ) {
+            let entry = by_user.entry(user_id).or_default();
+            if entry
+                .iter()
+                .any(|b| b.badge_info.title.to_lowercase() == title_lower)
+            {
+                return;
+            }
+            entry.push(Arc::clone(badge));
+        }
+
+        // FFZ. `users` is keyed by badge_id (as a string) -> [numeric user_id],
+        // so the holder key is each numeric id rendered back to a String.
+        if let Some(ffz) = &self.ffz {
+            for badge in &ffz.badges {
+                let image_url = badge
+                    .urls
+                    .get("4")
+                    .or_else(|| badge.urls.get("2"))
+                    .or_else(|| badge.urls.get("1"))
+                    .cloned()
+                    .unwrap_or_default();
+                let arc = Arc::new(UserBadge {
+                    badge_info: BadgeInfo {
+                        id: format!("ffz-{}", badge.id),
+                        set_id: "ffz".to_string(),
+                        version: badge.id.to_string(),
+                        title: badge
+                            .title
+                            .clone()
+                            .or_else(|| badge.name.clone())
+                            .unwrap_or_else(|| format!("FFZ Badge {}", badge.id)),
+                        description: String::new(),
+                        image_1x: badge.urls.get("1").cloned().unwrap_or_default(),
+                        image_2x: badge.urls.get("2").cloned().unwrap_or_default(),
+                        image_4x: image_url,
+                        click_action: None,
+                        click_url: Some("https://www.frankerfacez.com/badges".to_string()),
+                    },
+                    provider: BadgeProvider::FFZ,
+                });
+                let title_lower = arc.badge_info.title.to_lowercase();
+                if let Some(holders) = ffz.users.get(&badge.id.to_string()) {
+                    for uid in holders {
+                        push(&mut by_user, uid.to_string(), &arc, &title_lower);
+                    }
+                }
+            }
+        }
+
+        // BetterTTV. One feed entry per holder; `provider_id` is the Twitch
+        // user id and the SVG is the only image (no size variants).
+        if let Some(bttv) = &self.bttv {
+            for badge in bttv {
+                let arc = Arc::new(UserBadge {
+                    badge_info: BadgeInfo {
+                        id: format!("bttv-{}", badge.badge.description),
+                        set_id: "bttv".to_string(),
+                        version: "1".to_string(),
+                        title: badge.badge.description.clone(),
+                        description: String::new(),
+                        image_1x: badge.badge.svg.clone(),
+                        image_2x: badge.badge.svg.clone(),
+                        image_4x: badge.badge.svg.clone(),
+                        click_action: None,
+                        click_url: Some("https://betterttv.com".to_string()),
+                    },
+                    provider: BadgeProvider::BTTV,
+                });
+                let title_lower = arc.badge_info.title.to_lowercase();
+                push(&mut by_user, badge.provider_id.clone(), &arc, &title_lower);
+            }
+        }
+
+        // Chatterino badges
+        if let Some(chatterino) = &self.chatterino {
+            for badge in &chatterino.badges {
+                let arc = Arc::new(UserBadge {
+                    badge_info: BadgeInfo {
+                        id: format!("chatterino-{}", badge.tooltip),
+                        set_id: "chatterino".to_string(),
+                        version: "1".to_string(),
+                        title: badge.tooltip.clone(),
+                        description: String::new(),
+                        image_1x: badge.image1.clone(),
+                        image_2x: badge.image2.clone().unwrap_or_else(|| badge.image1.clone()),
+                        image_4x: badge
+                            .image3
+                            .clone()
+                            .or_else(|| badge.image2.clone())
+                            .unwrap_or_else(|| badge.image1.clone()),
+                        click_action: None,
+                        click_url: Some("https://chatterino.com/".to_string()),
+                    },
+                    provider: BadgeProvider::Chatterino,
+                });
+                let title_lower = arc.badge_info.title.to_lowercase();
+                for uid in &badge.users {
+                    push(&mut by_user, uid.clone(), &arc, &title_lower);
+                }
+            }
+        }
+
+        // Homies badges
+        if let Some(homies) = &self.homies {
+            for badge in &homies.badges {
+                let arc = Arc::new(UserBadge {
+                    badge_info: BadgeInfo {
+                        id: format!("homies-{}", badge.tooltip),
+                        set_id: "homies".to_string(),
+                        version: "1".to_string(),
+                        title: badge.tooltip.clone(),
+                        description: String::new(),
+                        image_1x: badge.image1.clone(),
+                        image_2x: badge.image2.clone().unwrap_or_else(|| badge.image1.clone()),
+                        image_4x: badge
+                            .image3
+                            .clone()
+                            .or_else(|| badge.image2.clone())
+                            .unwrap_or_else(|| badge.image1.clone()),
+                        click_action: None,
+                        click_url: Some("https://chatterinohomies.com/".to_string()),
+                    },
+                    provider: BadgeProvider::Homies,
+                });
+                let title_lower = arc.badge_info.title.to_lowercase();
+                for uid in &badge.users {
+                    push(&mut by_user, uid.clone(), &arc, &title_lower);
+                }
+            }
+        }
+
+        // Chatsen badges
+        if let Some(chatsen) = &self.chatsen {
+            for badge in chatsen {
+                let image = badge.mipmap.last().cloned().unwrap_or_default();
+                let arc = Arc::new(UserBadge {
+                    badge_info: BadgeInfo {
+                        id: format!("chatsen-{}", badge.id),
+                        set_id: "chatsen".to_string(),
+                        version: "1".to_string(),
+                        title: badge.name.clone(),
+                        description: String::new(),
+                        image_1x: badge.mipmap.first().cloned().unwrap_or_default(),
+                        image_2x: image.clone(),
+                        image_4x: image,
+                        click_action: None,
+                        click_url: Some("https://chatsen.app".to_string()),
+                    },
+                    provider: BadgeProvider::Chatsen,
+                });
+                let title_lower = arc.badge_info.title.to_lowercase();
+                for uid in &badge.users {
+                    push(&mut by_user, uid.clone(), &arc, &title_lower);
+                }
+            }
+        }
+
+        // Chatty (tduva) badges
+        if let Some(chatty) = &self.chatty {
+            for badge in chatty {
+                let image_4x = badge
+                    .image_url_4
+                    .clone()
+                    .or_else(|| badge.image_url_2.clone())
+                    .unwrap_or_else(|| badge.image_url.clone());
+                let arc = Arc::new(UserBadge {
+                    badge_info: BadgeInfo {
+                        id: format!(
+                            "chatty-{}-{}",
+                            badge.id,
+                            badge.version.clone().unwrap_or_default()
+                        ),
+                        set_id: "chatty".to_string(),
+                        version: badge.version.clone().unwrap_or_else(|| "1".to_string()),
+                        title: badge.meta_title.clone().unwrap_or_else(|| badge.id.clone()),
+                        description: String::new(),
+                        image_1x: badge.image_url.clone(),
+                        image_2x: badge
+                            .image_url_2
+                            .clone()
+                            .unwrap_or_else(|| badge.image_url.clone()),
+                        image_4x,
+                        click_action: None,
+                        click_url: badge
+                            .meta_url
+                            .clone()
+                            .or_else(|| Some("https://chatty.github.io".to_string())),
+                    },
+                    provider: BadgeProvider::Chatty,
+                });
+                let title_lower = arc.badge_info.title.to_lowercase();
+                for uid in &badge.userids {
+                    push(&mut by_user, uid.clone(), &arc, &title_lower);
+                }
+            }
+        }
+
+        // DankChat (flex3r) badges
+        if let Some(dankchat) = &self.dankchat {
+            for badge in dankchat {
+                let arc = Arc::new(UserBadge {
+                    badge_info: BadgeInfo {
+                        id: format!("dankchat-{}", badge.badge_type),
+                        set_id: "dankchat".to_string(),
+                        version: "1".to_string(),
+                        title: badge.badge_type.clone(),
+                        description: String::new(),
+                        image_1x: badge.url.clone(),
+                        image_2x: badge.url.clone(),
+                        image_4x: badge.url.clone(),
+                        click_action: None,
+                        click_url: Some("https://github.com/flex3r/DankChat".to_string()),
+                    },
+                    provider: BadgeProvider::DankChat,
+                });
+                let title_lower = arc.badge_info.title.to_lowercase();
+                for uid in &badge.users {
+                    push(&mut by_user, uid.clone(), &arc, &title_lower);
+                }
+            }
+        }
+
+        by_user
+    }
 }
 
 struct BadgeCache {
@@ -388,6 +637,7 @@ impl BadgeCache {
                 chatsen: None,
                 chatty: None,
                 dankchat: None,
+                by_user: HashMap::new(),
                 last_updated: UNIX_EPOCH,
             },
             // Cache last badge string for up to 1000 users
@@ -444,7 +694,7 @@ impl BadgeService {
             .map_err(|e| format!("Failed to parse badges: {}", e))?;
 
         let mut cache = self.cache.write().await;
-        cache.global_badges = Some(badges.clone());
+        cache.global_badges = Some(badges);
 
         Ok(())
     }
@@ -452,6 +702,11 @@ impl BadgeService {
     pub async fn get_global_badges(&self) -> Option<HelixBadgesResponse> {
         let cache = self.cache.read().await;
         cache.global_badges.clone()
+    }
+
+    /// Cheap existence probe: no clone of the full Helix response.
+    async fn has_global_badges(&self) -> bool {
+        self.cache.read().await.global_badges.is_some()
     }
 
     // ========================================================================
@@ -485,7 +740,7 @@ impl BadgeService {
         let mut cache = self.cache.write().await;
         cache
             .channel_badges
-            .put(channel_id.to_string(), badges.clone());
+            .put(channel_id.to_string(), badges);
 
         Ok(())
     }
@@ -493,6 +748,11 @@ impl BadgeService {
     pub async fn get_channel_badges(&self, channel_id: &str) -> Option<HelixBadgesResponse> {
         let mut cache = self.cache.write().await;
         cache.channel_badges.get(channel_id).cloned()
+    }
+
+    /// Cheap existence probe: read lock + peek, no write lock, no entry clone.
+    async fn has_channel_badges(&self, channel_id: &str) -> bool {
+        self.cache.read().await.channel_badges.peek(channel_id).is_some()
     }
 
     // ========================================================================
@@ -636,6 +896,10 @@ impl BadgeService {
         cache.third_party.chatsen = chatsen_badges;
         cache.third_party.chatty = chatty_badges;
         cache.third_party.dankchat = dankchat_badges;
+        // Rebuild the inverted per-user index once per refresh (~10 min) so
+        // per-chatter lookups never scan the full holder lists.
+        let by_user = cache.third_party.build_by_user_index();
+        cache.third_party.by_user = by_user;
         cache.third_party.last_updated = SystemTime::now();
 
         Ok(())
@@ -690,10 +954,13 @@ impl BadgeService {
             .put(user_id.to_string(), badge_string.to_string());
     }
 
-    /// Get a user's cached badge string
+    /// Get a user's cached badge string. Read lock + peek: recency is already
+    /// refreshed by `store_user_badge_string` on every IRC message, so losing
+    /// read-side LRU promotion on a 1000-entry cache is a fine trade for not
+    /// serializing every chatter lookup through the write lock.
     pub async fn get_user_badge_string(&self, user_id: &str) -> Option<String> {
-        let mut cache = self.cache.write().await;
-        cache.user_badge_strings.get(user_id).cloned()
+        let cache = self.cache.read().await;
+        cache.user_badge_strings.peek(user_id).cloned()
     }
 
     // ========================================================================
@@ -951,11 +1218,11 @@ impl BadgeService {
         token: &str,
     ) -> Result<UserBadgesResponse, String> {
         // Ensure badge metadata is fetched
-        if self.get_global_badges().await.is_none() {
+        if !self.has_global_badges().await {
             self.fetch_global_badges(token).await?;
         }
 
-        if self.get_channel_badges(channel_id).await.is_none() {
+        if !self.has_channel_badges(channel_id).await {
             self.fetch_channel_badges(channel_id, token).await?;
         }
 
@@ -1008,11 +1275,11 @@ impl BadgeService {
         token: &str,
     ) -> Result<UserBadgesResponse, String> {
         // Ensure badge metadata is fetched
-        if self.get_global_badges().await.is_none() {
+        if !self.has_global_badges().await {
             self.fetch_global_badges(token).await?;
         }
 
-        if self.get_channel_badges(channel_id).await.is_none() {
+        if !self.has_channel_badges(channel_id).await {
             self.fetch_channel_badges(channel_id, token).await?;
         }
 
@@ -1191,224 +1458,17 @@ impl BadgeService {
     }
 
     async fn get_third_party_badges_for_user(&self, user_id: &str) -> Vec<UserBadge> {
+        // Single lookup in the inverted index built at feed-refresh time (see
+        // ThirdPartyCache::build_by_user_index). Provider order and the
+        // duplicate-title collapse are baked into the index, so this is just a
+        // clone-out of the user's shared Arc entries.
         let cache = self.cache.read().await;
-        let mut badges = Vec::new();
-
-        // FFZ badges. `users` is keyed by badge_id (as a string) -> [numeric
-        // user_id] (same shape get_all_third_party_badges reads), so resolve
-        // per-user by scanning each badge's holder list.
-        if let Some(ffz) = &cache.third_party.ffz {
-            if let Ok(uid) = user_id.parse::<u32>() {
-                for badge in &ffz.badges {
-                    let holds = ffz
-                        .users
-                        .get(&badge.id.to_string())
-                        .map(|h| h.contains(&uid))
-                        .unwrap_or(false);
-                    if !holds {
-                        continue;
-                    }
-                    let image_url = badge
-                        .urls
-                        .get("4")
-                        .or_else(|| badge.urls.get("2"))
-                        .or_else(|| badge.urls.get("1"))
-                        .cloned()
-                        .unwrap_or_default();
-
-                    badges.push(UserBadge {
-                        badge_info: BadgeInfo {
-                            id: format!("ffz-{}", badge.id),
-                            set_id: "ffz".to_string(),
-                            version: badge.id.to_string(),
-                            title: badge
-                                .title
-                                .clone()
-                                .or_else(|| badge.name.clone())
-                                .unwrap_or_else(|| format!("FFZ Badge {}", badge.id)),
-                            description: String::new(),
-                            image_1x: badge.urls.get("1").cloned().unwrap_or_default(),
-                            image_2x: badge.urls.get("2").cloned().unwrap_or_default(),
-                            image_4x: image_url,
-                            click_action: None,
-                            click_url: Some("https://www.frankerfacez.com/badges".to_string()),
-                        },
-                        provider: BadgeProvider::FFZ,
-                    });
-                }
-            }
-        }
-
-        // BetterTTV badges. One feed entry per holder; `provider_id` is the
-        // Twitch user id and the SVG is the only image (no size variants).
-        if let Some(bttv) = &cache.third_party.bttv {
-            for badge in bttv {
-                if badge.provider_id == user_id {
-                    badges.push(UserBadge {
-                        badge_info: BadgeInfo {
-                            id: format!("bttv-{}", badge.badge.description),
-                            set_id: "bttv".to_string(),
-                            version: "1".to_string(),
-                            title: badge.badge.description.clone(),
-                            description: String::new(),
-                            image_1x: badge.badge.svg.clone(),
-                            image_2x: badge.badge.svg.clone(),
-                            image_4x: badge.badge.svg.clone(),
-                            click_action: None,
-                            click_url: Some("https://betterttv.com".to_string()),
-                        },
-                        provider: BadgeProvider::BTTV,
-                    });
-                }
-            }
-        }
-
-        // Chatterino badges
-        if let Some(chatterino) = &cache.third_party.chatterino {
-            for badge in &chatterino.badges {
-                if badge.users.iter().any(|u| u == user_id) {
-                    badges.push(UserBadge {
-                        badge_info: BadgeInfo {
-                            id: format!("chatterino-{}", badge.tooltip),
-                            set_id: "chatterino".to_string(),
-                            version: "1".to_string(),
-                            title: badge.tooltip.clone(),
-                            description: String::new(),
-                            image_1x: badge.image1.clone(),
-                            image_2x: badge.image2.clone().unwrap_or_else(|| badge.image1.clone()),
-                            image_4x: badge
-                                .image3
-                                .clone()
-                                .or_else(|| badge.image2.clone())
-                                .unwrap_or_else(|| badge.image1.clone()),
-                            click_action: None,
-                            click_url: Some("https://chatterino.com/".to_string()),
-                        },
-                        provider: BadgeProvider::Chatterino,
-                    });
-                }
-            }
-        }
-
-        // Homies badges
-        if let Some(homies) = &cache.third_party.homies {
-            for badge in &homies.badges {
-                if badge.users.iter().any(|u| u == user_id) {
-                    badges.push(UserBadge {
-                        badge_info: BadgeInfo {
-                            id: format!("homies-{}", badge.tooltip),
-                            set_id: "homies".to_string(),
-                            version: "1".to_string(),
-                            title: badge.tooltip.clone(),
-                            description: String::new(),
-                            image_1x: badge.image1.clone(),
-                            image_2x: badge.image2.clone().unwrap_or_else(|| badge.image1.clone()),
-                            image_4x: badge
-                                .image3
-                                .clone()
-                                .or_else(|| badge.image2.clone())
-                                .unwrap_or_else(|| badge.image1.clone()),
-                            click_action: None,
-                            click_url: Some("https://chatterinohomies.com/".to_string()),
-                        },
-                        provider: BadgeProvider::Homies,
-                    });
-                }
-            }
-        }
-
-        // Chatsen badges
-        if let Some(chatsen) = &cache.third_party.chatsen {
-            for badge in chatsen {
-                if badge.users.iter().any(|u| u == user_id) {
-                    let image = badge.mipmap.last().cloned().unwrap_or_default();
-                    badges.push(UserBadge {
-                        badge_info: BadgeInfo {
-                            id: format!("chatsen-{}", badge.id),
-                            set_id: "chatsen".to_string(),
-                            version: "1".to_string(),
-                            title: badge.name.clone(),
-                            description: String::new(),
-                            image_1x: badge.mipmap.first().cloned().unwrap_or_default(),
-                            image_2x: image.clone(),
-                            image_4x: image,
-                            click_action: None,
-                            click_url: Some("https://chatsen.app".to_string()),
-                        },
-                        provider: BadgeProvider::Chatsen,
-                    });
-                }
-            }
-        }
-
-        // Chatty (tduva) badges
-        if let Some(chatty) = &cache.third_party.chatty {
-            for badge in chatty {
-                if badge.userids.iter().any(|u| u == user_id) {
-                    let image_4x = badge
-                        .image_url_4
-                        .clone()
-                        .or_else(|| badge.image_url_2.clone())
-                        .unwrap_or_else(|| badge.image_url.clone());
-                    badges.push(UserBadge {
-                        badge_info: BadgeInfo {
-                            id: format!(
-                                "chatty-{}-{}",
-                                badge.id,
-                                badge.version.clone().unwrap_or_default()
-                            ),
-                            set_id: "chatty".to_string(),
-                            version: badge.version.clone().unwrap_or_else(|| "1".to_string()),
-                            title: badge.meta_title.clone().unwrap_or_else(|| badge.id.clone()),
-                            description: String::new(),
-                            image_1x: badge.image_url.clone(),
-                            image_2x: badge
-                                .image_url_2
-                                .clone()
-                                .unwrap_or_else(|| badge.image_url.clone()),
-                            image_4x,
-                            click_action: None,
-                            click_url: badge
-                                .meta_url
-                                .clone()
-                                .or_else(|| Some("https://chatty.github.io".to_string())),
-                        },
-                        provider: BadgeProvider::Chatty,
-                    });
-                }
-            }
-        }
-
-        // DankChat (flex3r) badges
-        if let Some(dankchat) = &cache.third_party.dankchat {
-            for badge in dankchat {
-                if badge.users.iter().any(|u| u == user_id) {
-                    badges.push(UserBadge {
-                        badge_info: BadgeInfo {
-                            id: format!("dankchat-{}", badge.badge_type),
-                            set_id: "dankchat".to_string(),
-                            version: "1".to_string(),
-                            title: badge.badge_type.clone(),
-                            description: String::new(),
-                            image_1x: badge.url.clone(),
-                            image_2x: badge.url.clone(),
-                            image_4x: badge.url.clone(),
-                            click_action: None,
-                            click_url: Some("https://github.com/flex3r/DankChat".to_string()),
-                        },
-                        provider: BadgeProvider::DankChat,
-                    });
-                }
-            }
-        }
-
-        // Collapse duplicate titles so a profile shows each distinct badge once.
-        // Covers FFZ badges re-hosted by Chatty (same title via two providers) and a
-        // user matching multiple per-user entries that share one title.
-        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-        badges.retain(|b| seen.insert(b.badge_info.title.to_lowercase()));
-
-        badges
+        cache
+            .third_party
+            .by_user
+            .get(user_id)
+            .map(|arcs| arcs.iter().map(|arc| (**arc).clone()).collect())
+            .unwrap_or_default()
     }
 
     /// Build the full distinct badge set for every third-party provider, for the
@@ -1669,6 +1729,7 @@ impl BadgeService {
         cache.third_party.chatsen = None;
         cache.third_party.chatty = None;
         cache.third_party.dankchat = None;
+        cache.third_party.by_user.clear();
         cache.third_party.last_updated = UNIX_EPOCH;
         cache.user_badge_strings.clear();
     }
@@ -1676,5 +1737,50 @@ impl BadgeService {
     pub async fn clear_channel_cache(&self, channel_id: &str) {
         let mut cache = self.cache.write().await;
         cache.channel_badges.pop(channel_id);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn by_user_index_resolves_ffz_holder() {
+        let mut users = HashMap::new();
+        // ffz.users is keyed by badge_id (string) -> numeric holder ids
+        users.insert("3".to_string(), vec![11111u32]);
+
+        let mut urls = HashMap::new();
+        urls.insert("1".to_string(), "https://example.test/badge/1".to_string());
+
+        let third_party = ThirdPartyCache {
+            ffz: Some(FFZBadgesResponse {
+                badges: vec![FFZBadge {
+                    id: 3,
+                    title: Some("Developer".to_string()),
+                    name: None,
+                    urls,
+                }],
+                users,
+            }),
+            bttv: None,
+            chatterino: None,
+            homies: None,
+            chatsen: None,
+            chatty: None,
+            dankchat: None,
+            by_user: HashMap::new(),
+            last_updated: UNIX_EPOCH,
+        };
+
+        let index = third_party.build_by_user_index();
+
+        let held = index.get("11111").expect("holder should resolve");
+        assert_eq!(held.len(), 1);
+        assert_eq!(held[0].badge_info.id, "ffz-3");
+        assert_eq!(held[0].badge_info.title, "Developer");
+        assert_eq!(held[0].provider, BadgeProvider::FFZ);
+
+        assert!(index.get("99999").is_none());
     }
 }

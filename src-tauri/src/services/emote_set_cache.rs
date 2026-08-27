@@ -13,13 +13,41 @@
 
 use anyhow::{Context, Result};
 use log::{debug, warn};
+use once_cell::sync::Lazy;
 use serde::Deserialize;
+use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
+use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::services::cache_service::get_cache_dir;
 use crate::services::emote_service::EmoteSet;
+
+// Process-lifetime map of sanitized channel id -> 7TV emote count of the stored
+// set, so save()'s don't-shrink check does not need to re-read and re-parse the
+// whole file (thousands of emotes) on every save. Seeded as sets pass through
+// load()/write_set(); a miss falls back to one load().
+static SEVEN_TV_COUNTS: Lazy<Mutex<HashMap<String, usize>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
+
+fn record_count(channel_id: &str, count: usize) {
+    let key = sanitize_id(channel_id);
+    if key.is_empty() {
+        return;
+    }
+    if let Ok(mut map) = SEVEN_TV_COUNTS.lock() {
+        map.insert(key, count);
+    }
+}
+
+fn known_count(channel_id: &str) -> Option<usize> {
+    let key = sanitize_id(channel_id);
+    if key.is_empty() {
+        return None;
+    }
+    SEVEN_TV_COUNTS.lock().ok().and_then(|m| m.get(&key).copied())
+}
 
 /// Wrapper persisted to disk: the set plus when it was written (for future
 /// staleness policies). `set` round-trips through EmoteSet's own serde, so the
@@ -39,13 +67,19 @@ fn store_dir() -> Result<PathBuf> {
     Ok(dir)
 }
 
-/// Path for a channel's dictionary file. channel_id is a Twitch numeric user id,
-/// but sanitize defensively so a malformed id can never escape the directory.
-fn path_for(channel_id: &str) -> Result<PathBuf> {
-    let safe: String = channel_id
+/// channel_id is a Twitch numeric user id, but sanitize defensively so a
+/// malformed id can never escape the directory. Also keys SEVEN_TV_COUNTS, so
+/// two raw ids mapping to the same file share one count.
+fn sanitize_id(channel_id: &str) -> String {
+    channel_id
         .chars()
         .filter(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '-')
-        .collect();
+        .collect()
+}
+
+/// Path for a channel's dictionary file.
+fn path_for(channel_id: &str) -> Result<PathBuf> {
+    let safe = sanitize_id(channel_id);
     if safe.is_empty() {
         anyhow::bail!("empty/invalid channel id");
     }
@@ -70,7 +104,10 @@ pub fn load(channel_id: &str) -> Option<EmoteSet> {
         Err(_) => return None, // no file yet — normal cold path
     };
     match serde_json::from_slice::<StoredEmoteSet>(&bytes) {
-        Ok(stored) => Some(stored.set),
+        Ok(stored) => {
+            record_count(channel_id, stored.set.seven_tv.len());
+            Some(stored.set)
+        }
         Err(e) => {
             warn!(
                 "[EmoteSetCache] failed to parse {} (treating as absent): {}",
@@ -90,12 +127,18 @@ pub fn load(channel_id: &str) -> Option<EmoteSet> {
 /// go through. Use this when the set's completeness is uncertain (e.g. the AFK
 /// prefetch). For a fetch known to be authoritative, use [`save_force`].
 pub fn save(channel_id: &str, set: &EmoteSet) {
-    if let Some(existing) = load(channel_id) {
-        if set.seven_tv.len() < existing.seven_tv.len() {
+    // Consult the process-lifetime count map; only a miss pays the full file
+    // read + parse (which records the count for next time).
+    let existing_count = match known_count(channel_id) {
+        Some(c) => Some(c),
+        None => load(channel_id).map(|existing| existing.seven_tv.len()),
+    };
+    if let Some(existing) = existing_count {
+        if set.seven_tv.len() < existing {
             debug!(
                 "[EmoteSetCache] keeping stored set for {} (7TV {} >= incoming {}), not shrinking",
                 channel_id,
-                existing.seven_tv.len(),
+                existing,
                 set.seven_tv.len()
             );
             return;
@@ -127,6 +170,7 @@ fn write_set(channel_id: &str, set: &EmoteSet) {
             if let Err(e) = fs::write(&path, &bytes) {
                 warn!("[EmoteSetCache] failed to write {}: {}", path.display(), e);
             } else {
+                record_count(channel_id, set.seven_tv.len());
                 debug!(
                     "[EmoteSetCache] saved {} ({} 7TV emotes, {} bytes)",
                     channel_id,

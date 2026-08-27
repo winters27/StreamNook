@@ -451,6 +451,10 @@ fn main() {
 
     let settings_arc = Arc::new(Mutex::new(settings));
 
+    // The debounced settings flusher snapshots from this shared state at flush
+    // time (same Arc the managed AppState holds below).
+    commands::settings::register_settings_source(settings_arc.clone());
+
     // Initialize live notification service
     let live_notification_service = Arc::new(LiveNotificationService::new());
 
@@ -1270,6 +1274,7 @@ fn main() {
             migrate_whispers_from_localstorage,
             // Log commands
             log_message,
+            log_messages_batch,
             track_activity,
             get_recent_logs,
             get_logs_by_level,
@@ -1466,6 +1471,12 @@ fn main() {
         .expect("error while building tauri application")
         .run(|app_handle, event| {
             if let tauri::RunEvent::Exit = event {
+                // Flush every debounced store before the process dies; each is
+                // a no-op when nothing is dirty.
+                let _ = commands::settings::flush_settings_now();
+                let _ = services::universal_cache_service::flush_manifest_now();
+                let _ = services::mod_log_storage_service::ModLogStorageService::flush_now();
+                let _ = services::whisper_storage_service::WhisperStorageService::flush_now();
                 // Ask running plugin processes to shut down before the app
                 // process dies, waiting briefly so well-behaved plugins exit
                 // gracefully (stragglers are killed with the supervisor).

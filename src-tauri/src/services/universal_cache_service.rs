@@ -264,6 +264,44 @@ pub fn save_manifest(manifest: &UniversalCacheManifest) -> Result<()> {
     Ok(())
 }
 
+/// O(1) upsert of a single entry into the in-memory manifest. Acquires
+/// MANIFEST_LOCK because batch read-modify-write peers hold it across their
+/// load -> mutate -> save sequence, and save_manifest fully REPLACES the memory
+/// mirror; an unlocked upsert landing between a batch's load and save would be
+/// silently erased.
+pub fn upsert_cached_entry(entry: UniversalCacheEntry) -> Result<()> {
+    let _lock = MANIFEST_LOCK.lock().unwrap();
+    {
+        let mut guard = MANIFEST_MEMORY
+            .write()
+            .map_err(|_| anyhow::anyhow!("manifest memory lock poisoned"))?;
+        guard.entries.insert(entry.id.clone(), entry);
+    }
+    MANIFEST_DIRTY.store(true, Ordering::Release);
+    ensure_flush_task();
+    Ok(())
+}
+
+/// Synchronous flush of the in-memory manifest to disk, if dirty. For shutdown
+/// paths that skip or precede the debounced flush task.
+pub fn flush_manifest_now() -> Result<()> {
+    if !MANIFEST_DIRTY.swap(false, Ordering::AcqRel) {
+        return Ok(());
+    }
+    let snapshot = match MANIFEST_MEMORY.read() {
+        Ok(g) => g.clone(),
+        Err(_) => {
+            MANIFEST_DIRTY.store(true, Ordering::Release);
+            return Err(anyhow::anyhow!("manifest memory lock poisoned"));
+        }
+    };
+    if let Err(e) = save_manifest_to_disk(&snapshot) {
+        MANIFEST_DIRTY.store(true, Ordering::Release);
+        return Err(e);
+    }
+    Ok(())
+}
+
 /// Fetch universal cache data from hosted repository
 pub async fn fetch_universal_cache_data(
     cache_type: &CacheType,
@@ -470,45 +508,36 @@ pub async fn get_cached_item(
     Ok(None)
 }
 
-/// Save an item to local cache (with lock to prevent concurrent writes).
+/// Save an item to local cache.
 ///
-/// The body runs on the blocking pool: `load_manifest()` + `save_manifest()`
-/// each clone the ENTIRE manifest (thousands of accumulated entries), so a sync
-/// run on a runtime worker is heavy CPU that stalls every async task — observed
-/// as a multi-second `rt_stall` when mid-session caching fires on a large
-/// manifest. (The O(N^2) per-file clone cost remains; this just keeps it off
-/// the async runtime. A true fix batches the manifest update — see the batch
-/// variant below, which `cache_file` callers should prefer for bulk work.)
+/// Kept on the blocking pool: the upsert itself is O(1), but MANIFEST_LOCK can
+/// be held for tens of ms by blocking-pool batch read-modify-writes, and
+/// blocking on that from a runtime worker would stall async tasks.
 pub async fn save_cached_item(entry: UniversalCacheEntry) -> Result<()> {
-    tokio::task::spawn_blocking(move || -> Result<()> {
-        let _lock = MANIFEST_LOCK.lock().unwrap();
-        let mut manifest = load_manifest()?;
-        manifest.entries.insert(entry.id.clone(), entry);
-        save_manifest(&manifest)?;
-        Ok(())
-    })
-    .await
-    .context("save_cached_item task panicked")?
+    tokio::task::spawn_blocking(move || upsert_cached_entry(entry))
+        .await
+        .context("save_cached_item task panicked")?
 }
 
-/// Insert many file entries with a SINGLE manifest clone-pair under one lock,
-/// instead of `save_cached_item`'s two full-manifest clones PER entry. A bulk
-/// caller (the AFK emote prefetch) downloading 10k+ files would otherwise make
-/// manifest cloning O(N^2); batching the inserts keeps it linear. Inserts are
+/// Insert many file entries under ONE MANIFEST_LOCK acquisition. Inserts are
 /// idempotent upserts, so re-running with already-present ids is harmless.
 pub async fn save_cached_items_batch(entries: Vec<UniversalCacheEntry>) -> Result<()> {
     if entries.is_empty() {
         return Ok(());
     }
-    // Blocking pool: the manifest clone-pair is heavy CPU on a big cache; never
-    // on the async runtime (see save_cached_item).
+    // Blocking pool for the same lock-hold reason as save_cached_item.
     tokio::task::spawn_blocking(move || -> Result<()> {
         let _lock = MANIFEST_LOCK.lock().unwrap();
-        let mut manifest = load_manifest()?;
-        for entry in entries {
-            manifest.entries.insert(entry.id.clone(), entry);
+        {
+            let mut guard = MANIFEST_MEMORY
+                .write()
+                .map_err(|_| anyhow::anyhow!("manifest memory lock poisoned"))?;
+            for entry in entries {
+                guard.entries.insert(entry.id.clone(), entry);
+            }
         }
-        save_manifest(&manifest)?;
+        MANIFEST_DIRTY.store(true, Ordering::Release);
+        ensure_flush_task();
         Ok(())
     })
     .await
