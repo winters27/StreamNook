@@ -23,22 +23,26 @@ import {
 import { useState, useEffect, useRef } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { motion, AnimatePresence } from 'framer-motion';
-import InterfaceSettings from './settings/InterfaceSettings';
-import PlayerSettings from './settings/PlayerSettings';
-import ChatSettings from './settings/ChatSettings';
-import ModerationSettings from './settings/ModerationSettings';
-import OverlaySettings from './settings/OverlaySettings';
-import ThemeSettings from './settings/ThemeSettings';
-import IntegrationsSettings from './settings/IntegrationsSettings';
-import CacheSettings from './settings/CacheSettings';
-import NotificationsSettings from './settings/NotificationsSettings';
-import SupportSettings from './settings/SupportSettings';
-import WhatsNewSettings from './settings/WhatsNewSettings';
-import CommandPaletteSettings from './settings/CommandPaletteSettings';
-import KeybindingsSettings from './settings/KeybindingsSettings';
-import BackupSettings from './settings/BackupSettings';
-import ProfileSettings from './settings/ProfileSettings';
-import SettingsSearchResults from './settings/SettingsSearchResults';
+// Panels are lazy: exactly one renders at a time, so the whole settings tree
+// (the heaviest source directory in the app) stays out of the dialog's chunk
+// and each tab loads on first visit. The tab bar itself stays instant.
+import { lazy, Suspense } from 'react';
+const InterfaceSettings = lazy(() => import('./settings/InterfaceSettings'));
+const PlayerSettings = lazy(() => import('./settings/PlayerSettings'));
+const ChatSettings = lazy(() => import('./settings/ChatSettings'));
+const ModerationSettings = lazy(() => import('./settings/ModerationSettings'));
+const OverlaySettings = lazy(() => import('./settings/OverlaySettings'));
+const ThemeSettings = lazy(() => import('./settings/ThemeSettings'));
+const IntegrationsSettings = lazy(() => import('./settings/IntegrationsSettings'));
+const CacheSettings = lazy(() => import('./settings/CacheSettings'));
+const NotificationsSettings = lazy(() => import('./settings/NotificationsSettings'));
+const SupportSettings = lazy(() => import('./settings/SupportSettings'));
+const WhatsNewSettings = lazy(() => import('./settings/WhatsNewSettings'));
+const CommandPaletteSettings = lazy(() => import('./settings/CommandPaletteSettings'));
+const KeybindingsSettings = lazy(() => import('./settings/KeybindingsSettings'));
+const BackupSettings = lazy(() => import('./settings/BackupSettings'));
+const ProfileSettings = lazy(() => import('./settings/ProfileSettings'));
+const SettingsSearchResults = lazy(() => import('./settings/SettingsSearchResults'));
 import type { SettingsIndexEntry } from './settings/searchIndex';
 import { Tooltip } from './ui/Tooltip';
 
@@ -130,23 +134,34 @@ const SettingsDialog = () => {
   // When opened with a target section (e.g. via a right-click shortcut), scroll
   // to it once the tab's content is rendered. Double rAF defers past the
   // scroll-to-top effect below so this lands last. Mirrors handleResultSelect.
+  // Deep-link scroll. Panels mount lazily, so the target section may not exist
+  // yet on the first frames; poll by rAF (2s cap) until it does, then apply the
+  // same pinned-header (data-settings-sticky) compensation as before. Sync
+  // mounts resolve on the first attempt, matching the old double-rAF timing.
+  const scrollToSection = (sectionId: string) => {
+    const start = performance.now();
+    const attempt = () => {
+      const el = document.getElementById(sectionId);
+      if (el && contentRef.current) {
+        const containerTop = contentRef.current.getBoundingClientRect().top;
+        const elTop = el.getBoundingClientRect().top;
+        const sticky = contentRef.current.querySelector('[data-settings-sticky]');
+        const stickyOffset = sticky ? sticky.getBoundingClientRect().height : 0;
+        contentRef.current.scrollBy({
+          top: elTop - containerTop - 8 - stickyOffset,
+          behavior: 'smooth',
+        });
+        return;
+      }
+      if (performance.now() - start < 2000) requestAnimationFrame(attempt);
+    };
+    requestAnimationFrame(() => requestAnimationFrame(attempt));
+  };
+
   useEffect(() => {
     if (!isSettingsOpen || !settingsInitialSection) return;
-    requestAnimationFrame(() => {
-      requestAnimationFrame(() => {
-        const el = document.getElementById(settingsInitialSection);
-        if (el && contentRef.current) {
-          const containerTop = contentRef.current.getBoundingClientRect().top;
-          const elTop = el.getBoundingClientRect().top;
-          // A tab with a pinned header (data-settings-sticky) overlays the top
-          // of the scroll port; land the section fully below it. Tabs without
-          // one measure 0 and behave as before.
-          const sticky = contentRef.current.querySelector('[data-settings-sticky]');
-          const stickyOffset = sticky ? sticky.getBoundingClientRect().height : 0;
-          contentRef.current.scrollBy({ top: elTop - containerTop - 8 - stickyOffset, behavior: 'smooth' });
-        }
-      });
-    });
+    scrollToSection(settingsInitialSection);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isSettingsOpen, settingsInitialSection, activeTab]);
 
   useEffect(() => {
@@ -174,22 +189,7 @@ const SettingsDialog = () => {
     setSearchQuery('');
     setActiveTab(entry.tab as SettingsTab);
     if (!entry.sectionId) return;
-    requestAnimationFrame(() => {
-      requestAnimationFrame(() => {
-        const el = document.getElementById(entry.sectionId!);
-        if (el && contentRef.current) {
-          const containerTop = contentRef.current.getBoundingClientRect().top;
-          const elTop = el.getBoundingClientRect().top;
-          // Same pinned-header compensation as the initial-section scroll above.
-          const sticky = contentRef.current.querySelector('[data-settings-sticky]');
-          const stickyOffset = sticky ? sticky.getBoundingClientRect().height : 0;
-          contentRef.current.scrollBy({
-            top: elTop - containerTop - 8 - stickyOffset,
-            behavior: 'smooth',
-          });
-        }
-      });
-    });
+    scrollToSection(entry.sectionId);
   };
 
   return (
@@ -470,6 +470,13 @@ const SettingsDialog = () => {
                 ref={contentRef}
                 className="scrollbar-thin flex-1 overflow-y-auto px-8 pb-8"
               >
+                <Suspense
+                  fallback={
+                    <div className="flex h-full items-center justify-center">
+                      <span className="h-5 w-5 animate-spin rounded-full border-2 border-textSecondary/40 border-t-textSecondary" />
+                    </div>
+                  }
+                >
                 {searching ? (
                   <SettingsSearchResults
                     query={searchQuery}
@@ -494,6 +501,7 @@ const SettingsDialog = () => {
                     {activeTab === "What's New" && <WhatsNewSettings />}
                   </>
                 )}
+                </Suspense>
               </div>
             </section>
           </motion.div>
