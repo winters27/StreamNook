@@ -25,7 +25,7 @@ pub struct EmotePos {
     pub url: String,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
 pub struct LayoutResult {
     pub height: f32,
     pub width: f32,
@@ -152,10 +152,16 @@ pub struct ChatMessage {
     /// Source channel name for multi-stream chat routing
     #[serde(default)]
     pub channel: String,
-    /// Legacy field for backwards compatibility - will be deprecated
-    #[serde(default)]
+    /// Native-emote positions, kept internally for segment parsing but never
+    /// serialized: the frontend derives its copy from the `emotes` IRC tag and
+    /// has no reader of this field, which only duplicated `segments` on the
+    /// wire for every message.
+    #[serde(default, skip_serializing)]
     pub emotes: Vec<EmotePos>,
     pub tags: HashMap<String, String>,
+    /// Placeholder only - the frontend's ResizeObserver measurement is
+    /// authoritative and nothing reads this off the wire, so it stays local.
+    #[serde(default, skip_serializing)]
     pub layout: LayoutResult,
     /// Pre-parsed message segments ready for rendering
     /// This is the "endgame" - all parsing done in Rust, zero regex on main thread

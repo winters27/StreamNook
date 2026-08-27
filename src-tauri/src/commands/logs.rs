@@ -52,6 +52,26 @@ pub async fn log_message(
         .map_err(|e| e.to_string())
 }
 
+/// One queued frontend console line, as batched by logService's forward queue.
+#[derive(serde::Deserialize)]
+pub struct FrontendLogEntry {
+    pub level: String,
+    pub category: String,
+    pub message: String,
+    pub data: Option<serde_json::Value>,
+}
+
+/// Batched variant of log_message: a console warn/error storm (e.g. a player
+/// library during buffer degradation) used to cost one IPC round trip per
+/// line, exactly when the main thread was already stressed.
+#[command]
+pub async fn log_messages_batch(entries: Vec<FrontendLogEntry>) -> Result<(), String> {
+    for e in entries {
+        log_message(e.level, e.category, e.message, e.data).await?;
+    }
+    Ok(())
+}
+
 #[command]
 pub async fn track_activity(action: String) -> Result<(), String> {
     LogService::track_activity(action)

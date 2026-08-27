@@ -28,6 +28,42 @@ const extractCategory = (message: string): { category: string; cleanMessage: str
     return { category: 'App', cleanMessage: message };
 };
 
+// Forward queue: a library warn/error storm (a player during buffer
+// degradation prints dozens of lines in one tick) used to cost one IPC round
+// trip per line, exactly when the main thread was already stressed. Lines
+// coalesce for up to 500ms into a single batched invoke; the cap flushes a
+// storm early and pagehide flushes teardown. Worst case a hard webview crash
+// loses the last <=500ms of lines; the Rust side keeps its own log.
+type QueuedForwardLine = {
+    level: LogLevel;
+    category: string;
+    message: string;
+    data: string | null;
+};
+const forwardQueue: QueuedForwardLine[] = [];
+let forwardTimer: ReturnType<typeof setTimeout> | null = null;
+const FORWARD_FLUSH_MS = 500;
+const FORWARD_QUEUE_CAP = 200;
+
+const flushForwardQueue = (): void => {
+    if (forwardTimer !== null) {
+        clearTimeout(forwardTimer);
+        forwardTimer = null;
+    }
+    if (forwardQueue.length === 0) return;
+    const entries = forwardQueue.splice(0);
+    invoke('log_messages_batch', { entries }).catch((err) => {
+        // Silent fail - don't log errors about logging
+        originalConsole.warn('[LogService] Failed to forward log batch to Rust:', err);
+    });
+};
+
+try {
+    window.addEventListener('pagehide', flushForwardQueue);
+} catch {
+    /* non-DOM context */
+}
+
 // Forward log to Rust backend. Exported so utils/logger.ts can forward its
 // lines directly: Logger binds the native console at module load (before
 // initLogCapture patches it), so its output never reaches the patched console
@@ -38,15 +74,20 @@ export const forwardToRust = async (level: LogLevel, args: unknown[]): Promise<v
         const { category, cleanMessage } = extractCategory(firstArg);
         const data = args.length > 1 ? args.slice(1) : undefined;
 
-        await invoke('log_message', {
+        forwardQueue.push({
             level,
             category,
             message: cleanMessage || firstArg,
             data: data ? JSON.stringify(data) : null,
         });
+        if (forwardQueue.length >= FORWARD_QUEUE_CAP) {
+            flushForwardQueue();
+        } else if (forwardTimer === null) {
+            forwardTimer = setTimeout(flushForwardQueue, FORWARD_FLUSH_MS);
+        }
     } catch (err) {
         // Silent fail - don't log errors about logging
-        originalConsole.warn('[LogService] Failed to forward log to Rust:', err);
+        originalConsole.warn('[LogService] Failed to queue log for Rust:', err);
     }
 };
 
