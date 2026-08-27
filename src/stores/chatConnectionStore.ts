@@ -122,6 +122,12 @@ interface ChannelSlice {
   liveMessageCount: number;
   // Internals (not surfaced via the per-channel hook):
   seenMessageIds: Set<string>;
+  /** Real Helix ids stamped onto our own optimistic rows, still awaiting their
+   *  IRC echo. Gates the per-message own-echo upgrade scan: only these ids can
+   *  ever match it, so every other incoming message skips the O(buffer)
+   *  findIndex it used to pay. Consumed on echo (hit or miss - a miss means
+   *  the content-match reconciliation already replaced the row). */
+  pendingUpgradeIds: Set<string>;
   /** IRC USERSTATE badges string, used to repaint optimistic messages with the
    *  caller's tenure-correct badges for the channel. */
   userBadgesFromIrc: string | null;
@@ -657,6 +663,47 @@ function trimWithEventRetention(messages: any[], limit: number): any[] {
   return rescued.concat(recentTail);
 }
 
+// Deletion marks (CLEARMSG) accumulate one id per moderation event for the
+// life of the slice. A mark may only be dropped when it is provably inert:
+// the id is still in seenMessageIds (so a backfill re-insert is DEDUPED away
+// and the mark can never style anything again) while its row is gone from the
+// buffer. Marks for ids NOT in the dedup set are kept - the backfill could
+// re-insert those messages and they must still render moderated. Never pruned
+// by age (a CLEARMSG can land seconds after its row scrolled out).
+const MOD_MARK_PRUNE_THRESHOLD = 1000;
+function pruneModerationMarks(slice: ChannelSlice): void {
+  if (slice.deletedMessageIds.size <= MOD_MARK_PRUNE_THRESHOLD) return;
+  const inBuffer = new Set<string>();
+  for (const m of slice.messages) {
+    const id = typeof m === 'string' ? m.match(/(?:^|;)id=([^;]+)/)?.[1] : (m as any)?.id;
+    if (id) inBuffer.add(id);
+  }
+  const kept = new Set<string>();
+  for (const id of slice.deletedMessageIds) {
+    const inert = slice.seenMessageIds.has(id) && !inBuffer.has(id);
+    if (!inert) kept.add(id);
+  }
+  slice.deletedMessageIds = kept;
+}
+
+// Amortized, backfill-safe dedup-set trim. The buffer is NOT a superset of
+// recent ids (event retention keeps event rows and drops ordinary ones), and
+// the post-outage backfill replays the outage window with ~30s of overlap on
+// each side, deduped ONLY by these ids - so the trimmed set keeps the newest
+// insertions AND every id still in the buffer, with slack so the rebuild runs
+// once per ~256 messages instead of per message.
+const SEEN_TRIM_SLACK = 256;
+function trimSeenIds(slice: ChannelSlice): void {
+  const cap = CHAT_MAX_WITH_BUFFER;
+  if (slice.seenMessageIds.size <= cap + SEEN_TRIM_SLACK) return;
+  const keep = new Set(Array.from(slice.seenMessageIds).slice(-cap));
+  for (const m of slice.messages) {
+    const id = typeof m === 'string' ? m.match(/(?:^|;)id=([^;]+)/)?.[1] : (m as any)?.id;
+    if (id) keep.add(id);
+  }
+  slice.seenMessageIds = keep;
+}
+
 function flushPending(): void {
   const state = useChatConnectionStore.getState();
   for (const [key, queued] of pendingByChannel) {
@@ -671,6 +718,7 @@ function flushPending(): void {
     for (const m of queued) slice.messages.push(m);
     slice.liveMessageCount += queued.length;
     slice.messages = trimWithEventRetention(slice.messages, limit);
+    pruneModerationMarks(slice);
   }
   pendingByChannel.clear();
   // flushPending only runs when something called scheduleFlush(), so a render is
@@ -769,6 +817,7 @@ function emptySlice(
     isPausedForBuffer: false,
     liveMessageCount: 0,
     seenMessageIds: new Set(),
+    pendingUpgradeIds: new Set(),
     userBadgesFromIrc: null,
     userColorFromIrc: lastOwnChatColor(),
   };
@@ -1223,6 +1272,7 @@ export async function hardRefreshChannel(
   withSlice(key, (s) => {
     s.messages = [];
     s.seenMessageIds = new Set();
+    s.pendingUpgradeIds = new Set();
     s.deletedMessageIds = new Set();
     s.clearedUserContexts = new Map();
     s.liveMessageCount = 0;
@@ -2111,14 +2161,19 @@ function appendStructuredMessage(slice: ChannelSlice, parsed: any) {
   // now awaiting its full echo — replace it in place so it picks up real
   // badges/tenure. Only own stamped messages pre-exist with a server id, so this
   // never matches a fresh incoming message.
-  const idMatchIdx = slice.messages.findIndex(
-    (m) => typeof m === 'string' && m.match(/(?:^|;)id=([^;]+)/)?.[1] === messageId,
-  );
-  if (idMatchIdx !== -1) {
-    slice.messages[idMatchIdx] = parsed;
-    slice.seenMessageIds.add(messageId);
-    scheduleFlush();
-    return;
+  if (slice.pendingUpgradeIds.has(messageId)) {
+    slice.pendingUpgradeIds.delete(messageId);
+    const idMatchIdx = slice.messages.findIndex(
+      (m) => typeof m === 'string' && m.match(/(?:^|;)id=([^;]+)/)?.[1] === messageId,
+    );
+    if (idMatchIdx !== -1) {
+      slice.messages[idMatchIdx] = parsed;
+      slice.seenMessageIds.add(messageId);
+      scheduleFlush();
+      return;
+    }
+    // Miss: the content-match reconciliation consumed the optimistic row
+    // before this scan ran; fall through to the normal append path.
   }
 
   // Badge cache tracks only the PRIMARY (the IRC-connected account).
@@ -2147,12 +2202,9 @@ function appendStructuredMessage(slice: ChannelSlice, parsed: any) {
     }
   }
   slice.seenMessageIds.add(messageId);
-  // Cap the dedup set on the structured (production) path too. The raw-IRC path
-  // already caps; without this, seenMessageIds grew unbounded until channel
-  // release (~1.5 MB/hr in a busy chat).
-  if (slice.seenMessageIds.size > CHAT_MAX_WITH_BUFFER) {
-    slice.seenMessageIds = new Set(Array.from(slice.seenMessageIds).slice(-CHAT_MAX_WITH_BUFFER));
-  }
+  // Cap the dedup set on the structured (production) path too (amortized,
+  // backfill-safe - see trimSeenIds).
+  trimSeenIds(slice);
   // Gift-bomb collapse: keep only the announcement row and fold the individual
   // gifts into its recipient list. Handles anon variants and out-of-order arrival
   // (children before their announcement), mirroring the overlay via the shared
@@ -2463,7 +2515,8 @@ function handleRawIrcString(raw: string) {
 
   // Deterministic own-message upgrade (Helix-stamped real id awaiting its echo):
   // replace the stamped optimistic string in place with the full server line.
-  if (messageId && !slice.seenMessageIds.has(messageId)) {
+  if (messageId && slice.pendingUpgradeIds.has(messageId) && !slice.seenMessageIds.has(messageId)) {
+    slice.pendingUpgradeIds.delete(messageId);
     const idMatchIdx = slice.messages.findIndex(
       (m) => typeof m === 'string' && m.match(/(?:^|;)id=([^;]+)/)?.[1] === messageId,
     );
@@ -2511,9 +2564,7 @@ function handleRawIrcString(raw: string) {
   if (messageId) {
     if (slice.seenMessageIds.has(messageId)) return;
     slice.seenMessageIds.add(messageId);
-    if (slice.seenMessageIds.size > CHAT_MAX_WITH_BUFFER) {
-      slice.seenMessageIds = new Set(Array.from(slice.seenMessageIds).slice(-CHAT_MAX_WITH_BUFFER));
-    }
+    trimSeenIds(slice);
     queueMessage(slice.channel, raw);
   } else {
     queueMessage(slice.channel, raw);
@@ -2826,6 +2877,13 @@ export async function sendChannelMessage(
       if (idx !== -1) {
         slice.messages[idx] = (slice.messages[idx] as string).replace(`id=${tempId}`, `id=${realId}`);
         slice.seenMessageIds.delete(tempId);
+        // Arm the echo-upgrade fast path for this id. Defensive cap: a stamped
+        // row whose echo never arrives costs one stale entry, never growth.
+        slice.pendingUpgradeIds.add(realId);
+        if (slice.pendingUpgradeIds.size > 32) {
+          const oldest = slice.pendingUpgradeIds.values().next().value;
+          if (oldest !== undefined) slice.pendingUpgradeIds.delete(oldest);
+        }
         bumpRevision();
       }
     }

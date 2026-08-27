@@ -954,6 +954,13 @@ const ChatWidget = ({ channelOverride, hypeTrainOverride }: ChatWidgetProps = {}
     position: { x: number; y: number };
   } | null>(null);
   const userMessageHistory = useRef<Map<string, ParsedMessage[]>>(new Map());
+  // Profile-card history is the only consumer; bound the tracked chatters so a
+  // big channel session can't retain parsed messages for thousands of users.
+  const USER_HISTORY_MAX_USERS = 300;
+  // Source rooms whose badges were already prefetched this channel session -
+  // shared-chat detection runs incrementally per NEW message (it used to
+  // rescan the whole buffer every flush).
+  const sharedRoomsSeenRef = useRef<Set<string>>(new Set());
   const connectedChannelRef = useRef<string | null>(null);
   // Tracks the room_id we connected with so we can detect a late-arriving
   // broadcaster_id in MultiChat (MultiChatPane resolves channel info async,
@@ -1424,6 +1431,29 @@ const ChatWidget = ({ channelOverride, hypeTrainOverride }: ChatWidgetProps = {}
           }
         }
 
+        // Shared-chat detection, incremental: a cross-room message flips the
+        // sticky flag and prefetches the source room's badge metadata ONCE
+        // (subscriber/bits/founder badges render blank without that prefetch).
+        if (provider === 'twitch') {
+          const srcRoom =
+            typeof message === 'string'
+              ? parsed.tags.get('source-room-id')
+              : message.tags['source-room-id'];
+          const ownRoom =
+            typeof message === 'string'
+              ? parsed.tags.get('room-id')
+              : message.tags['room-id'];
+          if (srcRoom && ownRoom && srcRoom !== ownRoom) {
+            setIsSharedChat(true);
+            if (!sharedRoomsSeenRef.current.has(srcRoom)) {
+              sharedRoomsSeenRef.current.add(srcRoom);
+              prefetchChannelBadges(srcRoom).catch((err) =>
+                Logger.warn('[ChatWidget] Failed to prefetch badges for shared channel:', srcRoom, err),
+              );
+            }
+          }
+        }
+
         if (userId) {
           // Namespaced for non-Twitch. `message.user_id` is a RAW platform id, so
           // Kick user 676 and Twitch user 676 are different people who would
@@ -1432,7 +1462,14 @@ const ChatWidget = ({ channelOverride, hypeTrainOverride }: ChatWidgetProps = {}
           const history = userMessageHistory.current.get(historyKey) || [];
           history.push(parsed);
           if (history.length > 50) history.shift();
+          // Delete-then-set keeps Map insertion order as a recency order, so
+          // the eviction below always drops the longest-silent chatter.
+          userMessageHistory.current.delete(historyKey);
           userMessageHistory.current.set(historyKey, history);
+          if (userMessageHistory.current.size > USER_HISTORY_MAX_USERS) {
+            const oldest = userMessageHistory.current.keys().next().value;
+            if (oldest !== undefined) userMessageHistory.current.delete(oldest);
+          }
 
           // Add user to mention autocomplete store. Channel context drives
           // third-party badge resolution inside the store.
@@ -1652,6 +1689,8 @@ const ChatWidget = ({ channelOverride, hypeTrainOverride }: ChatWidgetProps = {}
         loadEmotes(currentStream.user_login, currentStream.user_id);
       }
       userMessageHistory.current.clear();
+      sharedRoomsSeenRef.current.clear();
+      setIsSharedChat(false);
       clearUsers(); // Clear mention autocomplete user list
       // PHASE 3: Clear Rust user message history when switching channels
       invoke('clear_user_message_history').catch(err => 
@@ -2671,44 +2710,6 @@ const ChatWidget = ({ channelOverride, hypeTrainOverride }: ChatWidgetProps = {}
       setIsLoadingEmotes(false);
     }
   };
-
-  useEffect(() => {
-    if (!isTwitch) return; // Twitch shared-chat badge hydration is Twitch-only
-    const initializeSharedChannelBadges = async () => {
-      const sourceRoomIds = new Set<string>();
-      let hasSharedMessages = false;
-      messages.forEach(message => {
-        let sourceRoomId: string | null = null;
-        let roomId: string | null = null;
-
-        if (typeof message === 'string') {
-          const sourceRoomIdMatch = message.match(/source-room-id=([^;]+)/);
-          const roomIdMatch = message.match(/room-id=([^;]+)/);
-          if (sourceRoomIdMatch) sourceRoomId = sourceRoomIdMatch[1];
-          if (roomIdMatch) roomId = roomIdMatch[1];
-        } else {
-          sourceRoomId = message.tags['source-room-id'] || null;
-          roomId = message.tags['room-id'] || null;
-        }
-
-        if (sourceRoomId && roomId && sourceRoomId !== roomId) {
-          sourceRoomIds.add(sourceRoomId);
-          hasSharedMessages = true;
-        }
-      });
-      setIsSharedChat(hasSharedMessages);
-      if (sourceRoomIds.size > 0) {
-        for (const sourceRoomId of sourceRoomIds) {
-          try {
-            await prefetchChannelBadges(sourceRoomId);
-          } catch (err) {
-            Logger.warn('[ChatWidget] Failed to prefetch badges for shared channel:', sourceRoomId, err);
-          }
-        }
-      }
-    };
-    initializeSharedChannelBadges();
-  }, [isTwitch, messages]);
 
   // Per-channel last-sent cache for the bypass-duplicate feature. Keyed by
   // currentStream user_id so switching channels resets the tracking.
