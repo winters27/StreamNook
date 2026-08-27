@@ -41,7 +41,9 @@
         "resizable": true,
         "fullscreen": false,
         "decorations": false,
-        "devtools": true
+        "devtools": true,
+        "visible": false,
+        "backgroundColor": "#0c0c0d"
       }
     ]
   },

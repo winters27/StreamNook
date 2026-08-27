@@ -61,6 +61,13 @@ const container = document.getElementById('root') as HTMLElement & {
 // hand rather than opening the whole API surface to any script in the window.
 // Stripped from production builds by the DEV guard.
 if (import.meta.env.DEV) {
+  // React devtools bridge. This used to live in index.html gated on hostname,
+  // but tauri.localhost is the PRODUCTION origin on Windows, so shipped builds
+  // were loading a script from a local port any process could bind. The DEV
+  // guard strips it from release bundles entirely.
+  const devtools = document.createElement('script');
+  devtools.src = 'http://localhost:8097';
+  document.head.appendChild(devtools);
   void import('@tauri-apps/api/core').then(({ invoke }) => {
     (window as unknown as Record<string, unknown>).sn = {
       /** One SABR round trip for a YouTube video id: mints a PO token, asks for

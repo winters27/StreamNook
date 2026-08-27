@@ -38,7 +38,7 @@ use commands::{
     universal_cache::*,
     user_profile::*, watch_streak::*, whisper_storage::*,
 };
-use log::{debug, error};
+use log::{debug, error, warn};
 use models::settings::{AppState, CloseToTrayMode, Settings};
 use services::background_service::BackgroundService;
 use services::cache_service;
@@ -104,6 +104,44 @@ fn take_pending_watch_link(state: tauri::State<'_, PendingWatchLink>) -> Option<
     state.0.lock().ok().and_then(|mut guard| guard.take())
 }
 
+/// First-paint signal from the webview. The main window is created hidden
+/// (config `visible: false`) so cold start never shows a blank shell; the
+/// frontend invokes this after its first painted frame. Saved geometry is
+/// restored here rather than by the window-state plugin's ready-time hook
+/// (skip_initial_state below): the plugin's MAXIMIZED restore runs
+/// SW_MAXIMIZE, which force-shows a hidden window before anything painted.
+/// Restoring while hidden, then showing, keeps the gate intact and a
+/// maximized session comes back maximized in a single ShowWindow.
+#[tauri::command]
+fn reveal_main_window(app: tauri::AppHandle) {
+    use tauri_plugin_window_state::{StateFlags, WindowExt};
+    if let Some(window) = app.get_webview_window("main") {
+        if !window.is_visible().unwrap_or(false) {
+            let _ = window.restore_state(
+                StateFlags::SIZE | StateFlags::POSITION | StateFlags::MAXIMIZED,
+            );
+        }
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+}
+
+/// Dead-window net for the hidden-until-ready gate: if the frontend never
+/// reaches its reveal invoke (boot crash, failed chunk load, wedged webview),
+/// show the window anyway so the app can never run headless. The window paints
+/// its configured background color, so a forced early show is dark, not white.
+fn arm_reveal_failsafe(handle: tauri::AppHandle) {
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_secs(5));
+        if let Some(window) = handle.get_webview_window("main") {
+            if !window.is_visible().unwrap_or(false) {
+                warn!("[Main] reveal failsafe fired: frontend never signaled first paint");
+                let _ = window.show();
+            }
+        }
+    });
+}
+
 /// Bring the main StreamNook window forward — used by the tray icon left-click
 /// and the "Show StreamNook" menu item. Restores from minimized if needed and
 /// re-shows if the window was hidden to the tray on close.
@@ -141,10 +179,22 @@ fn show_main_window(app: &tauri::AppHandle) {
     .center()
     .resizable(true)
     .decorations(false)
+    // Matches the config window's backgroundColor so the shell paints dark
+    // while the webview boots. Recreation is user-initiated (tray click), so
+    // the window shows immediately instead of gating on the reveal signal;
+    // saved geometry is restored below since skip_initial_state("main")
+    // covers every creation of this label, not just the first.
+    .background_color(tauri::window::Color(0x0c, 0x0c, 0x0d, 0xff))
     .build()
     {
         Ok(win) => {
             debug!("[Main] Recreated main window on demand");
+            {
+                use tauri_plugin_window_state::{StateFlags, WindowExt};
+                let _ = win.restore_state(
+                    StateFlags::SIZE | StateFlags::POSITION | StateFlags::MAXIMIZED,
+                );
+            }
             // Re-point the UI-hang watchdog at the new HWND. The old watchdog
             // thread self-exits once its HWND is destroyed (see ui_hang_watchdog).
             #[cfg(windows)]
@@ -449,11 +499,25 @@ fn main() {
                 // app window every time, so saved geometry must not restore (and
                 // shrink) them. Excluding them also stops a stale small size from
                 // leaving their content webview mismatched and blank.
+                // The generated-label utility webviews (profile-<user>-<ts>,
+                // kick-resolve-*, identity-fetch-*, seventv-login-*) accrete one
+                // entry per unique label forever - the state file had grown to
+                // 176 windows - so they are excluded too. multichat-default and
+                // plugin-* keep stable labels and wanted geometry, so they stay.
                 .with_filter(|label| {
                     !(label == "twitch-login"
                         || label == "drops-login"
-                        || label.starts_with("subscribe-"))
+                        || label.starts_with("subscribe-")
+                        || label.starts_with("profile-")
+                        || label.starts_with("kick-resolve-")
+                        || label.starts_with("identity-fetch-")
+                        || label.starts_with("seventv-login-"))
                 })
+                // The main window is created hidden and revealed on first paint;
+                // the plugin's ready-time MAXIMIZED restore would force-show it
+                // early (SW_MAXIMIZE activates), so reveal_main_window owns the
+                // restore instead.
+                .skip_initial_state("main")
                 .build(),
         )
         .plugin(tauri_plugin_dialog::init())
@@ -496,6 +560,9 @@ fn main() {
                     sanitize_restore_rect(&main);
                 }
             }
+            // Hidden-until-ready gate: the frontend reveals on first paint;
+            // this net guarantees a window even if the frontend never boots.
+            arm_reveal_failsafe(app_handle.clone());
             // Hand the stream server an app handle so the ad auto-pivot can emit
             // its `ad-pivot` reload event to the player.
             services::stream_server::set_app_handle(app_handle.clone());
@@ -777,6 +844,7 @@ fn main() {
             fetch_exchange_rates,
             get_window_size,
             take_pending_watch_link,
+            reveal_main_window,
             ensure_main_window,
             close_main_window,
             calculate_aspect_ratio_size,
