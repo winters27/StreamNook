@@ -36,6 +36,8 @@ anyhow = "1.0.100"
 async-trait = "0.1.83"
 confy = "2.0.0"
 warp = { version = "0.4.2", features = ["server", "websocket"] }
+# Ref-counted response bodies for the media relays; already in the lock via warp/hyper.
+bytes = "1"
 futures = "0.3"
 futures-util = { version = "0.3.31", features = ["sink"] }
 rand = "0.9.2"

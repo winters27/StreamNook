@@ -32,6 +32,7 @@
 use crate::services::providers::youtube_media::HighRendition;
 use crate::services::webm_fmp4::{self, Parsed, Vp9Config};
 use anyhow::{anyhow, Context, Result};
+use bytes::Bytes;
 use once_cell::sync::Lazy;
 use rand::Rng;
 use std::collections::{HashMap, HashSet};
@@ -125,8 +126,9 @@ struct Session {
     fps: f64,
     bandwidth: u64,
     video_codec: String,
-    init_video: Vec<u8>,
-    init_audio: Vec<u8>,
+    /// `Bytes`, so serving an init is a refcount clone rather than a copy.
+    init_video: Bytes,
+    init_audio: Bytes,
     /// Segment length in seconds, from the media itself.
     target: f64,
     /// Head sequence per track. These are NOT the same number: measured on a
@@ -385,8 +387,8 @@ pub async fn start(video_id: &str, above: u32, r: &HighRendition) -> Result<Stri
         fps: r.fps,
         bandwidth: r.bandwidth.max(1),
         video_codec: cfg.codec_string(),
-        init_video,
-        init_audio,
+        init_video: init_video.into(),
+        init_audio: init_audio.into(),
         target,
         video_head: head,
         audio_head: ahead.unwrap_or(head),
@@ -454,17 +456,17 @@ async fn ensure_server() -> Result<u16> {
     Ok(port)
 }
 
-fn cors(body: Vec<u8>, content_type: &str) -> warp::http::Response<Vec<u8>> {
+fn cors(body: impl Into<Bytes>, content_type: &str) -> warp::http::Response<Bytes> {
     warp::http::Response::builder()
         .status(200)
         .header("Content-Type", content_type)
         .header("Access-Control-Allow-Origin", "*")
         .header("Cache-Control", "no-cache")
-        .body(body)
-        .unwrap_or_else(|_| warp::http::Response::new(Vec::new()))
+        .body(body.into())
+        .unwrap_or_else(|_| warp::http::Response::new(Bytes::new()))
 }
 
-fn fail(code: u16) -> warp::http::Response<Vec<u8>> {
+fn fail(code: u16) -> warp::http::Response<Bytes> {
     fail_because(code, String::new())
 }
 
@@ -474,7 +476,7 @@ fn fail(code: u16) -> warp::http::Response<Vec<u8>> {
 /// usually looking at the browser console, where a bare 404 says nothing. This
 /// puts the cause where the failure is already visible: hls.js prints the status,
 /// and the Network tab shows the body.
-fn fail_because(code: u16, why: String) -> warp::http::Response<Vec<u8>> {
+fn fail_because(code: u16, why: String) -> warp::http::Response<Bytes> {
     let mut b = warp::http::Response::builder()
         .status(code)
         .header("Access-Control-Allow-Origin", "*")
@@ -488,8 +490,8 @@ fn fail_because(code: u16, why: String) -> warp::http::Response<Vec<u8>> {
             .collect();
         b = b.header("X-SN-Reason", one_line);
     }
-    b.body(why.into_bytes())
-        .unwrap_or_else(|_| warp::http::Response::new(Vec::new()))
+    b.body(Bytes::from(why.into_bytes()))
+        .unwrap_or_else(|_| warp::http::Response::new(Bytes::new()))
 }
 
 /// Snapshot the parts of the session a handler needs, so no lock is held across
@@ -688,7 +690,7 @@ async fn refresh_urls(video_id: &str, above: u32, itag: u64) -> Result<()> {
     Ok(())
 }
 
-async fn handle(path: String) -> Result<warp::http::Response<Vec<u8>>, std::convert::Infallible> {
+async fn handle(path: String) -> Result<warp::http::Response<Bytes>, std::convert::Infallible> {
     let started = Instant::now();
     let path = path.trim_start_matches('/').to_string();
     let path = path.split('?').next().unwrap_or("").to_string();
@@ -861,12 +863,14 @@ fn media_playlist(video: bool) -> Result<String> {
     Ok(m)
 }
 
-async fn segment(video: bool, sq: u64) -> Result<Vec<u8>> {
+async fn segment(video: bool, sq: u64) -> Result<Bytes> {
     if let Some(hit) = cached_segment(video, sq) {
         return Ok(hit);
     }
-    let out = fetch_and_remux(video, sq).await?;
-    store_segment(video, sq, &out);
+    // `Bytes::from(Vec)` takes ownership of the remux buffer; the cache insert
+    // and the served body then share it by refcount.
+    let out = Bytes::from(fetch_and_remux(video, sq).await?);
+    store_segment(video, sq, out.clone());
     // With this one served, warm the NEXT one so its round trip happens while the
     // player is still chewing on this segment instead of inside its next request.
     prefetch_next(video, sq);
@@ -911,8 +915,9 @@ async fn fetch_and_remux(video: bool, sq: u64) -> Result<Vec<u8>> {
 }
 
 /// Recently served segments, already remuxed. Bounded, and dropped whenever a
-/// session starts so one broadcast can never serve another's bytes.
-static SEGMENTS: OnceLock<std::sync::Mutex<HashMap<(bool, u64), Vec<u8>>>> = OnceLock::new();
+/// session starts so one broadcast can never serve another's bytes. Values are
+/// `Bytes` so a cache hit serves by refcount instead of copying the segment.
+static SEGMENTS: OnceLock<std::sync::Mutex<HashMap<(bool, u64), Bytes>>> = OnceLock::new();
 /// Segments currently being prefetched, so a player request for the same one
 /// does not start a second fetch alongside it.
 static INFLIGHT: OnceLock<std::sync::Mutex<HashSet<(bool, u64)>>> = OnceLock::new();
@@ -920,7 +925,7 @@ static INFLIGHT: OnceLock<std::sync::Mutex<HashSet<(bool, u64)>>> = OnceLock::ne
 /// by; more would just hold megabytes for segments it may never ask for.
 const SEGMENT_CACHE_MAX: usize = 6;
 
-fn segment_cache() -> &'static std::sync::Mutex<HashMap<(bool, u64), Vec<u8>>> {
+fn segment_cache() -> &'static std::sync::Mutex<HashMap<(bool, u64), Bytes>> {
     SEGMENTS.get_or_init(|| std::sync::Mutex::new(HashMap::new()))
 }
 
@@ -928,11 +933,11 @@ fn inflight() -> &'static std::sync::Mutex<HashSet<(bool, u64)>> {
     INFLIGHT.get_or_init(|| std::sync::Mutex::new(HashSet::new()))
 }
 
-fn cached_segment(video: bool, sq: u64) -> Option<Vec<u8>> {
+fn cached_segment(video: bool, sq: u64) -> Option<Bytes> {
     segment_cache().lock().ok()?.get(&(video, sq)).cloned()
 }
 
-fn store_segment(video: bool, sq: u64, bytes: &[u8]) {
+fn store_segment(video: bool, sq: u64, bytes: Bytes) {
     if let Ok(mut c) = segment_cache().lock() {
         // Keyed by sequence, so "oldest" is simply the lowest number on this
         // track. Live playback only ever moves forward.
@@ -941,7 +946,7 @@ fn store_segment(video: bool, sq: u64, bytes: &[u8]) {
                 c.remove(&oldest);
             }
         }
-        c.insert((video, sq), bytes.to_vec());
+        c.insert((video, sq), bytes);
     }
 }
 
@@ -984,7 +989,7 @@ fn prefetch_next(video: bool, sq: u64) {
     tokio::spawn(async move {
         let outcome = fetch_and_remux(video, next).await;
         if let Ok(bytes) = outcome {
-            store_segment(video, next, &bytes);
+            store_segment(video, next, Bytes::from(bytes));
         }
         if let Ok(mut f) = inflight().lock() {
             f.remove(&(video, next));
@@ -1015,8 +1020,8 @@ mod tests {
             fps: 60.0,
             bandwidth: 9_016_000,
             video_codec: "vp09.00.50.08".into(),
-            init_video: vec![1, 2, 3],
-            init_audio: vec![4, 5, 6],
+            init_video: Bytes::from(vec![1, 2, 3]),
+            init_audio: Bytes::from(vec![4, 5, 6]),
             target,
             video_head: head,
             audio_head: head,
@@ -1188,8 +1193,8 @@ mod tests {
             fps: 60.0,
             bandwidth: 9_016_000,
             video_codec: "vp09.00.50.08".into(),
-            init_video: vec![1],
-            init_audio: vec![2],
+            init_video: Bytes::from(vec![1]),
+            init_audio: Bytes::from(vec![2]),
             target: 5.0,
             video_head: 100,
             audio_head: 140,

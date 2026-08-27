@@ -1,6 +1,6 @@
 use crate::services::ad_detect;
 use crate::services::ll_origin::{
-    self, empty_cors, media_response, opt_raw_query, parse_directive, parse_part_path,
+    self, arc_bytes, empty_cors, media_response, opt_raw_query, parse_directive, parse_part_path,
     playlist_response, LlOrigin,
 };
 use anyhow::Result;
@@ -232,7 +232,7 @@ impl MultiNookServer {
         ad_state: Arc<std::sync::Mutex<ad_detect::AdDetectionState>>,
         stream_id: String,
         origin: Arc<LlOrigin>,
-    ) -> Result<warp::http::Response<Vec<u8>>, warp::Rejection> {
+    ) -> Result<warp::http::Response<bytes::Bytes>, warp::Rejection> {
         // Handle CORS preflight instantly without touching upstream.
         if method == warp::http::Method::OPTIONS {
             return Ok(warp::http::Response::builder()
@@ -241,7 +241,7 @@ impl MultiNookServer {
                 .header("Access-Control-Allow-Methods", "GET, OPTIONS")
                 .header("Access-Control-Allow-Headers", "*")
                 .header("Access-Control-Max-Age", "86400")
-                .body(vec![])
+                .body(bytes::Bytes::new())
                 .unwrap());
         }
 
@@ -255,14 +255,14 @@ impl MultiNookServer {
             // Origin-generated init segment (TS transmux path).
             if request_path == "init.mp4" {
                 if let Some(bytes) = origin.get_init() {
-                    return Ok(media_response(bytes.as_ref().clone()));
+                    return Ok(media_response(arc_bytes(bytes)));
                 }
                 return Ok(empty_cors(404));
             }
             if let Some(rest) = request_path.strip_prefix("part/") {
                 if let Some((sn, k)) = parse_part_path(rest) {
                     if let Some(bytes) = origin.get_part(sn, k) {
-                        return Ok(media_response(bytes.as_ref().clone()));
+                        return Ok(media_response(arc_bytes(bytes)));
                     }
                 }
                 return Ok(empty_cors(404));
@@ -301,7 +301,7 @@ impl MultiNookServer {
                             "Cache-Control",
                             "no-cache, no-store, must-revalidate, max-age=0",
                         )
-                        .body(vec![])
+                        .body(bytes::Bytes::new())
                         .unwrap(),
                     None => empty_cors(404),
                 },
@@ -329,7 +329,7 @@ impl MultiNookServer {
                 return Ok(warp::http::Response::builder()
                     .status(502)
                     .header("Access-Control-Allow-Origin", "*")
-                    .body(vec![])
+                    .body(bytes::Bytes::new())
                     .unwrap());
             }
         };
@@ -342,7 +342,7 @@ impl MultiNookServer {
                 return Ok(warp::http::Response::builder()
                     .status(502)
                     .header("Access-Control-Allow-Origin", "*")
-                    .body(vec![])
+                    .body(bytes::Bytes::new())
                     .unwrap());
             }
         };
@@ -394,7 +394,7 @@ impl MultiNookServer {
             )
             .header("Pragma", "no-cache")
             .header("Expires", "0")
-            .body(bytes)
+            .body(bytes.into())
             .unwrap())
     }
 }

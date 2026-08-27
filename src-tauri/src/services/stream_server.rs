@@ -1,5 +1,6 @@
 use crate::services::ll_origin::{
-    empty_cors, media_response, opt_raw_query, parse_directive, parse_part_path, playlist_response,
+    arc_bytes, empty_cors, media_response, opt_raw_query, parse_directive, parse_part_path,
+    playlist_response,
 };
 use anyhow::Result;
 use log::{error, info, warn};
@@ -161,7 +162,7 @@ fn finish_playlist_response(
     status: warp::http::StatusCode,
     request_path: &str,
     bytes: Vec<u8>,
-) -> Result<warp::http::Response<Vec<u8>>, warp::Rejection> {
+) -> Result<warp::http::Response<bytes::Bytes>, warp::Rejection> {
     let content_type = if request_path.ends_with(".ts") {
         "video/MP2T"
     } else {
@@ -179,7 +180,7 @@ fn finish_playlist_response(
         )
         .header("Pragma", "no-cache")
         .header("Expires", "0")
-        .body(bytes)
+        .body(bytes.into())
         .unwrap())
 }
 
@@ -253,7 +254,8 @@ struct PsegMap {
     /// stall while the buffer fills. Prefetching moves that download to BEFORE
     /// the request instead of during it, using the playlist as the schedule: it
     /// names precisely which segments the player is about to ask for.
-    cache: std::collections::HashMap<u32, Vec<u8>>,
+    /// Bodies are `Bytes`, so a cache hit serves by refcount instead of copying.
+    cache: std::collections::HashMap<u32, bytes::Bytes>,
     /// Indices already being fetched, so a prefetch and a live request can't
     /// download the same segment twice.
     inflight: std::collections::HashSet<u32>,
@@ -321,7 +323,8 @@ fn prefetch_segment(index: u32) {
     };
     tokio::spawn(async move {
         let fetched = match HTTP_CLIENT.get(&url).send().await {
-            Ok(res) if res.status().is_success() => res.bytes().await.ok().map(|b| b.to_vec()),
+            // The reqwest body is already one contiguous `Bytes`; store it as is.
+            Ok(res) if res.status().is_success() => res.bytes().await.ok(),
             // A failure here is not worth reporting: the player will request the
             // segment itself in a moment and that path logs properly.
             _ => None,
@@ -546,7 +549,7 @@ impl StreamServer {
         method: warp::http::Method,
         raw_query: String,
         proxy_url: Arc<Mutex<Option<String>>>,
-    ) -> Result<warp::http::Response<Vec<u8>>, warp::Rejection> {
+    ) -> Result<warp::http::Response<bytes::Bytes>, warp::Rejection> {
         // None means stop() already ran. The abort only kills the accept loop;
         // hyper's per-connection tasks survive it, so the player's keep-alive
         // connection can still deliver a final poll. A warp rejection here would
@@ -575,7 +578,7 @@ impl StreamServer {
                 .header("Access-Control-Allow-Methods", "GET, OPTIONS")
                 .header("Access-Control-Allow-Headers", "*")
                 .header("Access-Control-Max-Age", "86400")
-                .body(vec![])
+                .body(bytes::Bytes::new())
                 .unwrap());
         }
 
@@ -593,7 +596,7 @@ impl StreamServer {
                         "\"ev\":\"o_init\",\"len\":{}",
                         bytes.len()
                     ));
-                    return Ok(media_response(bytes.as_ref().clone()));
+                    return Ok(media_response(arc_bytes(bytes)));
                 }
                 return Ok(empty_cors(404));
             }
@@ -609,7 +612,7 @@ impl StreamServer {
                             "\"ev\":\"o_part\",\"sn\":{sn},\"k\":{k},\"len\":{},\"h\":{h}",
                             bytes.len()
                         ));
-                        return Ok(media_response(bytes.as_ref().clone()));
+                        return Ok(media_response(arc_bytes(bytes)));
                     }
                     crate::services::ll_diagnostics::event(&format!(
                         "\"ev\":\"o_part_miss\",\"sn\":{sn},\"k\":{k}"
@@ -672,7 +675,7 @@ impl StreamServer {
                         "Cache-Control",
                         "no-cache, no-store, must-revalidate, max-age=0",
                     )
-                    .body(vec![])
+                    .body(bytes::Bytes::new())
                     .unwrap(),
                 None => empty_cors(404),
             });
@@ -703,11 +706,11 @@ impl StreamServer {
                 Ok(res) if res.status().is_success() => match res.bytes().await {
                     // `media_response` sniffs TS vs fMP4 and carries the CORS
                     // headers — the reason this detour exists at all.
-                    Ok(b) => {
-                        let bytes = b.to_vec();
+                    Ok(bytes) => {
                         // Keep it: hls.js re-requests a segment after a recovered
                         // error, and a second surface on the same stream would
-                        // otherwise pay for the same download again.
+                        // otherwise pay for the same download again. The clone is
+                        // a refcount, not a copy.
                         if let Some(index) = request_path
                             .strip_prefix("pseg/")
                             .and_then(|s| s.parse::<u32>().ok())
@@ -767,7 +770,7 @@ impl StreamServer {
                 return Ok(warp::http::Response::builder()
                     .status(502)
                     .header("Access-Control-Allow-Origin", "*")
-                    .body(vec![])
+                    .body(bytes::Bytes::new())
                     .unwrap());
             }
         };
@@ -803,7 +806,7 @@ impl StreamServer {
                 return Ok(warp::http::Response::builder()
                     .status(502)
                     .header("Access-Control-Allow-Origin", "*")
-                    .body(vec![])
+                    .body(bytes::Bytes::new())
                     .unwrap());
             }
         };
@@ -882,11 +885,11 @@ impl StreamServer {
             )
             .header("Pragma", "no-cache")
             .header("Expires", "0")
-            .body(bytes) // Return perfectly preserved source bytes!
+            .body(bytes.into()) // Return perfectly preserved source bytes!
             .unwrap())
     }
 
-    async fn proxy_handler() -> Result<warp::http::Response<Vec<u8>>, warp::Rejection> {
+    async fn proxy_handler() -> Result<warp::http::Response<bytes::Bytes>, warp::Rejection> {
         let url = PROXY_URL
             .lock()
             .await
@@ -900,7 +903,7 @@ impl StreamServer {
                 return Ok(warp::http::Response::builder()
                     .status(502)
                     .header("Access-Control-Allow-Origin", "*")
-                    .body(vec![])
+                    .body(bytes::Bytes::new())
                     .unwrap());
             }
         };
@@ -913,7 +916,7 @@ impl StreamServer {
                 return Ok(warp::http::Response::builder()
                     .status(502)
                     .header("Access-Control-Allow-Origin", "*")
-                    .body(vec![])
+                    .body(bytes::Bytes::new())
                     .unwrap());
             }
         };
@@ -963,7 +966,7 @@ impl StreamServer {
             )
             .header("Pragma", "no-cache")
             .header("Expires", "0")
-            .body(rewritten_bytes)
+            .body(rewritten_bytes.into())
             .unwrap())
     }
 

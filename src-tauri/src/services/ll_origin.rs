@@ -214,6 +214,10 @@ struct Segment {
     complete: bool,
     duration: f64,
     parts: Vec<Part>,
+    /// Whole-segment bytes, assembled lazily on the first `seg/` fetch and
+    /// handed out by refcount after that. Stays `None` in LL steady state
+    /// (the player fetches parts only), so the parts path pays nothing.
+    assembled: Option<bytes::Bytes>,
 }
 
 struct LiveEdge {
@@ -1032,6 +1036,7 @@ fn make_segment(
             TARGET_DURATION as f64
         },
         parts,
+        assembled: None,
     }
 }
 
@@ -1682,6 +1687,7 @@ impl LlOrigin {
             complete: false,
             duration: TARGET_DURATION as f64,
             parts: Vec::new(),
+            assembled: None,
         });
         while edge.segments.len() > self.max_segments {
             if let Some(s) = edge.segments.pop_front() {
@@ -1991,26 +1997,33 @@ impl LlOrigin {
             .map(|p| p.bytes.clone())
     }
 
-    /// Bytes for a complete segment (`seg/<sn>.ts`), assembled from its parts in memory.
-    pub fn get_segment(&self, sn: u64) -> Option<Vec<u8>> {
-        let assemble = |seg: &Segment| {
+    /// Bytes for a complete segment (`seg/<sn>.ts`), assembled from its parts in
+    /// memory. Assembly runs at most once per segment (memoized on the segment,
+    /// under the same locks as before); repeat fetches clone the handle.
+    pub fn get_segment(&self, sn: u64) -> Option<bytes::Bytes> {
+        let assemble = |seg: &mut Segment| {
+            if let Some(b) = &seg.assembled {
+                return b.clone();
+            }
             let total: usize = seg.parts.iter().map(|p| p.bytes.len()).sum();
             let mut out = Vec::with_capacity(total);
             for p in &seg.parts {
                 out.extend_from_slice(&p.bytes);
             }
-            out
+            let b = bytes::Bytes::from(out);
+            seg.assembled = Some(b.clone());
+            b
         };
         {
-            let g = self.live_edge.lock().unwrap();
-            let edge = g.as_ref()?;
-            if let Some(seg) = edge.segments.iter().find(|s| s.sn == sn && s.complete) {
+            let mut g = self.live_edge.lock().unwrap();
+            let edge = g.as_mut()?;
+            if let Some(seg) = edge.segments.iter_mut().find(|s| s.sn == sn && s.complete) {
                 return Some(assemble(seg));
             }
         }
         // Retirement grace (see get_part).
-        let r = self.retired.lock().unwrap();
-        r.iter().find(|s| s.sn == sn && s.complete).map(assemble)
+        let mut r = self.retired.lock().unwrap();
+        r.iter_mut().find(|s| s.sn == sn && s.complete).map(assemble)
     }
 }
 
@@ -2055,7 +2068,7 @@ pub fn get_part(sn: u64, idx: usize) -> Option<Arc<Vec<u8>>> {
     SOLO.get_part(sn, idx)
 }
 
-pub fn get_segment(sn: u64) -> Option<Vec<u8>> {
+pub fn get_segment(sn: u64) -> Option<bytes::Bytes> {
     SOLO.get_segment(sn)
 }
 
@@ -2097,7 +2110,21 @@ pub(crate) fn parse_part_path(rest: &str) -> Option<(u64, usize)> {
     Some((sn, k))
 }
 
-pub(crate) fn media_response(bytes: Vec<u8>) -> warp::http::Response<Vec<u8>> {
+/// Zero-copy bridge: present a shared part/init buffer as a response body
+/// without copying it (the per-part memcpy this replaces ran ~9-10 times a
+/// second per LL stream).
+struct SharedBuf(std::sync::Arc<Vec<u8>>);
+impl AsRef<[u8]> for SharedBuf {
+    fn as_ref(&self) -> &[u8] {
+        &self.0
+    }
+}
+pub(crate) fn arc_bytes(buf: std::sync::Arc<Vec<u8>>) -> bytes::Bytes {
+    bytes::Bytes::from_owner(SharedBuf(buf))
+}
+
+pub(crate) fn media_response(bytes: impl Into<bytes::Bytes>) -> warp::http::Response<bytes::Bytes> {
+    let bytes: bytes::Bytes = bytes.into();
     // Sniff the container so a TS part is labelled MP2T (CMAF stays mp4). hls.js
     // demuxes from the bytes regardless, but the honest content-type avoids any
     // strict-MIME edge cases.
@@ -2120,7 +2147,7 @@ pub(crate) fn media_response(bytes: Vec<u8>) -> warp::http::Response<Vec<u8>> {
         .unwrap()
 }
 
-pub(crate) fn playlist_response(bytes: Vec<u8>) -> warp::http::Response<Vec<u8>> {
+pub(crate) fn playlist_response(bytes: Vec<u8>) -> warp::http::Response<bytes::Bytes> {
     warp::http::Response::builder()
         .status(200)
         .header("Content-Type", "application/x-mpegURL")
@@ -2139,15 +2166,15 @@ pub(crate) fn playlist_response(bytes: Vec<u8>) -> warp::http::Response<Vec<u8>>
         // against held responses is the prime suspect; closing costs nothing
         // on loopback and isolates the layer. Parts/segments keep keep-alive.
         .header("Connection", "close")
-        .body(bytes)
+        .body(bytes.into())
         .unwrap()
 }
 
-pub(crate) fn empty_cors(status: u16) -> warp::http::Response<Vec<u8>> {
+pub(crate) fn empty_cors(status: u16) -> warp::http::Response<bytes::Bytes> {
     warp::http::Response::builder()
         .status(status)
         .header("Access-Control-Allow-Origin", "*")
-        .body(vec![])
+        .body(bytes::Bytes::new())
         .unwrap()
 }
 
@@ -2570,6 +2597,7 @@ mod tests {
                 duration: 0.1,
                 bytes: Arc::new(vec![3]),
             }],
+            assembled: None,
         });
         let edge = LiveEdge {
             init_url: "https://cdn/init.mp4".into(),
@@ -2629,6 +2657,7 @@ mod tests {
                     bytes: Arc::new(vec![7]),
                 },
             ],
+            assembled: None,
         });
         let edge = LiveEdge {
             init_url: "https://cdn/init.mp4".into(),
@@ -2677,6 +2706,7 @@ mod tests {
                 duration: 0.3,
                 bytes: Arc::new(vec![3]),
             }],
+            assembled: None,
         });
         let edge = LiveEdge {
             init_url: String::new(),
