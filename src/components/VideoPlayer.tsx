@@ -672,9 +672,10 @@ const VideoPlayer = () => {
     buildMenu();
   }, [availableQualities, settings.quality, activeQuality, changeStreamQuality]);
 
-  // Update time display for live streams to show "LIVE" or time behind
+  // Update time display for live streams: "LIVE" at the edge, the broadcast's
+  // elapsed time at the playhead when behind it.
   const liveTimeNodeRef = useRef<Element | null>(null);
-  const lastLiveTickRef = useRef(0);
+  const liveStartedAtRef = useRef<{ raw: string; ms: number } | null>(null);
   const updateLiveTimeDisplay = useCallback(() => {
     const video = videoRef.current;
     const container = containerRef.current;
@@ -686,25 +687,20 @@ const VideoPlayer = () => {
       return;
     }
 
-    // The display has 1s resolution, so 4Hz is plenty; the rAF chain stays
-    // alive (cheap) but the DOM pass runs at most every 250ms.
-    const now = Date.now();
-    if (now - lastLiveTickRef.current < 250) {
-      progressUpdateIntervalRef.current = requestAnimationFrame(updateLiveTimeDisplay);
-      return;
-    }
-    lastLiveTickRef.current = now;
-
-    // Only apply live time display if current media is live
-    const { currentMediaType } = useAppStore.getState();
+    // This must run EVERY frame, not throttled: Plyr writes its own playback
+    // clock into the same node on every timeupdate (~4Hz), so any repair gap
+    // longer than a frame leaves Plyr's counter visibly alternating with ours.
+    // The per-frame cost is a few object reads and one textContent read (no
+    // layout); the expensive parts of the old loop (querySelector per frame,
+    // unconditional writes) stay gone via the node cache and the mismatch gate.
+    const { currentMediaType, currentStream } = useAppStore.getState();
     if (currentMediaType !== 'live') {
       isLiveRef.current = false;
       return;
     }
 
-    // Update time display to show "LIVE". The control-bar node is cached; a
-    // player rebuild replaces the control bar, so revalidate via isConnected
-    // (cheap) and re-query only then.
+    // The control-bar node is cached; a player rebuild replaces the control
+    // bar, so revalidate via isConnected (cheap) and re-query only then.
     let currentTimeDisplay = liveTimeNodeRef.current;
     if (!currentTimeDisplay || !currentTimeDisplay.isConnected) {
       currentTimeDisplay = container.querySelector('.plyr__time--current');
@@ -718,22 +714,43 @@ const VideoPlayer = () => {
         const bufferedEnd = buffered.end(buffered.length - 1);
         const timeFromLive = bufferedEnd - video.currentTime;
         if (timeFromLive >= 5) {
-          const behindSeconds = Math.floor(timeFromLive);
-          const mins = Math.floor(behindSeconds / 60);
-          const secs = behindSeconds % 60;
-          nextText = `-${mins}:${secs.toString().padStart(2, '0')}`;
           atLive = false;
+          const behindSeconds = Math.floor(timeFromLive);
+          // Position in the broadcast's elapsed timeline (uptime minus how far
+          // behind the edge the playhead sits), like a VOD timestamp for the
+          // point being watched. started_at parse is memoized on the string.
+          const raw = currentStream?.started_at;
+          if (raw) {
+            if (liveStartedAtRef.current?.raw !== raw) {
+              liveStartedAtRef.current = { raw, ms: Date.parse(raw) };
+            }
+            const startedMs = liveStartedAtRef.current.ms;
+            if (Number.isFinite(startedMs)) {
+              const elapsed = Math.max(
+                0,
+                Math.floor((Date.now() - startedMs) / 1000) - behindSeconds,
+              );
+              const h = Math.floor(elapsed / 3600);
+              const m = Math.floor((elapsed % 3600) / 60);
+              const s = elapsed % 60;
+              nextText =
+                h > 0
+                  ? `${h}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`
+                  : `${m}:${s.toString().padStart(2, '0')}`;
+            }
+          }
+          if (nextText === 'LIVE') {
+            // No usable start time: fall back to the behind-the-edge delta.
+            const mins = Math.floor(behindSeconds / 60);
+            const secs = behindSeconds % 60;
+            nextText = `-${mins}:${secs.toString().padStart(2, '0')}`;
+          }
         }
       }
       // Compare against what is ACTUALLY in the DOM, never against a cached
-      // copy of our own last write. Plyr writes its own playback time into this
-      // same node on every timeupdate, so a cached comparison sees "unchanged",
-      // skips the write, and leaves Plyr's counter on screen (the live badge
-      // turns into a clock counting up from when you joined). Assigning
-      // textContent replaces the text node and invalidates layout even for an
-      // identical string, so the read is still worth it: in the steady state it
-      // drops us from a write every frame to a write only when Plyr has just
-      // clobbered us. Reading textContent does not force layout.
+      // copy of our own last write, so a Plyr clobber is caught and repaired
+      // on the next frame. Reading textContent does not force layout; the
+      // mismatch gate keeps steady-state writes at zero.
       if (currentTimeDisplay.textContent !== nextText) {
         currentTimeDisplay.textContent = nextText;
       }
@@ -2863,8 +2880,14 @@ const VideoPlayer = () => {
             </button>
           )}
 
-          {/* Add to MultiNook Button — pulls this stream into the multi-view grid */}
-          {overlayButtonOn('multinook') && currentMediaType === 'live' && (
+          {/* Add to MultiNook Button — pulls this stream into the multi-view grid.
+              Twitch-only for the same reason as Clips & VODs above: every grid
+              tile resolves a twitch.tv URL, so a provider channel would add a
+              tile playing the same-named TWITCH streamer. Worse, this handler
+              also exits the current stream, so an ungated click on a Kick or
+              YouTube stream tore down what you were watching and handed back a
+              dead tile. */}
+          {overlayButtonOn('multinook') && currentMediaType === 'live' && isTwitchStream && (
             <Tooltip content="Add to MultiNook" side="bottom">
             <button
               onClick={handleAddToMultiNook}
