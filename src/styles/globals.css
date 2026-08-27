@@ -1332,9 +1332,14 @@ html[data-motion="reduced"] .animate-shimmer {
 }
 
 /* Custom ultra-blur for floating header */
+/* Parameterized so the radius can be A/B'd live (devtools: set
+   --sn-ultra-blur on :root). The chat header carries this class OVER the
+   scroller, so every chat scroll frame pays a resample at this radius; 24px
+   is the proposed perf value (visually near-identical against the header's
+   90% tint), 64px is the shipping look until the eyeball pass approves. */
 .backdrop-blur-ultra {
-  backdrop-filter: blur(calc(64px * var(--glass-strength))) saturate(180%);
-  -webkit-backdrop-filter: blur(calc(64px * var(--glass-strength))) saturate(180%);
+  backdrop-filter: blur(calc(var(--sn-ultra-blur, 64px) * var(--glass-strength))) saturate(180%);
+  -webkit-backdrop-filter: blur(calc(var(--sn-ultra-blur, 64px) * var(--glass-strength))) saturate(180%);
 }
 
 /* Iridescent animation for shared chat title bar */

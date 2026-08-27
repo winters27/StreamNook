@@ -1843,7 +1843,7 @@ function App() {
                 animate={{ opacity: 1 }}
                 exit={{ opacity: 0 }}
                 transition={{ duration: 0.2, ease: "easeInOut" }}
-                className="absolute inset-0 z-40 bg-background/85 backdrop-blur-2xl"
+                className={`absolute inset-0 z-40 ${streamUrl || isMultiNookActive ? 'bg-background/85 backdrop-blur-2xl' : 'bg-background'}`}
               >
                 <ErrorBoundary componentName="Home" reportToLogService resetKeys={[isHomeActive]}>
                   <Home />
