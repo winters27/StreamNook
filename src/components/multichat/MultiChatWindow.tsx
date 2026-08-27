@@ -74,7 +74,7 @@ import { MULTICHAT_BASE_WIDTH, MULTICHAT_GEOMETRY_KEY } from '../../utils/multic
 import { Tooltip } from '../ui/Tooltip';
 import { Logger } from '../../utils/logger';
 import type { TwitchStream } from '../../types';
-import streamNookLogoUrl from '../../assets/streamnook-logo.png';
+import streamNookLogoUrl from '../../assets/streamnook-logo-128.webp';
 
 interface ChannelEntry {
   channel: string;

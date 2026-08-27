@@ -136,3 +136,14 @@ windows = { version = "0.61", features = [
 [features]
 default = ["custom-protocol"]
 custom-protocol = ["tauri/custom-protocol"]
+
+[profile.release]
+# opt-level 3: chat parsing and song-id FFT are CPU-hot, size-opt would cost them.
+# panic stays "unwind": tokio tasks and warp handlers contain isolated panics
+# today; abort would turn any one of them into a full-process death.
+# strip is ~free on windows-msvc (debug info lives in the PDB) but helps any
+# future cross-compile.
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = "symbols"

@@ -15,10 +15,11 @@ import './utils/multichatWindow';
 // Side-effect import: listens for the tray's "Open MultiChat" menu event and
 // spawns an empty popout from the main window.
 import './utils/multichatTrayBridge';
-// Fraunces (variable serif). Italic powers the StreamNook tier-badge rank
-// number; the upright axis backs the "Serif" choice in Theme > Font.
+// Fraunces (variable serif). The upright axis backs the "Serif" choice in
+// Theme > Font, so its @font-face must exist at boot for users who chose it
+// (the woff2 itself only downloads when rendered). The italic axis is only
+// used by the tier-badge rank number and rides StreamNookBadge.tsx instead.
 import '@fontsource-variable/fraunces';
-import '@fontsource-variable/fraunces/wght-italic.css';
 // Plyr's CSS must load BEFORE globals.css: our `.video-player-container .plyr__*`
 // overrides have EQUAL specificity to Plyr's own defaults, so whichever stylesheet
 // loads last wins. The video player is lazy-loaded, so without this eager import

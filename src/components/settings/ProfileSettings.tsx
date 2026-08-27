@@ -7,7 +7,7 @@ import { AtmosphereBackground } from '../AtmosphereBackground';
 import { MajorCologneChrome } from '../MajorCologneChrome';
 import { getPreviewEmotes, previewEmoteUrl, rollPreviewChat, type PreviewEmote } from '../../utils/previewChat';
 import { openBadgesWithPaintInMain, openBadgesOnStreamNookInMain } from '../../utils/openBadgesInMain';
-import streamNookLogo from '../../assets/streamnook-logo.png';
+import streamNookLogo from '../../assets/streamnook-logo-128.webp';
 import { User, Link, Unlink, Image as ImageIcon, Film, Heart, Check, ExternalLink } from 'lucide-react';
 import {
   computePaintStyle,

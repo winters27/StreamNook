@@ -5,8 +5,8 @@
 // build happens here so Vite can fingerprint the URL. When a new cosmetic is
 // added to the catalog, drop the asset under src/assets and add a line here.
 
-import defaultBadge from '../assets/streamnook-logo.png';
-import supporterBadge from '../assets/streamnook-badge-gold.png';
+import defaultBadge from '../assets/streamnook-logo-128.webp';
+import supporterBadge from '../assets/streamnook-badge-gold-128.webp';
 import subscriberBadge from '../assets/streamnook-badge-gold-animated.webp';
 import { resolveManifestAsset, type AssetManifest } from '../services/cosmetics/types';
 

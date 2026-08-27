@@ -29,7 +29,7 @@ import {
   subscribeIdentityVersion,
   getIdentityVersion,
 } from '../services/identityService';
-import streamNookLogo from '../assets/streamnook-logo.png';
+import streamNookLogo from '../assets/streamnook-logo-128.webp';
 import { EmoteText, buildEmoteNameMap } from '../utils/emoteText';
 import { useChannelEmotes } from '../stores/chatConnectionStore';
 import { historyKey } from '../utils/chatterIdentity';

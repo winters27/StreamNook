@@ -27,7 +27,7 @@ import { StreamNookTierCard } from './StreamNookBadge';
 import { resolveCosmeticAsset } from './cosmeticAssets';
 import { listAtmospheres, getAtmosphereUnlock } from '../services/atmospheres';
 import { AtmosphereBackground } from './AtmosphereBackground';
-import streamNookLogo from '../assets/streamnook-logo.png';
+import streamNookLogo from '../assets/streamnook-logo-128.webp';
 import chatterinoLogo from '../assets/chatterino-logo.svg';
 import betterttvLogo from '../assets/betterttv-logo.png';
 

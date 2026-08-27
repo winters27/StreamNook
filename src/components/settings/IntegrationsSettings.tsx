@@ -2,7 +2,7 @@ import { Plug } from 'lucide-react';
 import { useAppStore } from '../../stores/AppStore';
 import { usePluginUiRegistry, selectSlot } from '../../plugins-ui/registry';
 import { DiscordGlyph } from '../ui/DiscordGlyph';
-import streamnookLogo from '../../assets/streamnook-logo.png';
+import streamnookLogo from '../../assets/streamnook-logo-128.webp';
 
 const IntegrationsSettings = () => {
   const { settings, updateSettings } = useAppStore();

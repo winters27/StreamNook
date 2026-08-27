@@ -1,7 +1,10 @@
 import { useEffect, useState, useRef, useSyncExternalStore, memo } from 'react';
 import type { ReactNode, MouseEvent } from 'react';
+// Fraunces italic backs the tier-badge rank number below; importing it here
+// (not main.tsx) keeps the axis out of every window's boot path.
+import '@fontsource-variable/fraunces/wght-italic.css';
 import { Tooltip } from './ui/Tooltip';
-import streamNookLogo from '../assets/streamnook-logo.png';
+import streamNookLogo from '../assets/streamnook-logo-128.webp';
 import {
   getActiveCosmeticSlug,
   getCosmeticBySlug,
@@ -70,8 +73,8 @@ const CARD_CLASS =
   'shadow-[inset_1px_1px_0_0_rgba(255,255,255,0.14),inset_-1px_-1px_0_0_rgba(0,0,0,0.50),0_20px_50px_-15px_rgba(0,0,0,0.7),0_0_30px_-5px_rgba(0,0,0,0.4)]';
 
 // Number typography. Fraunces Variable (italic) at a light weight gives a
-// silky calligraphic display-serif feel that Satoshi can't produce. Font is
-// imported in main.tsx (@fontsource-variable/fraunces/wght-italic.css).
+// silky calligraphic display-serif feel that Satoshi can't produce. The italic
+// axis is imported at the top of this file so it rides this chunk, not boot.
 // `font-style: italic` is implied by the import variant; we also set it
 // explicitly via Tailwind so it's visible in the JSX.
 const NUMBER_BASE_CLASS =

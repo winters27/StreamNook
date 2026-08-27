@@ -24,7 +24,7 @@ import {
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { useAppStore } from '../stores/AppStore';
-import streamnookLogo from '../assets/streamnook-logo.png';
+import streamnookLogo from '../assets/streamnook-logo-256.webp';
 import {
     themes,
     applyTheme,

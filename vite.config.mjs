@@ -1,9 +1,14 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
+import { visualizer } from 'rollup-plugin-visualizer';
 
 // https://vitejs.dev/config/
 export default defineConfig({
-  plugins: [react()],
+  plugins: [
+    react(),
+    // Bundle breakdown on demand: ANALYZE=1 npm run build writes stats.html.
+    ...(process.env.ANALYZE ? [visualizer({ filename: 'stats.html', gzipSize: true })] : []),
+  ],
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
   clearScreen: false,
   server: {
@@ -26,6 +31,10 @@ export default defineConfig({
     include: ['nspell'],
   },
   build: {
+    // The only runtime is Tauri's bundled WebView2, so target its engine
+    // instead of a generic browser matrix.
+    target: 'chrome110',
+    chunkSizeWarningLimit: 900,
     rollupOptions: {
       output: {
         manualChunks: {
