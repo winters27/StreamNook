@@ -378,7 +378,9 @@ const Home = () => {
                         try {
                             const userIds = offline.map(c => c.user_id);
                             const broadcasts = await invoke('get_offline_last_broadcasts', { userIds }) as Record<string, string | null>;
-                            Logger.info('Fetched offline last broadcasts:', broadcasts);
+                            // Count only: the payload is the user's whole follow list, which has no
+                            // place in a log file they hand to someone else.
+                            Logger.info(`Fetched last-broadcast times for ${Object.keys(broadcasts).length} offline channel(s)`);
                             setOfflineLastBroadcasts(prev => ({ ...prev, ...broadcasts }));
                         } catch(e) {
                             Logger.error('Failed to fetch offline last broadcasts:', e);

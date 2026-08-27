@@ -42,7 +42,10 @@ const CHAT_HISTORY_MAX = 100;
 const CHAT_BUFFER_SIZE = 150; // extra slack while a channel is paused (scrolled up)
 const CHAT_MAX_WITH_BUFFER = CHAT_HISTORY_MAX + CHAT_BUFFER_SIZE;
 
-const MAX_RECONNECT_ATTEMPTS = 10;
+// Reconnection is UNBOUNDED by design: a capped ladder ended in a permanent
+// dead state for anyone with a flaky connection. This only controls wording —
+// early attempts name the delay, later ones just say we are still trying.
+const RECONNECT_QUIET_ATTEMPTS = 3;
 const WS_OPEN_RETRY_ATTEMPTS = 5;
 const HEALTH_CHECK_INTERVAL_MS = 30_000;
 const STALE_WARNING_MS = 2 * 60_000;
@@ -151,7 +154,53 @@ export const useChatConnectionStore = create<ChatConnectionState>(() => ({
 // closures avoids subtle issues with stale references inside the WS callbacks.
 
 let ws: WebSocket | null = null;
-let wsConnecting = false;
+// The in-flight bridge connect, or null. This is the ONE source of truth for
+// "a connect is running" (a separate boolean could disagree with it, and a
+// concurrent caller that reads a stale flag is exactly how chat used to strand:
+// the second caller returned as if it had connected, so nothing retried and the
+// socket stayed null forever). Concurrent callers await this promise and then
+// verify the socket really opened.
+let wsConnectPromise: Promise<void> | null = null;
+
+// Bumped whenever the last channel is released. A connect captures this on entry
+// and discards its socket if the value moved, because a connect can easily
+// outlive the thing that asked for it (start_chat plus the WS-open retries can
+// run for tens of seconds, and a pane can be closed in that window).
+let connectGeneration = 0;
+
+/** Whether a live socket is currently open. Read through a function so callers
+ *  that assigned `ws = null` earlier in their own flow still see the value as
+ *  it is NOW (an awaited connect reassigns it, which control-flow narrowing in
+ *  the caller cannot know about). */
+function socketIsOpen(): boolean {
+  return !!ws && ws.readyState === WebSocket.OPEN;
+}
+
+/** Reject if `p` has not settled in `ms`. The bridge connect must be bounded:
+ *  `wsConnectPromise` and `reconnectInFlight` are what the watchdog reads to
+ *  decide a recovery is already under way, so a connect that never settles
+ *  (the Rust side takes a process-global start lock) would disable the
+ *  watchdog for the rest of the session. */
+function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+    p.then(
+      (v) => {
+        clearTimeout(timer);
+        resolve(v);
+      },
+      (e) => {
+        clearTimeout(timer);
+        reject(e);
+      },
+    );
+  });
+}
+
+// Generous: start_chat can legitimately spend ~15s connecting IRC plus a
+// handshake, and it queues behind a process-global lock. This is a deadman for
+// a wedged backend, not a latency budget.
+const BRIDGE_CONNECT_TIMEOUT_MS = 45_000;
 let reconnectAttempts = 0;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let healthCheckTimer: ReturnType<typeof setInterval> | null = null;
@@ -176,6 +225,31 @@ let staleNudgeAtMs: number | null = null;
 // Serializes reconnectAll: the retry timer and a user-triggered refresh must
 // not tear the socket down concurrently.
 let reconnectInFlight = false;
+// A reconnect requested while another was in flight. Without this the request
+// is discarded and nothing ever retries.
+let reconnectPending = false;
+// Same, for callers whose goal is a REBUILT socket rather than merely a live
+// one (a hard channel refresh, or re-authing after an account switch). For them
+// "a socket is already open" is not success, so they must survive the
+// socketIsOpen() shortcut below.
+let reconnectForcePending = false;
+// Armed when a lost-session IRC_RECONNECTING arrives; fires the visible
+// "connection lost" row + pane error only if the outage outlives the grace
+// window. Fast silent rebuilds (the common case) show nothing, and the gap
+// backfill covers the missed messages either way, because outageStartedAtMs
+// is stamped at outage START regardless of whether the row ever fires.
+let pendingLostRowTimer: ReturnType<typeof setTimeout> | null = null;
+// Mirrors the backend's SESSION_FLAP_THRESHOLD_MS: a rebuild the backend
+// considers healthy (0-1s reconnect delay + a few seconds of handshake) fits
+// comfortably inside the window.
+const LOST_ROW_GRACE_MS = 10_000;
+
+function clearPendingLostRow(): void {
+  if (pendingLostRowTimer !== null) {
+    clearTimeout(pendingLostRowTimer);
+    pendingLostRowTimer = null;
+  }
+}
 
 // Every Twitch user id that belongs to the local user (primary + any linked
 // secondary accounts). Used so a message we sent from a secondary account is
@@ -861,21 +935,35 @@ async function openWebSocketWithRetry(port: number): Promise<WebSocket> {
       );
       await new Promise((r) => setTimeout(r, delay));
     }
+    let socket: WebSocket | null = null;
     try {
-      const socket = new WebSocket(`ws://localhost:${port}`);
+      socket = new WebSocket(`ws://localhost:${port}`);
+      const pending = socket;
       await new Promise<void>((resolve, reject) => {
         const timeout = setTimeout(() => reject(new Error('WS open timeout')), 5_000);
-        socket.onopen = () => {
+        pending.onopen = () => {
           clearTimeout(timeout);
           resolve();
         };
-        socket.onerror = () => {
+        pending.onerror = () => {
           clearTimeout(timeout);
           reject(new Error('WS open error'));
         };
       });
       return socket;
     } catch (err) {
+      // Close the abandoned socket: one that merely timed out can still open a
+      // moment later, and an unowned live socket holds a bridge client slot
+      // nothing will ever read.
+      if (socket) {
+        socket.onopen = null;
+        socket.onerror = null;
+        try {
+          socket.close();
+        } catch {
+          // ignore
+        }
+      }
       Logger.error(`[ChatStore] WS open attempt ${attempt + 1} failed:`, err);
       if (attempt === WS_OPEN_RETRY_ATTEMPTS - 1) throw err;
     }
@@ -886,7 +974,17 @@ async function openWebSocketWithRetry(port: number): Promise<WebSocket> {
 function startHealthCheck() {
   if (healthCheckTimer) clearInterval(healthCheckTimer);
   healthCheckTimer = setInterval(() => {
-    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    // A dead socket is the case this watchdog exists for. It used to return
+    // here whenever the socket was not OPEN, which disabled the entire ladder
+    // below at exactly the moment it was needed and left chat silent forever.
+    // Now: if nothing is already working on it, revive it.
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      if (useChatConnectionStore.getState().channels.size === 0) return;
+      if (reconnectTimer || reconnectInFlight || wsConnectPromise) return;
+      Logger.warn('[ChatStore] Health check found no live socket — scheduling reconnect');
+      scheduleReconnect(0);
+      return;
+    }
     const elapsed = Date.now() - lastMessageTime;
     if (elapsed > STALE_WARNING_MS && elapsed <= STALE_RECONNECT_MS) {
       Logger.warn(
@@ -982,17 +1080,40 @@ function clearHealthCheck() {
 function scheduleReconnect(delayMs: number) {
   if (reconnectTimer) clearTimeout(reconnectTimer);
   reconnectTimer = setTimeout(() => {
+    // Cleared BEFORE running, because this handle doubles as the "a reconnect
+    // is already pending" signal the health check reads. Leaving a fired timer
+    // set made that guard permanently true after the first reconnect, which
+    // silently disabled the dead-socket watchdog for the rest of the session.
+    reconnectTimer = null;
     void reconnectAll();
   }, delayMs);
 }
 
-async function reconnectAll() {
-  if (reconnectInFlight) return;
+async function reconnectAll(force = false) {
+  if (reconnectInFlight) {
+    // Never drop the request. Callers cannot see that this returned without
+    // doing anything (scheduleReconnect discards the promise), so a reconnect
+    // that lands mid-flight would be lost outright and nothing would retry.
+    reconnectPending = true;
+    if (force) reconnectForcePending = true;
+    return;
+  }
   reconnectInFlight = true;
   try {
     await reconnectAllInner();
   } finally {
     reconnectInFlight = false;
+    const forced = reconnectForcePending;
+    if (reconnectPending || forced) {
+      reconnectPending = false;
+      reconnectForcePending = false;
+      // A forced request always re-runs: it wants the socket REBUILT (the
+      // caller has typically already wiped the pane and is relying on the
+      // reconnect to re-seed history). A plain one only re-runs if we still
+      // lack a socket, so a request that arrived during a connect that
+      // ultimately succeeded costs nothing.
+      if (forced || !socketIsOpen()) scheduleReconnect(500);
+    }
   }
 }
 
@@ -1036,6 +1157,12 @@ async function reconnectAllInner() {
       firstSlice.provider,
       parseKey(first).channel,
     );
+    // The ladder verifies its own result. Returning without an open socket is
+    // the failure that used to end reconnection silently, so treat it as an
+    // error and let the catch below schedule the next attempt.
+    if (!socketIsOpen()) {
+      throw new Error('[ChatStore] reconnect finished without an open socket');
+    }
     for (const ch of channels.slice(1)) {
       const provider = state.channels.get(ch)?.provider ?? 'twitch';
       try {
@@ -1067,7 +1194,7 @@ async function reconnectAllInner() {
  * user-state to be correct. No-op when no channels are open.
  */
 export async function reconnectAllChannels(): Promise<void> {
-  await reconnectAll();
+  await reconnectAll(true);
 }
 
 /**
@@ -1108,8 +1235,9 @@ export async function hardRefreshChannel(
 
   // Tear down + reconnect the IRC bridge. connectBridgeForFirstChannel re-runs
   // preloadChannel for the first channel, re-seeding recent history into the
-  // buffer we just cleared.
-  await reconnectAll();
+  // buffer we just cleared. Forced: this pane has ALREADY been wiped, so an
+  // in-flight reconnect ending with an open socket is not good enough.
+  await reconnectAll(true);
 }
 
 // [ChatPerf] Instrumentation for the "chat blank for ~30s on join" hunt.
@@ -1132,28 +1260,89 @@ async function connectBridgeForFirstChannel(
   // the composite slice key). Defaults to the slice key for Twitch.
   bareChannel?: string,
 ): Promise<void> {
-  if (wsConnecting) {
-    Logger.debug('[ChatStore] WS already connecting, skipping duplicate request');
-    return;
+  // A connect is already running. Wait it out, then decide on FACTS: if it left
+  // a usable socket we are done, otherwise run our own connect. Reporting the
+  // other attempt's failure as ours used to kill chat outright, because the
+  // waiter is normally the NEXT channel the user opened: a teardown bumps the
+  // generation, the in-flight connect correctly discards its own socket, and
+  // the new channel inherited that as a failure with nothing left to retry.
+  // Bounded so a pathological chain of connects cannot spin here.
+  for (let waited = 0; wsConnectPromise && waited < 3; waited += 1) {
+    const inflight = wsConnectPromise;
+    try {
+      await inflight;
+    } catch {
+      // Whoever started that attempt reports its own failure.
+    }
+    if (socketIsOpen()) return;
   }
-  wsConnecting = true;
+  const attempt = connectBridgeInner(channel, channelId, reattach, provider, bareChannel);
+  wsConnectPromise = attempt;
   try {
+    await attempt;
+  } finally {
+    wsConnectPromise = null;
+  }
+}
+
+async function connectBridgeInner(
+  channel: string,
+  channelId: string | null,
+  reattach: boolean,
+  provider: ProviderId,
+  bareChannel?: string,
+): Promise<void> {
+  {
+    const gen = connectGeneration;
     Logger.debug(`[ChatStore] Invoking bridge connect for ${channel} (${provider})`);
     chatConnectStartedAt = performance.now();
     chatFirstFrameLogged = false;
-    const port =
+    const port = await withTimeout(
       provider === 'twitch'
-        ? await invoke<number>('start_chat', { channel, reattach })
-        : await invoke<number>('provider_chat_connect', {
+        ? invoke<number>('start_chat', { channel, reattach })
+        : invoke<number>('provider_chat_connect', {
             provider,
             channel: bareChannel ?? channel,
-          });
+          }),
+      BRIDGE_CONNECT_TIMEOUT_MS,
+      provider === 'twitch' ? 'start_chat' : 'provider_chat_connect',
+    );
     Logger.info(`[ChatPerf] bridge connect took ${Math.round(performance.now() - chatConnectStartedAt)}ms`);
     useChatConnectionStore.setState({ wsPort: port });
 
     const tBeforeWs = performance.now();
     const socket = await openWebSocketWithRetry(port);
     Logger.info(`[ChatPerf] WS bridge open took ${Math.round(performance.now() - tBeforeWs)}ms (connect total ${Math.round(performance.now() - chatConnectStartedAt)}ms)`);
+    // The teardown may have run while this connect was still awaiting. Installing
+    // anyway re-armed the 30s watchdog with zero channels and left an unowned
+    // socket open for good; the next acquire would then overwrite `ws` and the
+    // abandoned one kept feeding duplicate frames (and kept the stale-timer clock
+    // fresh) with its handlers still attached.
+    if (gen !== connectGeneration || useChatConnectionStore.getState().channels.size === 0) {
+      Logger.debug('[ChatStore] Discarding a bridge connect that is no longer wanted');
+      try {
+        socket.close(1000, 'Superseded');
+      } catch {
+        // ignore
+      }
+      if (useChatConnectionStore.getState().channels.size === 0) {
+        useChatConnectionStore.setState({ wsPort: null });
+      }
+      return;
+    }
+    // Never leave a previous socket attached: two clients on one bridge means
+    // every frame is handled twice.
+    if (ws && ws !== socket) {
+      ws.onmessage = null;
+      ws.onerror = null;
+      ws.onclose = null;
+      ws.onopen = null;
+      try {
+        ws.close(1000, 'Replaced');
+      } catch {
+        // ignore
+      }
+    }
     ws = socket;
     reconnectAttempts = 0;
     lastMessageTime = Date.now();
@@ -1169,23 +1358,23 @@ async function connectBridgeForFirstChannel(
       setAllChannelsConnected(false);
       if (intentionalDisconnect) return;
       if (useChatConnectionStore.getState().channels.size === 0) return;
-      if (event.code === 1006 || event.code === 1001) {
-        if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
-          reconnectAttempts++;
-          const delay = Math.min(1_000 * 2 ** (reconnectAttempts - 1), 30_000);
-          Logger.debug(
-            `[ChatStore] Scheduling reconnect ${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS} in ${delay}ms`,
-          );
-          setAllChannelsError(
-            `Connection lost — reconnecting in ${Math.round(delay / 1000)}s (${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})`,
-          );
-          scheduleReconnect(delay);
-        } else {
-          setAllChannelsError('Max reconnection attempts reached. Refresh chat.');
-        }
-      } else {
-        setAllChannelsError('Connection closed');
-      }
+      // EVERY close code reconnects, and the ladder never gives up. Gating on
+      // 1006/1001 left any other code (1000, 1005, 1011) with no retry at all,
+      // and the old attempt cap ended in a terminal "refresh chat" state that a
+      // flaky connection reached in about four minutes, after which chat stayed
+      // dead for the rest of the session. Backoff still caps at 30s, and a
+      // successful open resets the counter.
+      reconnectAttempts++;
+      const delay = Math.min(1_000 * 2 ** (reconnectAttempts - 1), 30_000);
+      Logger.debug(
+        `[ChatStore] WS closed (${event.code}); scheduling reconnect attempt ${reconnectAttempts} in ${delay}ms`,
+      );
+      setAllChannelsError(
+        reconnectAttempts <= RECONNECT_QUIET_ATTEMPTS
+          ? `Connection lost — reconnecting in ${Math.round(delay / 1000)}s`
+          : `Reconnecting to chat… (attempt ${reconnectAttempts})`,
+      );
+      scheduleReconnect(delay);
     };
 
     setAllChannelsConnected(true);
@@ -1194,8 +1383,6 @@ async function connectBridgeForFirstChannel(
     // After first-channel connect, pre-load recent messages (Twitch-only: the
     // badge cache + history backfill don't apply to other providers).
     if (provider === 'twitch') void preloadChannel(channel, channelId);
-  } finally {
-    wsConnecting = false;
   }
 }
 
@@ -1375,6 +1562,7 @@ function handleWsMessage(raw: string) {
   if (raw === 'IRC_CONNECTED' || raw === 'RECONNECTED') {
     setAllChannelsConnected(true);
     setAllChannelsError(null);
+    clearPendingLostRow();
     reconnectAttempts = 0;
     watchdogCycles = 0;
     if (backendReconnecting) {
@@ -1395,20 +1583,37 @@ function handleWsMessage(raw: string) {
     }
     return;
   }
+  if (raw === 'IRC_CONNECT_RETRY') {
+    // Pre-establishment retry: there was never a live session to lose, so no
+    // row and no pane error. Critically no backendReconnecting either; that
+    // flag gates the post-outage backfill, which a first connect must not
+    // trigger.
+    Logger.debug('[ChatStore] backend retrying initial IRC connect');
+    return;
+  }
   if (raw === 'IRC_RECONNECTING') {
     if (!backendReconnecting) {
       backendReconnecting = true;
       outageStartedAtMs = lastMessageTime;
-      // Inline marker so the gap is visible in the transcript, not just in a
-      // transient banner. The backfill stitches the missed messages around it.
-      const { channels } = useChatConnectionStore.getState();
-      for (const [key, slice] of channels) {
-        if (slice.provider === 'twitch') {
-          injectSystemMessage(key, 'Chat connection lost, reconnecting...');
+      // Grace window: the supervisor usually rebuilds in a second or two and
+      // the backfill fills the gap in place, so a fast recovery stays fully
+      // silent. Only an outage that outlives the window prints the inline
+      // marker row (once per twitch slice) and the pane error. The
+      // !backendReconnecting gate means repeated frames during one outage can
+      // never stack timers or rows.
+      clearPendingLostRow();
+      pendingLostRowTimer = setTimeout(() => {
+        pendingLostRowTimer = null;
+        if (!backendReconnecting) return;
+        const { channels } = useChatConnectionStore.getState();
+        for (const [key, slice] of channels) {
+          if (slice.provider === 'twitch') {
+            injectSystemMessage(key, 'Chat connection lost, reconnecting...');
+          }
         }
-      }
+        setAllChannelsError('Reconnecting to chat...');
+      }, LOST_ROW_GRACE_MS);
     }
-    setAllChannelsError('Reconnecting to chat...');
     return;
   }
   if (raw.startsWith('RECONNECTING:')) {
@@ -1999,13 +2204,22 @@ function appendStructuredMessage(slice: ChannelSlice, parsed: any) {
     // channels they moderate unless they opt out.
     const moderatingHere = (rp?.keep_all_when_moderator ?? true) && isModeratorOfSlice(slice);
     const privileged = (rp?.exempt_privileged ?? true) && isPrivilegedChatter(parsed.badges);
+    // A first-time chatter's message is high-signal for the streamer and is
+    // typically a generic greeting, exactly what matches an open repeat run;
+    // never fold it away. Tag first, metadata fallback (backfill and future
+    // paths may deliver one without the other). Tags here are a plain object,
+    // not the Map ChatMessage sees.
+    const rawTags = (parsed.tags ?? {}) as Record<string, string>;
+    const firstTimeChatter =
+      rawTags['first-msg'] === '1' || parsed.metadata?.is_first_message === true;
 
     if (
       mode !== 'off' &&
       !giftBombChildSuppressed &&
       !parsed.metadata?.msg_type &&
       !moderatingHere &&
-      !privileged
+      !privileged &&
+      !firstTimeChatter
     ) {
       const key = normalizeForRepeat(parsed.content ?? '', rp?.match ?? 'normalized');
       if (key) {
@@ -2352,7 +2566,17 @@ export async function acquireChannel(
     void seedKickHistory(key, channel);
   }
 
-  // First channel ever: open the bridge + WS.
+  // Arm the watchdog as soon as a channel exists, not only after a successful
+  // connect. It used to start only inside connectBridgeForFirstChannel, so a
+  // user whose FIRST connect failed had no safety net at all. Idempotent: it
+  // clears any existing timer first.
+  startHealthCheck();
+
+  // First channel ever: open the bridge + WS. A failure here deliberately LEAVES
+  // the slice in place: the watchdog armed just above is the recovery path, and
+  // removing the slice would take channels.size to 0, which every recovery path
+  // (watchdog, visibilitychange, online) treats as "nothing to do". Consumers
+  // that abandon a failed acquire release the channel on unmount.
   if (state.channels.size === 0) {
     await connectBridgeForFirstChannel(key, channelId, false, provider, channel);
   } else if (provider === 'twitch') {
@@ -2441,7 +2665,16 @@ export async function releaseChannel(
   const remaining = useChatConnectionStore.getState().channels.size;
   if (remaining === 0) {
     intentionalDisconnect = true;
+    // Invalidate any connect still in flight so it discards its socket instead
+    // of undoing this teardown when it finally resolves.
+    connectGeneration += 1;
+    // Drop any queued reconnect intent with it, or a request that arrived
+    // mid-teardown re-arms a timer 500ms after this deliberately cleared one.
+    reconnectPending = false;
+    reconnectForcePending = false;
+    backendReconnecting = false;
     clearHealthCheck();
+    clearPendingLostRow();
     if (reconnectTimer) {
       clearTimeout(reconnectTimer);
       reconnectTimer = null;
@@ -2881,9 +3114,25 @@ export function useChannelChat(channel: string | null | undefined): ChannelChatS
 if (typeof document !== 'undefined') {
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) return;
-    if (!ws || ws.readyState === WebSocket.OPEN) return;
+    // Only a healthy socket is a reason to do nothing. The old `!ws ||` bailed
+    // when the socket was GONE, which is precisely the state this handler was
+    // written to rescue.
+    if (ws && ws.readyState === WebSocket.OPEN) return;
     if (useChatConnectionStore.getState().channels.size === 0) return;
     Logger.debug('[ChatStore] Visibility regained, scheduling reconnect');
+    scheduleReconnect(0);
+  });
+}
+
+// Network came back: the flaky-connection case this whole ladder exists for.
+// `online` tracks the adapter rather than real reachability, so this can fire
+// while the internet is still down; harmless, since the reconnect it schedules
+// has its own backoff.
+if (typeof window !== 'undefined') {
+  window.addEventListener('online', () => {
+    if (ws && ws.readyState === WebSocket.OPEN) return;
+    if (useChatConnectionStore.getState().channels.size === 0) return;
+    Logger.warn('[ChatStore] Network regained, scheduling reconnect');
     scheduleReconnect(0);
   });
 }

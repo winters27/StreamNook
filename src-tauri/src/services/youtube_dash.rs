@@ -36,6 +36,7 @@ use once_cell::sync::Lazy;
 use rand::Rng;
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use warp::Filter;
@@ -551,6 +552,13 @@ pub(crate) fn is_gated(url: &str) -> bool {
 /// completes, so without this every segment in the window would start its own.
 static ROTATING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
+// Rate limiting for the slow-serve warning: it is per-request and otherwise
+// floods the app log on any sluggish stream.
+const SLOW_SERVE_LOG_EVERY_MS: u64 = 30_000;
+static SLOW_SERVE_EPOCH: OnceLock<Instant> = OnceLock::new();
+static SLOW_SERVE_LAST_LOG_MS: AtomicU64 = AtomicU64::new(0);
+static SLOW_SERVE_SUPPRESSED: AtomicU64 = AtomicU64::new(0);
+
 /// Start a refresh if the urls in hand are getting old. Returns immediately.
 ///
 /// This deliberately does NOT wait for the new urls. A re-resolve takes seconds
@@ -701,13 +709,37 @@ async fn handle(path: String) -> Result<warp::http::Response<Vec<u8>>, std::conv
     let report = |kind: &str| {
         let ms = started.elapsed().as_millis();
         if ms >= 250 {
-            log::warn!(
-                "[YouTubeDash] slow serve: {} took {}ms (rotation in flight: {})",
-                kind,
-                ms,
-                was_rotating
-                    || ROTATING.load(std::sync::atomic::Ordering::SeqCst)
-            );
+            // Rate limited: this fires per request and buried the app log
+            // (thousands of lines an hour) under a stream that is merely slow,
+            // which is exactly the noise that hides a real chat fault. One line
+            // per window, carrying however many were suppressed, keeps the
+            // signal without the flood.
+            let suppressed = SLOW_SERVE_SUPPRESSED.fetch_add(1, Ordering::Relaxed);
+            let now_ms = SLOW_SERVE_EPOCH
+                .get_or_init(std::time::Instant::now)
+                .elapsed()
+                .as_millis() as u64;
+            let last = SLOW_SERVE_LAST_LOG_MS.load(Ordering::Relaxed);
+            // `last == 0` means nothing has been reported yet. Without this the
+            // very first slow serve after startup, usually the most telling one,
+            // was swallowed for the first 30 seconds of the process.
+            let due = last == 0 || now_ms.saturating_sub(last) >= SLOW_SERVE_LOG_EVERY_MS;
+            // Stamp at least 1 so the "never reported" sentinel cannot recur.
+            let stamp = now_ms.max(1);
+            if due
+                && SLOW_SERVE_LAST_LOG_MS
+                    .compare_exchange(last, stamp, Ordering::Relaxed, Ordering::Relaxed)
+                    .is_ok()
+            {
+                SLOW_SERVE_SUPPRESSED.store(0, Ordering::Relaxed);
+                log::warn!(
+                    "[YouTubeDash] slow serve: {} took {}ms (rotation in flight: {}; {} more suppressed since the previous report)",
+                    kind,
+                    ms,
+                    was_rotating || ROTATING.load(Ordering::SeqCst),
+                    suppressed
+                );
+            }
         }
     };
 

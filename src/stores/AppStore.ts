@@ -414,7 +414,10 @@ interface AppState {
   loadRecommendedStreams: () => Promise<void>;
   loadMoreRecommendedStreams: () => Promise<void>;
   startStream: (channel: string, streamInfo?: TwitchStream, skipChatRefresh?: boolean) => Promise<void>;
-  startOfflineChat: (channel: string, streamInfo?: TwitchStream) => Promise<void>;
+  // `chatOnly` skips the VOD lookup and replay: used when the channel is LIVE
+  // but playback failed, where loading a past broadcast would contradict what
+  // the user was told and swap chat to historical replay.
+  startOfflineChat: (channel: string, streamInfo?: TwitchStream, opts?: { chatOnly?: boolean }) => Promise<void>;
   playMedia: (type: 'clip' | 'video', url: string, info: MediaInfo) => Promise<void>;
   stopStream: (options?: { preserveBackend?: boolean }) => Promise<void>;
   restartStream: () => Promise<void>;  // Restart current stream (stops and starts again)
@@ -539,6 +542,10 @@ const PROVIDER_OFFLINE_STRIKES = 2;
  *  Each call captures a ticket and abandons any post-await work once a newer
  *  start has begun. Same shape as `createSeqRef` in VideoPlayer. */
 let providerStartSeq = 0;
+// Same ticket idea for the Twitch path. A start that fails late (playback can
+// take up to a minute to give up) must not clobber whatever the user switched
+// to in the meantime.
+let twitchStartSeq = 0;
 
 /**
  * Watch a stream on a non-Twitch platform.
@@ -642,6 +649,17 @@ async function startProviderStream(
       }
       mainProviderChatKey = key;
     } catch (e) {
+      // acquireChannel commits the slice BEFORE it connects and deliberately
+      // leaves it in place on failure so the watchdog can retry. This path
+      // abandons the channel, so it owes the release that every other consumer
+      // performs on unmount; without it the slice is ownerless and retries for
+      // the rest of the session on a channel nobody is watching.
+      try {
+        const { releaseChannel } = await import('./chatConnectionStore');
+        await releaseChannel(channel, provider);
+      } catch {
+        // Best effort: the warning below is the real report.
+      }
       Logger.warn(`[${provider}] Could not connect chat for ${channel}:`, e);
     }
 
@@ -2102,10 +2120,38 @@ export const useAppStore = create<AppState>((set, get) => ({
     // before the Twitch session sets up its own.
     await teardownProviderSession();
 
+    const seq = ++twitchStartSeq;
+    const superseded = () => seq !== twitchStartSeq;
     set({ isLoading: true });
     trackActivity(`Started watching: ${channel}`);
+
+    // Chat is started BEFORE playback and never depends on it. It used to sit
+    // after start_stream inside the same try, so any playback failure (an
+    // offline channel, a usher hiccup) skipped chat entirely and left the user
+    // with nothing. Placed after teardownProviderSession above, which drops the
+    // previous provider's chat, and kept claim:false because the widget's
+    // acquireChannel registers the real consumer; a claim here has no matching
+    // release, so it would pin the channel's refcount above its consumer count
+    // and the room could never PART after the stream closes.
+    if (get().isAuthenticated && !skipChatRefresh) {
+      try {
+        await invoke('start_chat', { channel, claim: false });
+      } catch (e) {
+        Logger.warn('Could not start chat:', e);
+        // Chat connection failed, but stream can still work
+      }
+    } else if (skipChatRefresh) {
+      Logger.debug(`[Stream] Skipping chat refresh for ${channel} (Seamless Auto-Switch enabled)`);
+    }
+
     try {
       const requestedQuality = get().settings.quality;
+      // No retry loop here on purpose. `start_stream` ALREADY retries with a
+      // real budget (resolve_live_resilient gets retry_streams=3 as the delay
+      // and stream_timeout=60 as the total, see commands/streaming.rs), so a
+      // frontend loop on top multiplied a transient failure into minutes of
+      // spinner and delayed the chat-only fallback below. A hiccup is retried
+      // by the backend; when this rejects, the failure is real.
       const result = await invoke<StreamStartResult>('start_stream', { url: `https://twitch.tv/${channel}`, quality: requestedQuality });
       logQualityFallback(requestedQuality, result.quality);
 
@@ -2170,23 +2216,10 @@ export const useAppStore = create<AppState>((set, get) => ({
         }
       }
 
+      // Same guard on the success path: a slow start that finally resolves
+      // must not replace the stream the user has since switched to.
+      if (superseded()) return;
       set({ streamUrl: result.url, activeQuality: result.quality, adSource: adSourceFrom(result), availableQualities: result.available ?? [], playbackKind: 'hls', currentStream: info, currentMediaType: 'live', originalMediaUrl: null, isHomeActive: false });
-
-      // Warm up the chat bridge so ChatWidget connects instantly when it
-      // mounts. claim:false because the widget's acquireChannel registers the
-      // real consumer; a claim here has no matching release, so it would pin
-      // the channel's refcount above its consumer count and the room could
-      // never PART after the stream closes.
-      if (get().isAuthenticated && !skipChatRefresh) {
-        try {
-          await invoke('start_chat', { channel, claim: false });
-        } catch (e) {
-          Logger.warn('Could not start chat:', e);
-          // Chat connection failed, but stream can still work
-        }
-      } else if (skipChatRefresh) {
-        Logger.debug(`[Stream] Skipping chat refresh for ${channel} (Seamless Auto-Switch enabled)`);
-      }
 
       // Start drops and channel points monitoring
       try {
@@ -2509,13 +2542,37 @@ export const useAppStore = create<AppState>((set, get) => ({
       const errorMessage = e instanceof Error ? e.message : String(e);
       Logger.error('Failed to start stream:', errorMessage);
 
-      // Show toast error to user
-      get().addToast(`Failed to start stream: ${errorMessage}`, 'error');
+      // A newer start already won: say nothing and touch nothing, or this stale
+      // failure would drag the user out of the stream they are now watching.
+      if (superseded()) return;
+
+      // Playback is gone, but chat is not. Rather than leaving a dead screen,
+      // fall back to the chat-only view the app already has for offline
+      // channels, and say which of the two actually happened.
+      let live = false;
+      try {
+        live = !!(await invoke<object | null>('check_stream_online', { userLogin: channel }));
+      } catch {
+        // Treat an unanswerable check as "live": the honest message is then
+        // about playback rather than claiming the channel is offline.
+        live = true;
+      }
+      get().addToast(
+        live
+          ? 'Playback unavailable - showing chat only'
+          : 'Channel is offline - showing chat',
+        live ? 'error' : 'info',
+      );
+      try {
+        await get().startOfflineChat(channel, providedStreamInfo, { chatOnly: live });
+      } catch (fallbackErr) {
+        Logger.error('[Stream] Chat-only fallback failed:', fallbackErr);
+      }
     } finally {
       set({ isLoading: false });
     }
   },
-  startOfflineChat: async (channel, providedStreamInfo?) => {
+  startOfflineChat: async (channel, providedStreamInfo?, opts?) => {
     set({ isLoading: true });
     trackActivity(`Joined offline chat: ${channel}`);
     try {
@@ -2564,7 +2621,9 @@ export const useAppStore = create<AppState>((set, get) => ({
       let resolvedQuality: string | null = null;
       let streamContextForUI = { ...info };
 
-      if (info.user_id) {
+      // chatOnly: the channel is live and only playback broke, so there is no
+      // past broadcast to show and the live room is the chat we want.
+      if (info.user_id && !opts?.chatOnly) {
         try {
           const [videos] = await invoke<[TwitchVideo[], string | null]>('get_user_videos', {
             userId: info.user_id,

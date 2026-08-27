@@ -528,7 +528,7 @@ const drainBatch = async () => {
       }
       // [7TV-diag] If this drops to 0/N while MultiChat is open, 7TV is silently
       // returning empty user entries (soft throttling) rather than erroring.
-      Logger.warn(`[7TV-diag] chunk resolved ${resolved}/${chunk.length} user(s) with a 7TV connection`);
+      Logger.debug(`[7TV-diag] chunk resolved ${resolved}/${chunk.length} user(s) with a 7TV connection`);
     } catch (error) {
       Logger.error('[7TV] Batch cosmetics fetch failed:', error);
       for (const id of chunk) {

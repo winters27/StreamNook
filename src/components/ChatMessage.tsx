@@ -1722,19 +1722,6 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
     sourceMsgId === 'anonsubmysterygift' ||
     sourceMsgId === 'anonsubgift';
 
-  // TEMP [sub-debug]: trace non-Twitch sub/membership events through the chat render
-  // (they show in activity but reportedly not in chat). Confirms the message reaches
-  // ChatMessage and whether the sub-card path (isSubscription) fires.
-  if (parsed.provider && parsed.provider !== 'twitch' && (msgId || parsed.metadata?.msg_type)) {
-    Logger.info('[sub-debug] non-twitch event reached chat render', {
-      provider: parsed.provider,
-      msgId,
-      metaType: parsed.metadata?.msg_type,
-      isSubscription,
-      sys: parsed.tags.get('system-msg'),
-    });
-  }
-
   // YouTube's paid highlights. They are donations with a comment attached, which
   // is exactly the shape of the charity-donation card, and the overlay already
   // classifies them alongside cheers/bits. Without this they fell through to a
@@ -1801,7 +1788,11 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
   // others OFF. When ON, applies a tinted background + left border in the
   // configured color via the inline style stamp below.
   const builtInHighlights = settings?.chat_highlights?.built_in;
-  const isFirstMessage = parsed.tags.get('first-msg') === '1';
+  // Tag first, metadata fallback: the overlay already accepts either
+  // (OverlayChat), and backfilled or future paths may deliver one without
+  // the other.
+  const isFirstMessage =
+    parsed.tags.get('first-msg') === '1' || parsed.metadata?.is_first_message === true;
   const isReturningChatter = parsed.tags.get('returning-chatter') === '1';
   const isOwnMessage = !!currentUser?.user_id && parsed.tags.get('user-id') === currentUser.user_id;
   const isRaidNotice = parsed.tags.get('msg-id') === 'raid';
@@ -3210,8 +3201,6 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
                   />
                 </Tooltip>
               )}
-              {/* StreamNook identity badge leads the row (see utils/badgeOrder). */}
-              {isSN && <StreamNookBadge userId={senderUserId} userNumber={getStreamNookUserNumber(senderUserId)} />}
               {/* Twitch badges, channel-contextual (subscriber, poll, …) before global. */}
               {orderTwitchBadges(parsed.badges).map((badge, idx) => {
                 if (!badge.info) return null;
@@ -3259,6 +3248,8 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
                   />
                 </Tooltip>
               ))}
+              {/* StreamNook identity badge sits rightmost, next to the name (see utils/badgeOrder). */}
+              {isSN && <StreamNookBadge userId={senderUserId} userNumber={getStreamNookUserNumber(senderUserId)} />}
             </span>
           ) : null}
 

@@ -53,8 +53,7 @@ import ModeratorMenu from './chat/ModeratorMenu';
 import ResubNotificationBanner, { ResubNotification } from './ResubNotificationBanner';
 import WatchStreakBanner, { WatchStreakMilestone } from './WatchStreakBanner';
 import { Emote, EmoteSet, preloadChannelEmotes, queueEmoteForCaching, queueEmoteForDisplayCaching, queueChannelEmotesForCaching, getCachedEmoteUrl, setEmoteCacheBurst, inlineEmoteTier, sevenTvTierUrl } from '../services/emoteService';
-import { preloadThirdPartyBadgeDatabases } from '../services/thirdPartyBadges';
-import { initializeBadges, getBadgeInfo } from '../services/twitchBadges';
+import { prefetchChannelBadges } from '../services/badgeService';
 import { parseBadges } from '../services/twitchBadges';
 import { initializeBadgeImageCache } from '../services/badgeImageCacheService';
 import { parseMessage } from '../services/twitchChat';
@@ -1535,7 +1534,7 @@ const ChatWidget = ({ channelOverride, hypeTrainOverride }: ChatWidgetProps = {}
       .then((c) => {
         const sel = (c?.paints || []).find((p: any) => p?.selected);
         // TEMP DIAGNOSTIC [selfpaint]
-        Logger.info('[selfpaint] connect-resolve', {
+        Logger.debug('[selfpaint] connect-resolve', {
           selfId,
           paintCount: c?.paints?.length ?? 0,
           selectedPaintId: sel?.id ?? null,
@@ -2592,19 +2591,16 @@ const ChatWidget = ({ channelOverride, hypeTrainOverride }: ChatWidgetProps = {}
   const loadEmotes = async (channelName: string, channelId?: string) => {
     setIsLoadingEmotes(true);
     try {
-      // Start badge and third-party database loading in parallel (non-blocking)
-      // These will populate caches in the background for future lookups
-      preloadThirdPartyBadgeDatabases().catch(err =>
-        Logger.warn('[ChatWidget] Failed to preload third-party badge databases:', err)
-      );
-
-      // Start Twitch badge cache initialization in the background (non-blocking).
+      // Seed the channel-scoped Twitch badge cache in the background. Channel
+      // badges (subscriber, bits, founder) are per-room and are NOT covered by
+      // the global set, so without this the room's own badges render blank.
       // Twitch-only: Kick badge art is baked into each message (badges_v2 + sub
       // art), so there's no Twitch badge cache to seed for a Kick channel.
-      if (isTwitch) {
-        invoke<[string, string]>('get_twitch_credentials')
-          .then(([clientId, token]) => initializeBadges(clientId, token, channelId))
-          .catch(err => Logger.warn('[ChatWidget] Badge init error (non-blocking):', err));
+      // Third-party databases need no priming; the Rust side fetches them.
+      if (isTwitch && channelId) {
+        prefetchChannelBadges(channelId).catch(err =>
+          Logger.warn('[ChatWidget] Badge prefetch error (non-blocking):', err),
+        );
       }
 
       // PRIORITY: Fetch emotes first and display immediately.
@@ -2702,17 +2698,12 @@ const ChatWidget = ({ channelOverride, hypeTrainOverride }: ChatWidgetProps = {}
       });
       setIsSharedChat(hasSharedMessages);
       if (sourceRoomIds.size > 0) {
-        try {
-          const [clientId, token] = await invoke<[string, string]>('get_twitch_credentials');
-          for (const sourceRoomId of sourceRoomIds) {
-            try {
-              await initializeBadges(clientId, token, sourceRoomId);
-            } catch (err) {
-              Logger.warn('[ChatWidget] Failed to initialize badges for shared channel:', sourceRoomId, err);
-            }
+        for (const sourceRoomId of sourceRoomIds) {
+          try {
+            await prefetchChannelBadges(sourceRoomId);
+          } catch (err) {
+            Logger.warn('[ChatWidget] Failed to prefetch badges for shared channel:', sourceRoomId, err);
           }
-        } catch (err) {
-          Logger.error('[ChatWidget] Failed to get credentials for shared channel badges:', err);
         }
       }
     };
