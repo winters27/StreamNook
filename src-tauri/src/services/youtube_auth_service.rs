@@ -371,6 +371,7 @@ pub async fn validate_session() -> Option<bool> {
     if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
         log::info!("[youtube] stored session was rejected (401); signing out");
         disconnect();
+        crate::services::providers::emit_platform_session_expired("youtube");
         return Some(false);
     }
     if !resp.status().is_success() {
@@ -378,14 +379,48 @@ pub async fn validate_session() -> Option<bool> {
         return None;
     }
     let v: serde_json::Value = resp.json().await.ok()?;
-    // A parsed account name is positive proof. Its absence is not proof of the
-    // opposite, so that case reports "unknown".
+    // A parsed account name is positive proof.
     if find_account_name(&v).is_some() {
-        Some(true)
-    } else {
-        log::debug!("[youtube] session check: 200 with no account header; leaving session alone");
-        None
+        return Some(true);
     }
+    // 200 with signed-OUT content is how a rotted cookie set actually presents
+    // (Google rotates `__Secure-*PSIDTS`; nothing ever 401s). Left alone, this is
+    // the zombie state: the app shows a connected account whose every authed call
+    // quietly does nothing. Try the profile re-harvest; if the profile itself
+    // can't produce a signed-in set, the session is genuinely gone — say so.
+    log::info!("[youtube] session check: 200 with no account header; attempting re-harvest");
+    // The raw `reharvest`, not `recover_stale_session`: that wrapper's cooldown
+    // returns false when a recovery ran recently, which here would misread
+    // "just recovered" as "dead". This check is already low-frequency.
+    if reharvest().await && account_name_lazy().await.is_some() {
+        return Some(true);
+    }
+    log::info!("[youtube] re-harvest could not restore the session; signing out");
+    disconnect();
+    crate::services::providers::emit_platform_session_expired("youtube");
+    Some(false)
+}
+
+/// Proactively re-harvest the cookie set on a slow clock, so rotation is absorbed
+/// BEFORE anything fails rather than after. The reactive `recover_stale_session`
+/// stays as the fast path when a sweep actually sees signed-out content; this
+/// daemon just keeps the harvested set young. No-op while disconnected.
+pub fn start_reharvest_daemon() {
+    tauri::async_runtime::spawn(async {
+        let mut tick = tokio::time::interval(Duration::from_secs(24 * 60 * 60));
+        // The first interval tick fires immediately; skip it so app start doesn't
+        // spawn a harvest webview alongside everything else that is launching.
+        tick.tick().await;
+        loop {
+            tick.tick().await;
+            if !is_connected() {
+                continue;
+            }
+            log::info!("[youtube] daily proactive cookie re-harvest");
+            let ok = reharvest().await;
+            log::info!("[youtube] proactive re-harvest {}", if ok { "succeeded" } else { "failed" });
+        }
+    });
 }
 
 async fn fetch_account_name() -> Option<String> {

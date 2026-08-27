@@ -25,7 +25,8 @@
       },
       "csp": "default-src * 'unsafe-inline' 'unsafe-eval' data: blob: filesystem: about: ws: wss: http: https: tauri: asset:; script-src * 'unsafe-inline' 'unsafe-eval' blob: data:; connect-src * http: https: ws: wss:; img-src * data: blob: 'unsafe-inline'; frame-src *; style-src * 'unsafe-inline'; media-src * blob: data: http: https:;",
       "capabilities": [
-        "main-capability"
+        "main-capability",
+        "remote-bridge-capability"
       ]
     },
     "windows": [

@@ -604,6 +604,90 @@ impl StreamSource for KickSource {
                 out.push(row_from_channel(row, avatar, name));
             }
         }
+
+        // TRAP: the official API can report `is_live: false` for a channel
+        // kick.com itself shows live (seen 2026-08-25 with a week-long session:
+        // v1 said offline, the site API said live). So spot-check the channels
+        // v1 called offline against the site API the website renders from. A
+        // plain browser-header GET, no webview; any failure keeps v1's answer.
+        let live_slugs: std::collections::HashSet<String> = out
+            .iter()
+            .filter(|r| r.is_live)
+            .map(|r| r.user_login.clone())
+            .collect();
+        const V2_SPOTCHECK_MAX: usize = 12;
+        let missing: Vec<String> = channels
+            .iter()
+            .map(|c| c.to_lowercase())
+            .filter(|c| !live_slugs.contains(c))
+            .take(V2_SPOTCHECK_MAX)
+            .collect();
+        if channels.len() > live_slugs.len() + V2_SPOTCHECK_MAX {
+            log::debug!(
+                "[Kick] live spot-check covering {} of {} offline-reported channels this sweep",
+                V2_SPOTCHECK_MAX,
+                channels.len() - live_slugs.len()
+            );
+        }
+        for slug in missing {
+            if let Some(row) = v2_live_row(&slug).await {
+                // Drop v1's offline row for this channel so the live one stands alone.
+                out.retain(|r| !(r.user_login == slug && !r.is_live));
+                out.push(row);
+            }
+        }
         Ok(out)
     }
+}
+
+/// Ask kick.com's own site API whether `slug` is live, returning a live row when
+/// it is. This is the fallback for the official API's false-offlines; `None`
+/// covers "actually offline" and every failure mode alike, so the caller simply
+/// keeps the official answer.
+async fn v2_live_row(slug: &str) -> Option<ProviderStream> {
+    let url = format!("https://kick.com/api/v2/channels/{}", urlencoding::encode(slug));
+    let resp = crate::services::providers::kick::browser_get(&url, slug).await?;
+    let v: serde_json::Value = resp.json().await.ok()?;
+    let live = v.get("livestream")?;
+    if live.is_null() {
+        return None;
+    }
+    let s = |val: &serde_json::Value, key: &str| {
+        val.get(key).and_then(|x| x.as_str()).map(|x| x.to_string())
+    };
+    let category = live
+        .get("categories")
+        .and_then(|c| c.as_array())
+        .and_then(|c| c.first())
+        .cloned();
+    Some(ProviderStream {
+        provider: "kick".to_string(),
+        key: make_key("kick", slug),
+        id: String::new(),
+        user_id: v.get("user_id").and_then(|x| x.as_u64()).map(|i| i.to_string()).unwrap_or_default(),
+        user_login: slug.to_string(),
+        user_name: v
+            .get("user")
+            .and_then(|u| s(u, "username"))
+            .unwrap_or_else(|| slug.to_string()),
+        title: s(live, "session_title").unwrap_or_default(),
+        viewer_count: live.get("viewer_count").and_then(|x| x.as_u64()).unwrap_or(0) as u32,
+        game_id: category
+            .as_ref()
+            .and_then(|c| c.get("id"))
+            .and_then(|x| x.as_u64())
+            .map(|i| i.to_string())
+            .unwrap_or_default(),
+        game_name: category.as_ref().and_then(|c| s(c, "name")).unwrap_or_default(),
+        category_thumbnail: None,
+        thumbnail_url: live
+            .get("thumbnail")
+            .and_then(|t| s(t, "url"))
+            .unwrap_or_default(),
+        started_at: s(live, "created_at").unwrap_or_default(),
+        profile_image_url: v.get("user").and_then(|u| s(u, "profile_pic")),
+        is_live: true,
+        watch_url: watch_url(slug),
+        tags: None,
+    })
 }

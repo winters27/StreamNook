@@ -207,6 +207,16 @@ pub fn emit_platform_account_changed(providers: &[&str]) {
     }
 }
 
+/// Tell every window that a platform SESSION died on its own (expired or revoked),
+/// as opposed to the user signing out. The UI uses this to say "reconnect" out
+/// loud instead of quietly showing a connected account with nobody live.
+pub fn emit_platform_session_expired(provider: &str) {
+    use tauri::Emitter;
+    if let Some(app) = app_handle() {
+        let _ = app.emit("platform-session-expired", provider.to_string());
+    }
+}
+
 /// Drop every provider claim held by `window`, across all adapters.
 ///
 /// The Twitch side of this is `IrcService::release_window_claims`; this is its

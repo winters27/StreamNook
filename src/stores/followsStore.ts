@@ -51,6 +51,10 @@ interface FollowsState {
   setProviderLive: (provider: ProviderId, streams: ProviderStreamRow[]) => void;
   /** Forget everything about a platform whose account just went away. */
   clearProvider: (provider: ProviderId) => void;
+  /** Drop only a platform's LIVE rows, keeping its follow list. For sessions
+   *  that died on their own where liveness can no longer be swept (YouTube):
+   *  stale "live" rows would be a false reading, but the follows are still real. */
+  clearProviderLive: (provider: ProviderId) => void;
   /** Pull the current who's-live snapshot for every provider. */
   refreshLive: () => Promise<void>;
 }
@@ -233,6 +237,19 @@ export const useFollowsStore = create<FollowsState>((set, get) => ({
         if (row.provider !== provider) liveByKey[key] = row;
       }
       return { liveByKey, follows: s.follows.filter((f) => f.provider !== provider) };
+    });
+  },
+
+  clearProviderLive: (provider) => {
+    // `liveFromEvent` is cleared so a reconnect's initial `refreshLive` repaints
+    // this provider instead of trusting a pre-death event delivery.
+    liveFromEvent.delete(provider);
+    set((s) => {
+      const liveByKey: Record<string, ProviderStreamRow> = {};
+      for (const [key, row] of Object.entries(s.liveByKey)) {
+        if (row.provider !== provider) liveByKey[key] = row;
+      }
+      return { liveByKey };
     });
   },
 

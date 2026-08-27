@@ -1,6 +1,9 @@
 import { useEffect } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import { usePlatformAccountStore } from '../stores/platformAccountStore';
+import { useFollowsStore } from '../stores/followsStore';
+import { useAppStore } from '../stores/AppStore';
+import { providerLabel, type ProviderId } from '../types/providers';
 import { useVisibleInterval } from '../utils/useVisibleInterval';
 import { Logger } from '../utils/logger';
 
@@ -58,6 +61,31 @@ export function usePlatformAccountSync(): void {
       else unlisten = fn;
     });
 
+    // A session that died on its own (expired or revoked), as opposed to the
+    // user signing out. Say so out loud: the silent version of this is the app
+    // looking connected while nothing works, which reads as "nobody is live".
+    let unlistenExpired: (() => void) | undefined;
+    void listen<string>('platform-session-expired', (e) => {
+      const provider = e.payload as ProviderId;
+      Logger.info(`[platform] ${provider} session expired`);
+      // Kick liveness keeps flowing on the app token, so its rows stay. YouTube
+      // liveness needs the session, so its last-known rows are now unknowable;
+      // keeping them would be exactly the false reading being fixed here.
+      if (provider === 'youtube') {
+        useFollowsStore.getState().clearProviderLive(provider);
+      }
+      useAppStore
+        .getState()
+        .addToast(
+          `Your ${providerLabel(provider)} session expired. Reconnect it in Settings, Accounts.`,
+          'warning',
+        );
+      refresh();
+    }).then((fn) => {
+      if (disposed) fn();
+      else unlistenExpired = fn;
+    });
+
     const onVisibility = () => {
       if (document.visibilityState === 'visible') refresh();
     };
@@ -67,6 +95,7 @@ export function usePlatformAccountSync(): void {
       disposed = true;
       mounted -= 1;
       unlisten?.();
+      unlistenExpired?.();
       document.removeEventListener('visibilitychange', onVisibility);
     };
   }, []);

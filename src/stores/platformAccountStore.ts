@@ -115,14 +115,17 @@ export const usePlatformAccountStore = create<PlatformAccountStore>((set, get) =
     try {
       const connected = await platformAccounts.isConnected(provider);
       if (!connected) {
-        // Read the previous value BEFORE patching: a platform that has just
-        // stopped being connected has follows and live rows on screen that no
-        // longer belong to anyone, and nothing else prunes them. Catching it
-        // here rather than in `disconnect` covers a remotely revoked session
-        // too, which arrives through the session check, not through the button.
         const wasConnected = get()[provider].connected;
         patch(provider, { connected, name: null, avatarUrl: null });
-        if (wasConnected) useFollowsStore.getState().clearProvider(provider);
+        // Deliberately NOT clearProvider here. A session dying mid-run must not
+        // blank the sidebar: Kick liveness never needed the login (the sweep
+        // runs on an app token) and the follow list survives backend-side for
+        // both platforms. Re-reading it keeps the view honest either way — an
+        // explicit disconnect purged it backend-side, so hydrate empties the
+        // list then; a mere token death leaves it intact and live. The
+        // user-facing "your session expired" signal is the dedicated
+        // platform-session-expired event, not a vanished sidebar.
+        if (wasConnected) void useFollowsStore.getState().hydrate();
         report(provider, false, get()[provider]);
         return;
       }
@@ -191,6 +194,10 @@ export const usePlatformAccountStore = create<PlatformAccountStore>((set, get) =
       patch(provider, { busy: true });
       try {
         await platformAccounts.disconnect(provider);
+        // An explicit sign-out is the one case where the platform's follows and
+        // live rows should vanish immediately (the backend purges its imported
+        // follows too). Session deaths keep their rows; see refreshOne.
+        useFollowsStore.getState().clearProvider(provider);
       } catch (e) {
         Logger.warn(`[platform] ${provider} disconnect failed:`, e);
       }
