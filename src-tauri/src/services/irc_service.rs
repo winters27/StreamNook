@@ -67,7 +67,8 @@ static CHANNEL_EMOTES: OnceLock<Mutex<HashMap<String, EmoteSet>>> = OnceLock::ne
 // prefixes — the only source of custom cheer art, so a static prefix list can
 // never render them. Arc so parse_text_segment snapshots without cloning tier
 // data per message; evicted with the other per-channel caches on PART/stop.
-static CHANNEL_CHEERMOTES: OnceLock<Mutex<HashMap<String, Arc<CheermoteSet>>>> = OnceLock::new();
+static CHANNEL_CHEERMOTES: OnceLock<std::sync::RwLock<HashMap<String, Arc<CheermoteSet>>>> =
+    OnceLock::new();
 // Per-channel consumer claims, keyed by window label (lowercase channel ->
 // set of window labels). A window's chat store claims via `start_chat` /
 // `join_chat_channel` and releases via `leave_chat_channel`; the IRC JOIN /
@@ -95,7 +96,7 @@ static OWN_IDENTITY: OnceLock<Mutex<Option<(String, String)>>> = OnceLock::new()
 // service fills this from EMOTE_SET entitlements; parse_text_segment overlays
 // the sender's entry with priority over channel emotes. PERSONAL_EMOTES_PRESENT
 // lets the per-message hot path skip the lock entirely while no user has any.
-static PERSONAL_EMOTES: OnceLock<Mutex<HashMap<String, (String, HashMap<String, Emote>)>>> =
+static PERSONAL_EMOTES: OnceLock<std::sync::RwLock<HashMap<String, (String, Arc<HashMap<String, Emote>>)>>> =
     OnceLock::new();
 static PERSONAL_EMOTES_PRESENT: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
@@ -634,6 +635,98 @@ fn get_channel_emotes() -> &'static Mutex<HashMap<String, EmoteSet>> {
     CHANNEL_EMOTES.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+/// Immutable per-channel parse context. Rebuilt only when the channel's
+/// third-party sets change; per-message parsing reads it through an Arc with
+/// no locks held and no data cloned. Personal emotes are deliberately NOT in
+/// here: they are per-sender (a separate map consulted first in the word
+/// tier), and the 7TV-override filter below must never match them.
+pub(crate) struct EmoteLookup {
+    /// name -> emote, inserted bttv, ffz, seven_tv in order (later insert
+    /// wins), preserving the word tier's 7TV > FFZ > BTTV priority.
+    by_name: HashMap<String, Emote>,
+}
+
+impl EmoteLookup {
+    fn build(set: &EmoteSet) -> Arc<Self> {
+        let mut by_name =
+            HashMap::with_capacity(set.bttv.len() + set.ffz.len() + set.seven_tv.len());
+        for e in set.bttv.iter().chain(&set.ffz).chain(&set.seven_tv) {
+            by_name.insert(e.name.clone(), e.clone());
+        }
+        Arc::new(Self { by_name })
+    }
+
+    fn get(&self, name: &str) -> Option<&Emote> {
+        self.by_name.get(name)
+    }
+
+    /// 7TV art for a Twitch-native emote name. The map slot holds the 7TV
+    /// entry whenever the channel's 7TV set carries the name (inserted last),
+    /// so filtering the winner on provider gives channel-7TV-wins semantics.
+    /// (The old scan searched the raw seven_tv Vec first-match; where a name
+    /// appeared in both trending/globals and the channel set the two paths
+    /// disagreed - this deliberately unifies on channel-wins.)
+    fn seventv_override(&self, name: &str) -> Option<&Emote> {
+        self.by_name
+            .get(name)
+            .filter(|e| e.provider == crate::services::emote_service::EmoteProvider::SevenTV)
+    }
+}
+
+static CHANNEL_PARSE_LOOKUP: OnceLock<std::sync::RwLock<HashMap<String, Arc<EmoteLookup>>>> =
+    OnceLock::new();
+
+fn channel_parse_lookup() -> &'static std::sync::RwLock<HashMap<String, Arc<EmoteLookup>>> {
+    CHANNEL_PARSE_LOOKUP.get_or_init(|| std::sync::RwLock::new(HashMap::new()))
+}
+
+fn rebuild_parse_lookup(key: &str, set: &EmoteSet) {
+    let lookup = EmoteLookup::build(set);
+    if let Ok(mut guard) = channel_parse_lookup().write() {
+        guard.insert(key.to_string(), lookup);
+    }
+}
+
+fn drop_parse_lookup(key: &str) {
+    if let Ok(mut guard) = channel_parse_lookup().write() {
+        guard.remove(key);
+    }
+}
+
+fn clear_parse_lookups() {
+    if let Ok(mut guard) = channel_parse_lookup().write() {
+        guard.clear();
+    }
+}
+
+/// Owned Arc snapshots backing a ParseCtx. Gathered once per message; the
+/// borrows in ParseCtx keep parsing itself allocation- and lock-free.
+struct ParseSnapshots {
+    channel: Option<Arc<EmoteLookup>>,
+    personal: Option<Arc<HashMap<String, Emote>>>,
+    cheermotes: Option<Arc<CheermoteSet>>,
+}
+
+impl ParseSnapshots {
+    fn ctx(&self) -> ParseCtx<'_> {
+        ParseCtx {
+            channel: self.channel.as_deref(),
+            personal: self.personal.as_deref(),
+            cheermotes: self.cheermotes.as_deref(),
+        }
+    }
+}
+
+/// Borrowed per-message parse context. `personal` is the sender's 7TV personal
+/// map, consulted first WITHIN the emote tier only (after the URL and
+/// cheermote checks), matching the old personal-inserted-last map priority.
+#[derive(Default)]
+struct ParseCtx<'a> {
+    channel: Option<&'a EmoteLookup>,
+    personal: Option<&'a HashMap<String, Emote>>,
+    cheermotes: Option<&'a CheermoteSet>,
+}
+
 /// One cheermote tier from Helix: bits threshold, hex color, animated dark art.
 #[derive(Debug, Clone)]
 pub struct CheermoteTier {
@@ -645,8 +738,8 @@ pub struct CheermoteTier {
 /// Lowercase prefix -> tiers ascending by `min_bits`.
 pub type CheermoteSet = HashMap<String, Vec<CheermoteTier>>;
 
-fn get_channel_cheermotes() -> &'static Mutex<HashMap<String, Arc<CheermoteSet>>> {
-    CHANNEL_CHEERMOTES.get_or_init(|| Mutex::new(HashMap::new()))
+fn get_channel_cheermotes() -> &'static std::sync::RwLock<HashMap<String, Arc<CheermoteSet>>> {
+    CHANNEL_CHEERMOTES.get_or_init(|| std::sync::RwLock::new(HashMap::new()))
 }
 
 fn get_ws_port() -> &'static Mutex<Option<u16>> {
@@ -662,8 +755,9 @@ fn get_own_identity() -> &'static Mutex<Option<(String, String)>> {
 }
 
 #[allow(clippy::type_complexity)]
-fn get_personal_emotes() -> &'static Mutex<HashMap<String, (String, HashMap<String, Emote>)>> {
-    PERSONAL_EMOTES.get_or_init(|| Mutex::new(HashMap::new()))
+fn get_personal_emotes(
+) -> &'static std::sync::RwLock<HashMap<String, (String, Arc<HashMap<String, Emote>>)>> {
+    PERSONAL_EMOTES.get_or_init(|| std::sync::RwLock::new(HashMap::new()))
 }
 
 /// The lean wire shape of the on_chat_message plugin event (PROTOCOL.md):
@@ -849,7 +943,8 @@ impl IrcService {
         get_room_state_cache().lock().await.clear();
         get_pending_messages().lock().await.clear();
         get_channel_emotes().lock().await.clear();
-        get_channel_cheermotes().lock().await.clear();
+        clear_parse_lookups();
+        if let Ok(mut g) = get_channel_cheermotes().write() { g.clear(); }
         // Seed the consumer claims: this is the first window to ask for the
         // initial channel; the IRC JOIN is performed implicitly by
         // run_irc_connection below, so we just account for it here. Ensure-only
@@ -1953,7 +2048,7 @@ impl IrcService {
     /// PART evicts, so a re-JOIN refreshes. On any failure nothing is cached
     /// and parse_cheermote falls back to its static global list.
     async fn fetch_and_store_cheermotes(key: String, broadcaster_id: String) {
-        if get_channel_cheermotes().lock().await.contains_key(&key) {
+        if get_channel_cheermotes().read().is_ok_and(|g| g.contains_key(&key)) {
             return;
         }
         let token = match TwitchService::get_token().await {
@@ -2002,7 +2097,7 @@ impl IrcService {
             set.len(),
             key
         );
-        get_channel_cheermotes().lock().await.insert(key, Arc::new(set));
+        if let Ok(mut g) = get_channel_cheermotes().write() { g.insert(key, Arc::new(set)); }
     }
 
     /// Convert a raw Helix `bits/cheermotes` response into the parse map.
@@ -2588,7 +2683,8 @@ impl IrcService {
         // If the user re-JOINs later, fetch_and_store_emotes runs again and
         // USERSTATE/ROOMSTATE refill from the next IRC frames.
         get_channel_emotes().lock().await.remove(key);
-        get_channel_cheermotes().lock().await.remove(key);
+        drop_parse_lookup(key);
+        if let Ok(mut g) = get_channel_cheermotes().write() { g.remove(key); }
         get_user_badges_cache().lock().await.remove(key);
         get_user_color_cache().lock().await.remove(key);
         get_room_state_cache().lock().await.remove(key);
@@ -2650,6 +2746,7 @@ impl IrcService {
                             channel_name,
                             disk_set.seven_tv.len()
                         );
+                        rebuild_parse_lookup(&key, &disk_set);
                         map.insert(key.clone(), disk_set);
                     }
                 }
@@ -2689,6 +2786,7 @@ impl IrcService {
                             );
                             if seven_tv_ok {
                                 crate::services::emote_set_cache::save_force(&user.id, &emote_set);
+                                rebuild_parse_lookup(&key, &emote_set);
                                 get_channel_emotes().lock().await.insert(key, emote_set);
                             } else {
                                 debug!(
@@ -2744,10 +2842,8 @@ impl IrcService {
     /// or reconnect (the same entitlement is re-delivered every time).
     pub async fn has_personal_set(twitch_id: &str, set_id: &str) -> bool {
         get_personal_emotes()
-            .lock()
-            .await
-            .get(twitch_id)
-            .map(|(s, _)| s == set_id)
+            .read()
+            .map(|g| g.get(twitch_id).map(|(s, _)| s == set_id).unwrap_or(false))
             .unwrap_or(false)
     }
 
@@ -2757,10 +2853,9 @@ impl IrcService {
     pub async fn set_personal_emotes(twitch_id: String, set_id: String, emotes: Vec<Emote>) {
         let has_any = !emotes.is_empty();
         let map: HashMap<String, Emote> = emotes.into_iter().map(|e| (e.name.clone(), e)).collect();
-        get_personal_emotes()
-            .lock()
-            .await
-            .insert(twitch_id, (set_id, map));
+        if let Ok(mut g) = get_personal_emotes().write() {
+            g.insert(twitch_id, (set_id, Arc::new(map)));
+        }
         if has_any {
             PERSONAL_EMOTES_PRESENT.store(true, std::sync::atomic::Ordering::Relaxed);
         }
@@ -2770,7 +2865,9 @@ impl IrcService {
     /// Only clears when the revoked set matches what we hold (a stale delete for
     /// a set they no longer have must not wipe a newer one).
     pub async fn clear_personal_emotes(twitch_id: &str, set_id: Option<&str>) {
-        let mut g = get_personal_emotes().lock().await;
+        let Ok(mut g) = get_personal_emotes().write() else {
+            return;
+        };
         match set_id {
             Some(sid) => {
                 if g.get(twitch_id).map(|(s, _)| s == sid).unwrap_or(false) {
@@ -2781,19 +2878,109 @@ impl IrcService {
                 g.remove(twitch_id);
             }
         }
+        // Recompute rather than leave the fast-path gate latched on: this was
+        // the one path that never reset it, so a single personal set ever seen
+        // taxed every message for the rest of the session.
+        PERSONAL_EMOTES_PRESENT.store(
+            g.values().any(|(_, m)| !m.is_empty()),
+            std::sync::atomic::Ordering::Relaxed,
+        );
     }
 
     /// Wipe all personal emotes (full chat teardown).
     pub async fn clear_all_personal_emotes() {
-        get_personal_emotes().lock().await.clear();
+        if let Ok(mut g) = get_personal_emotes().write() {
+            g.clear();
+        }
         PERSONAL_EMOTES_PRESENT.store(false, std::sync::atomic::Ordering::Relaxed);
     }
 
-    async fn parse_message_segments(
+    /// Everything per-message parsing reads, snapshotted once per message with
+    /// three brief uncontended lock reads. Parsing itself then runs fully
+    /// synchronously with no locks and no data clones - the block_in_place +
+    /// block_on bridge this replaced was a runtime-wide scheduling event per
+    /// chat message.
+    fn gather_parse_snapshots(channel: &str, sender_id: &str) -> ParseSnapshots {
+        let channel_lookup = channel_parse_lookup()
+            .read()
+            .ok()
+            .and_then(|g| g.get(channel).cloned());
+        let personal = if sender_id.is_empty()
+            || !PERSONAL_EMOTES_PRESENT.load(std::sync::atomic::Ordering::Relaxed)
+        {
+            None
+        } else {
+            get_personal_emotes()
+                .read()
+                .ok()
+                .and_then(|g| g.get(sender_id).map(|(_, m)| m.clone()))
+        };
+        let cheermotes = get_channel_cheermotes()
+            .read()
+            .ok()
+            .and_then(|g| g.get(channel).cloned());
+        ParseSnapshots {
+            channel: channel_lookup,
+            personal,
+            cheermotes,
+        }
+    }
+
+    /// Byte index in `content` right after a leading "@<name>" mention plus its
+    /// following whitespace run, or 0 when no alternative matches. The boundary
+    /// is REQUIRED (whitespace or end of message): with multiple alternatives, a
+    /// short name that prefixes a longer one must never partially strip
+    /// ("@foobarbaz" with login "foobar"). Case-folded per char; alternatives
+    /// are tried in order (login before display name).
+    fn reply_mention_end(content: &str, alts: &[&str]) -> usize {
+        let Some(rest) = content.strip_prefix('@') else {
+            return 0;
+        };
+        for alt in alts {
+            if alt.is_empty() {
+                continue;
+            }
+            let mut rest_chars = rest.char_indices();
+            let mut alt_chars = alt.chars();
+            let matched_end = loop {
+                match alt_chars.next() {
+                    // Name fully matched: the end is the next char's byte index
+                    // (offset by the leading '@'), or end of message.
+                    None => {
+                        break Some(
+                            rest_chars
+                                .next()
+                                .map(|(i, _)| 1 + i)
+                                .unwrap_or(content.len()),
+                        )
+                    }
+                    Some(ac) => match rest_chars.next() {
+                        Some((_, rc)) if rc.to_lowercase().eq(ac.to_lowercase()) => {}
+                        _ => break None,
+                    },
+                }
+            };
+            let Some(end) = matched_end else {
+                continue;
+            };
+            let tail = &content[end..];
+            if tail.is_empty() {
+                return content.len();
+            }
+            if tail.starts_with(char::is_whitespace) {
+                // Consume the whole whitespace run (the old pattern's greedy \s+).
+                return end + (tail.len() - tail.trim_start().len());
+            }
+            // Boundary violated - the name only prefixes a longer word; try the
+            // next alternative.
+        }
+        0
+    }
+
+    fn parse_message_segments(
         content: &str,
         twitch_emotes: &[EmotePos],
-        channel: &str,
-        sender_id: &str,
+        ctx: &ParseCtx<'_>,
     ) -> Vec<MessageSegment> {
         let mut segments = Vec::new();
 
@@ -2828,16 +3015,6 @@ impl IrcService {
         let mut sorted_emotes = twitch_emotes.to_vec();
         sorted_emotes.sort_by_key(|e| e.start);
 
-        // Acquire emote set lock ONCE before the loop to avoid repeated lock acquisition
-        // which can cause deadlocks when called inside block_in_place + block_on
-        let emote_set_lock = get_channel_emotes().lock().await;
-        let seventv_emotes: Vec<_> = if let Some(emote_set) = emote_set_lock.get(channel) {
-            emote_set.seven_tv.clone()
-        } else {
-            Vec::new()
-        };
-        drop(emote_set_lock); // Release lock before loop
-
         for emote in &sorted_emotes {
             // Validate emote bounds (character indices)
             if emote.start >= char_count || emote.end >= char_count || emote.start > emote.end {
@@ -2864,7 +3041,7 @@ impl IrcService {
                 let text = &content[last_byte..start_byte];
                 if !text.is_empty() {
                     // Parse text for third-party emotes, emojis, and links
-                    segments.extend(Self::parse_text_segment(text, channel, sender_id).await);
+                    segments.extend(Self::parse_text_segment(text, ctx));
                 }
             }
 
@@ -2872,12 +3049,9 @@ impl IrcService {
             let emote_name = &content[start_byte..end_byte_exclusive];
 
             // Check if 7TV has an emote with the same name (7TV takes priority)
-            let seventv_override = seventv_emotes
-                .iter()
-                .find(|e| e.name == emote_name)
-                .cloned();
+            let seventv_override = ctx.channel.and_then(|c| c.seventv_override(emote_name));
 
-            if let Some(seventv_emote) = &seventv_override {
+            if let Some(seventv_emote) = seventv_override {
                 // Use 7TV version instead of Twitch
                 segments.push(MessageSegment::Emote {
                     content: emote_name.to_string(),
@@ -2907,7 +3081,7 @@ impl IrcService {
             if let Some(last_byte) = char_to_byte_idx(last_char_index) {
                 let text = &content[last_byte..];
                 if !text.is_empty() {
-                    segments.extend(Self::parse_text_segment(text, channel, sender_id).await);
+                    segments.extend(Self::parse_text_segment(text, ctx));
                 }
             }
         }
@@ -2923,10 +3097,9 @@ impl IrcService {
     }
 
     /// Parse a text segment for third-party emotes, emojis, and links.
-    /// `channel` selects which JOINed channel's emote set to use; `sender_id` is
-    /// the message author's Twitch user id, used to overlay their 7TV personal
-    /// emotes (which work in any channel).
-    async fn parse_text_segment(text: &str, channel: &str, sender_id: &str) -> Vec<MessageSegment> {
+    /// `ctx` carries the channel's prebuilt name lookup, the sender's personal
+    /// emotes, and the cheermote set - all snapshotted once per message.
+    fn parse_text_segment(text: &str, ctx: &ParseCtx<'_>) -> Vec<MessageSegment> {
         let mut segments = Vec::new();
 
         // URL pattern - matches http://, https://, and www. URLs. Compiled once:
@@ -2935,55 +3108,6 @@ impl IrcService {
         static URL_REGEX: OnceLock<regex::Regex> = OnceLock::new();
         let url_regex = URL_REGEX
             .get_or_init(|| regex::Regex::new(r"(https?://[^\s]+|www\.[^\s]+)").unwrap());
-
-        // The sender's 7TV personal emotes (usable in any channel). Cloned out
-        // of its own lock up front (a handful of emotes at most) so the lookup
-        // map can borrow them alongside the channel set. Skipped entirely via an
-        // atomic while no user has any personal emotes loaded, which is the norm.
-        let personal_emotes: Vec<Emote> = if sender_id.is_empty()
-            || !PERSONAL_EMOTES_PRESENT.load(std::sync::atomic::Ordering::Relaxed)
-        {
-            Vec::new()
-        } else {
-            get_personal_emotes()
-                .lock()
-                .await
-                .get(sender_id)
-                .map(|(_, m)| m.values().cloned().collect())
-                .unwrap_or_default()
-        };
-
-        // This channel's fetched cheermote set (globals + channel_custom). Arc
-        // snapshot so the per-word matcher never touches the lock; None falls
-        // back to parse_cheermote's static global-prefix list.
-        let cheermotes: Option<Arc<CheermoteSet>> =
-            get_channel_cheermotes().lock().await.get(channel).cloned();
-
-        // Get this channel's emotes (returns None if the channel hasn't been
-        // fetched, e.g. just-JOINed; first messages may then render without
-        // third-party emotes until fetch_and_store_emotes lands).
-        let emote_set_lock = get_channel_emotes().lock().await;
-        let emote_set = emote_set_lock.get(channel);
-
-        // Build emote lookup maps with priority: personal > 7TV > FFZ > BTTV
-        let mut emote_map: HashMap<&str, &Emote> = HashMap::new();
-        if let Some(emotes) = emote_set {
-            // Add in reverse priority order so higher priority overwrites
-            for emote in &emotes.bttv {
-                emote_map.insert(&emote.name, emote);
-            }
-            for emote in &emotes.ffz {
-                emote_map.insert(&emote.name, emote);
-            }
-            for emote in &emotes.seven_tv {
-                emote_map.insert(&emote.name, emote);
-            }
-        }
-        // Personal emotes win over channel emotes for this sender, matching the
-        // official client (its per-user emote map is consulted before the room's).
-        for emote in &personal_emotes {
-            emote_map.insert(&emote.name, emote);
-        }
 
         // Split by spaces to check each word
         let words: Vec<&str> = text.split(' ').collect();
@@ -3015,7 +3139,7 @@ impl IrcService {
                     url,
                 });
             } else if let Some((prefix, bits, tier, color, cheermote_url)) =
-                Self::parse_cheermote(word, cheermotes.as_deref())
+                Self::parse_cheermote(word, ctx.cheermotes)
             {
                 // Found a cheermote pattern (e.g., Cheer500, Party1000)
                 segments.push(MessageSegment::Cheermote {
@@ -3026,20 +3150,24 @@ impl IrcService {
                     color,
                     cheermote_url,
                 });
-            } else if let Some(emote) = emote_map.get(word) {
-                // Found a third-party emote (BTTV, FFZ, or 7TV). Personal emotes
-                // were inserted last and win ties, so a name present in that set
-                // is the one that matched.
+            } else if let Some((emote, from_personal)) = {
+                // Personal emotes win over channel emotes for this sender,
+                // matching the official client (its per-user emote map is
+                // consulted before the room's).
+                let personal_hit = ctx.personal.and_then(|p| p.get(*word));
+                personal_hit
+                    .map(|e| (e, true))
+                    .or_else(|| ctx.channel.and_then(|c| c.get(word)).map(|e| (e, false)))
+            } {
+                // Found a third-party emote (BTTV, FFZ, or 7TV, or the sender's
+                // personal set).
                 segments.push(MessageSegment::Emote {
                     content: word.to_string(),
                     emote_id: Some(emote.id.clone()),
                     emote_url: emote.url.clone(),
                     is_zero_width: emote.is_zero_width,
                     modifier_flags: emote.modifier_flags,
-                    is_personal: personal_emotes
-                        .iter()
-                        .any(|p| p.name == *word)
-                        .then_some(true),
+                    is_personal: from_personal.then_some(true),
                 });
             } else {
                 // Convert emoji shortcodes first
@@ -3068,7 +3196,6 @@ impl IrcService {
             }
         }
 
-        drop(emote_set_lock);
         segments
     }
 
@@ -3400,42 +3527,46 @@ impl IrcService {
         // The UI shows reply context, so the leading @username is redundant.
         // Twitch's composer inserts the DISPLAY name, not the login; matching
         // login alone silently no-oped for localized display names and left
-        // the mention doubled, so match either, case-insensitively.
+        // the mention doubled, so match either, case-insensitively. The
+        // char-walker replaced a per-reply Regex::new compile; login is tried
+        // before display name, matching the old alternation order.
         let reply_parent_display_name = tag_map
             .get("reply-parent-display-name")
             .map(|s| s.to_string());
-        let content_for_segments = {
-            let mut alts: Vec<String> = Vec::new();
+        let (content_for_segments, stripped_codepoints) = {
+            let mut alts: Vec<&str> = Vec::new();
             if let Some(ref login) = reply_parent_user_login {
                 if !login.is_empty() {
-                    alts.push(regex::escape(login));
+                    alts.push(login);
                 }
             }
             if let Some(ref disp) = reply_parent_display_name {
                 if !disp.is_empty() {
-                    alts.push(regex::escape(disp));
+                    alts.push(disp);
                 }
             }
             if alts.is_empty() {
-                content.clone()
+                (content.clone(), 0usize)
             } else {
-                // Boundary is REQUIRED (\s+ or end of message), never \s*:
-                // with alternation, a short name that prefixes a longer one
-                // would otherwise partially strip the mention. This also
-                // closes the same latent hazard the old single-alternative
-                // pattern had ("@foobarbaz" with login "foobar").
-                let pattern = format!(r"(?i)^@(?:{})(?:\s+|$)", alts.join("|"));
-                if let Ok(re) = regex::Regex::new(&pattern) {
-                    re.replace(&content, "").trim().to_string()
-                } else {
-                    content.clone()
-                }
+                let mention_end = Self::reply_mention_end(&content, &alts);
+                let rest = &content[mention_end..];
+                // Trim parity with the old regex path: whitespace is trimmed
+                // whether or not a mention matched (replies only).
+                let rest_no_lead = rest.trim_start();
+                // Emote positions are CODEPOINT indices (see char_to_byte in
+                // parse_message_segments), so the offset must count codepoints
+                // consumed from the FRONT - the old byte-length delta mis-shifted
+                // emotes whenever a localized display name was stripped, and
+                // wrongly counted trailing trim too.
+                let front_bytes = content.len() - rest_no_lead.len();
+                let front_codepoints = content[..front_bytes].chars().count();
+                (rest_no_lead.trim_end().to_string(), front_codepoints)
             }
         };
 
         // Also update emote positions if we stripped the @mention
-        let emotes_adjusted = if content_for_segments.len() < content.len() {
-            let offset = content.len() - content_for_segments.len();
+        let emotes_adjusted = if stripped_codepoints > 0 {
+            let offset = stripped_codepoints;
             emotes
                 .into_iter()
                 .filter_map(|mut e| {
@@ -3457,15 +3588,11 @@ impl IrcService {
         // line is malformed (third-party emotes simply won't match).
         let privmsg_channel = extract_channel_from_irc_line(raw).unwrap_or_default();
 
-        // Parse message content into segments (using stripped content)
-        let segments = tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(Self::parse_message_segments(
-                &content_for_segments,
-                &emotes_adjusted,
-                &privmsg_channel,
-                &user_id,
-            ))
-        });
+        // Parse message content into segments (using stripped content).
+        // Snapshots gathered once; parsing is fully synchronous.
+        let snapshots = Self::gather_parse_snapshots(&privmsg_channel, &user_id);
+        let segments =
+            Self::parse_message_segments(&content_for_segments, &emotes_adjusted, &snapshots.ctx());
 
         // Shared chat detection
         let source_room_id = tag_map.get("source-room-id").map(|s| s.to_string());
@@ -3682,14 +3809,8 @@ impl IrcService {
 
         // Parse message content into segments (if there's user content)
         let segments = if !content.is_empty() {
-            tokio::task::block_in_place(|| {
-                tokio::runtime::Handle::current().block_on(Self::parse_message_segments(
-                    &content,
-                    &emotes,
-                    &usernotice_channel,
-                    &user_id,
-                ))
-            })
+            let snapshots = Self::gather_parse_snapshots(&usernotice_channel, &user_id);
+            Self::parse_message_segments(&content, &emotes, &snapshots.ctx())
         } else {
             Vec::new()
         };
@@ -3770,6 +3891,21 @@ impl IrcService {
         if let Ok(ts_ms) = tmi_sent_ts.parse::<i64>() {
             use chrono::{Local, TimeZone};
 
+            // Chat messages cluster within the same second, and both display
+            // strings only have second resolution - memoize per second so a
+            // busy channel pays the two chrono formats + timezone lookups once
+            // per second instead of per message.
+            static LAST: std::sync::Mutex<Option<(i64, String, String)>> =
+                std::sync::Mutex::new(None);
+            let ts_s = ts_ms.div_euclid(1000);
+            if let Ok(guard) = LAST.lock() {
+                if let Some((cached_s, ref without, ref with)) = *guard {
+                    if cached_s == ts_s {
+                        return (Some(without.clone()), Some(with.clone()));
+                    }
+                }
+            }
+
             if let Some(datetime) = Local.timestamp_millis_opt(ts_ms).single() {
                 // Format without seconds: "3:45 PM" or "15:45" depending on locale
                 let without_seconds = datetime.format("%l:%M %p").to_string().trim().to_string();
@@ -3780,6 +3916,9 @@ impl IrcService {
                     .trim()
                     .to_string();
 
+                if let Ok(mut guard) = LAST.lock() {
+                    *guard = Some((ts_s, without_seconds.clone(), with_seconds.clone()));
+                }
                 return (Some(without_seconds), Some(with_seconds));
             }
         }
@@ -3838,7 +3977,8 @@ impl IrcService {
 
         // Clear all per-channel caches
         get_channel_emotes().lock().await.clear();
-        get_channel_cheermotes().lock().await.clear();
+        clear_parse_lookups();
+        if let Ok(mut g) = get_channel_cheermotes().write() { g.clear(); }
         get_user_badges_cache().lock().await.clear();
         get_room_state_cache().lock().await.clear();
         get_pending_messages().lock().await.clear();
@@ -3880,7 +4020,8 @@ impl IrcService {
         tracker_clear().await;
         get_shared_chat_rooms().lock().await.clear();
         get_channel_emotes().lock().await.clear();
-        get_channel_cheermotes().lock().await.clear();
+        clear_parse_lookups();
+        if let Ok(mut g) = get_channel_cheermotes().write() { g.clear(); }
         get_user_badges_cache().lock().await.clear();
         get_room_state_cache().lock().await.clear();
         get_pending_messages().lock().await.clear();
@@ -4187,15 +4328,7 @@ mod tests {
     // position orphans the modifier.
     #[test]
     fn no_empty_text_segments_from_extra_spaces() {
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        let segs = rt.block_on(IrcService::parse_text_segment(
-            "a  b",
-            "no_such_channel_for_test",
-            "",
-        ));
+        let segs = IrcService::parse_text_segment("a  b", &ParseCtx::default());
         for s in &segs {
             if let MessageSegment::Text { content } = s {
                 assert!(!content.is_empty(), "empty Text segment emitted");
@@ -4203,6 +4336,55 @@ mod tests {
         }
         // "a  b" -> a, space, space, b
         assert_eq!(segs.len(), 4);
+    }
+
+    #[test]
+    fn reply_mention_strip_boundaries() {
+        // Exact name + space: mention and the whole whitespace run consumed.
+        assert_eq!(IrcService::reply_mention_end("@foo  hi", &["foo"]), 6);
+        // Name at end of message: everything consumed.
+        assert_eq!(IrcService::reply_mention_end("@foo", &["foo"]), 4);
+        // Boundary REQUIRED: a name prefixing a longer word must not strip.
+        assert_eq!(IrcService::reply_mention_end("@foobarbaz hi", &["foobar"]), 0);
+        // Case-insensitive match.
+        assert_eq!(IrcService::reply_mention_end("@FoO hi", &["foo"]), 5);
+        // Second alternative (display name) matches when login does not.
+        assert_eq!(IrcService::reply_mention_end("@ふー hi", &["foo", "ふー"]), 8);
+        // No leading @: untouched.
+        assert_eq!(IrcService::reply_mention_end("foo hi", &["foo"]), 0);
+    }
+
+    #[test]
+    fn emote_lookup_priority_and_override() {
+        use crate::services::emote_service::EmoteProvider;
+        let mk = |id: &str, name: &str, provider: EmoteProvider| Emote {
+            id: id.to_string(),
+            name: name.to_string(),
+            url: format!("https://example.test/{id}.webp"),
+            provider,
+            is_zero_width: None,
+            local_url: None,
+            emote_type: None,
+            owner_id: None,
+            owner_name: None,
+            width: None,
+            modifier_flags: None,
+            ffz_sub_only: None,
+        };
+        let set = EmoteSet {
+            twitch: Vec::new(),
+            bttv: vec![mk("b1", "Clash", EmoteProvider::BTTV), mk("b2", "BttvOnly", EmoteProvider::BTTV)],
+            ffz: vec![mk("f1", "Clash", EmoteProvider::FFZ)],
+            seven_tv: vec![mk("s1", "Clash", EmoteProvider::SevenTV)],
+            kick: Vec::new(),
+        };
+        let lookup = EmoteLookup::build(&set);
+        // Word tier: 7TV wins name collisions (inserted last).
+        assert_eq!(lookup.get("Clash").unwrap().id, "s1");
+        // Override tier: only a 7TV winner overrides a Twitch-native emote.
+        assert_eq!(lookup.seventv_override("Clash").unwrap().id, "s1");
+        assert!(lookup.seventv_override("BttvOnly").is_none());
+        assert!(lookup.seventv_override("Missing").is_none());
     }
 
     fn tiers(spec: &[(u32, &str)]) -> Vec<CheermoteTier> {
