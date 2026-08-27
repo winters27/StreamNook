@@ -2929,8 +2929,12 @@ impl IrcService {
     async fn parse_text_segment(text: &str, channel: &str, sender_id: &str) -> Vec<MessageSegment> {
         let mut segments = Vec::new();
 
-        // URL regex pattern - matches http://, https://, and www. URLs
-        let url_regex = regex::Regex::new(r"(https?://[^\s]+|www\.[^\s]+)").unwrap();
+        // URL pattern - matches http://, https://, and www. URLs. Compiled once:
+        // this function runs per text segment of every message, and a fresh
+        // Regex::new here was full NFA compilation on the chat hot path.
+        static URL_REGEX: OnceLock<regex::Regex> = OnceLock::new();
+        let url_regex = URL_REGEX
+            .get_or_init(|| regex::Regex::new(r"(https?://[^\s]+|www\.[^\s]+)").unwrap());
 
         // The sender's 7TV personal emotes (usable in any channel). Cloned out
         // of its own lock up front (a handful of emotes at most) so the lookup

@@ -15,6 +15,7 @@ import type { ThirdPartyBadge as ThirdPartyBadgeType } from '../services/thirdPa
 import { useAppStore } from '../stores/AppStore';
 import { openBadgesWithBadgeInMain } from '../utils/openBadgesInMain';
 import { useChatUserStore } from '../stores/chatUserStore';
+import { useShallow } from 'zustand/react/shallow';
 import { useGiftBombRecipients } from '../stores/giftBombStore';
 import { useMessageRepeat } from '../stores/messageRepeatStore';
 import { ChannelPointsIcon } from './ChannelPointsIcon';
@@ -832,32 +833,45 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
   // Subscribing here means a 100-message scrollback renders 0 paint-fetches +
   // 0 paint-derivations per message — the store holds one resolved entry per
   // unique chatter and every message just reads from it.
-  const seventvPaint = useChatUserStore(
-    (s) => (cosmeticsKey ? s.users.get(cosmeticsKey)?.paint : undefined),
-  ) as SevenTVPaintWithSelection | null | undefined;
-  const seventvBadge = useChatUserStore(
-    (s) => (cosmeticsKey ? s.users.get(cosmeticsKey)?.seventvBadge : undefined),
-  ) as SevenTVBadgeWithSelection | null | undefined;
-  // A StreamNook member's curated third-party badges (BTTV / FFZ / Chatterino /
-  // Homies / Chatsen / Chatty / DankChat). Read synchronously from chatUserStore,
-  // where ChatWidget's addUser resolves them ONCE per unique member via the
-  // Identity API — never a network call in this per-message hot path (the cause
-  // of the earlier lag/paint-starvation). Empty for non-members and for members
-  // who haven't opted any badge into their loadout.
-  const thirdPartyBadges = useChatUserStore((s) =>
-    cosmeticsKey ? s.users.get(cosmeticsKey)?.thirdPartyBadges ?? EMPTY_THIRD_PARTY : EMPTY_THIRD_PARTY,
+  //
+  // ONE shallow-compared subscription for all five cosmetic fields. Five
+  // separate subscriptions meant 5 store listeners per row and 5 selector
+  // evaluations per store write across every mounted row; one tuple selector
+  // has identical reactivity (shallow compare on the five fields matches the
+  // per-field Object.is checks) at a fifth of the cost.
+  const {
+    paint: seventvPaintRaw,
+    seventvBadge: seventvBadgeRaw,
+    thirdPartyBadges,
+    atmosphereId,
+    cologne,
+  } = useChatUserStore(
+    useShallow((s) => {
+      const u = cosmeticsKey ? s.users.get(cosmeticsKey) : undefined;
+      return {
+        paint: u?.paint,
+        seventvBadge: u?.seventvBadge,
+        // A StreamNook member's curated third-party badges (BTTV / FFZ /
+        // Chatterino / Homies / Chatsen / Chatty / DankChat), resolved ONCE per
+        // unique member via the Identity API — never a network call in this
+        // per-message hot path. Empty for non-members and for members who
+        // haven't opted any badge into their loadout.
+        thirdPartyBadges: u?.thirdPartyBadges ?? EMPTY_THIRD_PARTY,
+        // The member's StreamNook Atmosphere -> the SAME animated wash as their
+        // profile backdrop, rendered behind their message.
+        atmosphereId: u?.atmosphereId ?? null,
+        // CS2 Major Cologne event cosmetics (null = none). Takes precedence
+        // over the Atmosphere wash when present.
+        cologne: u?.cologne ?? null,
+      };
+    }),
   );
-  // The member's StreamNook Atmosphere (if any) -> the SAME animated wash as
-  // their profile backdrop, rendered behind their message.
-  const atmosphereId = useChatUserStore((s) => (cosmeticsKey ? s.users.get(cosmeticsKey)?.atmosphereId ?? null : null));
+  const seventvPaint = seventvPaintRaw as SevenTVPaintWithSelection | null | undefined;
+  const seventvBadge = seventvBadgeRaw as SevenTVBadgeWithSelection | null | undefined;
   const atmosphere = atmosphereId ? getAtmosphere(atmosphereId) : null;
   // Frost behind the text only when the atmosphere declares it needs it (busy
   // washes); subtle ones render the text bare.
   const atmosphereFrost = !!atmosphere?.chatFrost;
-  // CS2 Major Cologne event cosmetics this member applied (null = none). Takes
-  // precedence over the Atmosphere wash when present. The chrome asset URLs live
-  // on the Cologne atmosphere row (R2), shared by every wearer.
-  const cologne = useChatUserStore((s) => (cosmeticsKey ? s.users.get(cosmeticsKey)?.cologne ?? null : null));
   const cologneAtm = cologne ? getAtmosphere(MAJOR_COLOGNE_THEME_ID) : null;
   const [broadcasterType] = useState<string | null>(null);
   const [isMentioned, setIsMentioned] = useState(false);
