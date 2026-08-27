@@ -23,19 +23,75 @@ import type { ProviderId } from '../types/providers';
  * compositor track their scroll correctly. Plain rows have no composited layer,
  * never ghost, and keep full virtualization.
  */
-const MessageRow = function MessageRow({
-  messageId,
-  userId,
-  isModFocus,
-  intrinsicSizeCSS,
-  children,
-}: {
+interface MessageRowProps {
   messageId: string | null;
   userId: string | undefined;
   isModFocus: boolean;
   intrinsicSizeCSS: string;
-  children: React.ReactNode;
-}) {
+  sourceProvider: ProviderId | undefined;
+  sourceLogoSize: number;
+  message: string | BackendChatMessage;
+  isHighlighted: boolean;
+  moderationContext: ModerationContext | null;
+  emotes: EmoteSet | null;
+  isModerator?: boolean;
+  broadcasterId?: string;
+  onUsernameClick: ChatMessageListProps['onUsernameClick'];
+  onReplyClick: ChatMessageListProps['onReplyClick'];
+  onMessageCopy?: ChatMessageListProps['onMessageCopy'];
+  onEmoteRightClick: ChatMessageListProps['onEmoteRightClick'];
+  onUsernameRightClick: ChatMessageListProps['onUsernameRightClick'];
+  onBadgeClick: ChatMessageListProps['onBadgeClick'];
+}
+
+// Mirrors chatMessageAreEqual's rules for the shared props, so the row-level
+// memo never suppresses a repaint the inner comparator would allow. The
+// message rule replicates its string branch exactly: a string on EITHER side
+// re-renders (own-echo upgrade, repaintOwnBadges/Color and the id-stamp all
+// swap same-id string values in place), and reference-unequal objects are
+// equal only when both ids exist and match. Callbacks are ignored, same
+// contract as chatMessageAreEqual.
+const messageRowAreEqual = (prev: MessageRowProps, next: MessageRowProps): boolean => {
+  if (prev.messageId !== next.messageId) return false;
+  if (prev.userId !== next.userId) return false;
+  if (prev.isModFocus !== next.isModFocus) return false;
+  if (prev.intrinsicSizeCSS !== next.intrinsicSizeCSS) return false;
+  if (prev.sourceProvider !== next.sourceProvider) return false;
+  if (prev.sourceLogoSize !== next.sourceLogoSize) return false;
+  if (prev.message !== next.message) {
+    if (typeof prev.message === 'string' || typeof next.message === 'string') return false;
+    if (!prev.message.id || !next.message.id) return false;
+    if (prev.message.id !== next.message.id) return false;
+  }
+  if (prev.isHighlighted !== next.isHighlighted) return false;
+  if (prev.moderationContext?.type !== next.moderationContext?.type ||
+      prev.moderationContext?.duration !== next.moderationContext?.duration) return false;
+  if (prev.emotes !== next.emotes) return false;
+  if (prev.isModerator !== next.isModerator) return false;
+  if (prev.broadcasterId !== next.broadcasterId) return false;
+  return true;
+};
+
+const MessageRow = memo(function MessageRow({
+  messageId,
+  userId,
+  isModFocus,
+  intrinsicSizeCSS,
+  sourceProvider,
+  sourceLogoSize,
+  message,
+  isHighlighted,
+  moderationContext,
+  emotes,
+  isModerator,
+  broadcasterId,
+  onUsernameClick,
+  onReplyClick,
+  onMessageCopy,
+  onEmoteRightClick,
+  onUsernameRightClick,
+  onBadgeClick,
+}: MessageRowProps) {
   const hasAtmosphere = useChatUserStore((s) => {
     if (!userId) return false;
     const u = s.users.get(userId);
@@ -43,23 +99,50 @@ const MessageRow = function MessageRow({
     // they need the same always-paint treatment to dodge the ghost bug.
     return !!(u?.atmosphereId || u?.cologne);
   });
+  const style = useMemo(
+    () => ({
+      // Native virtualization for normal rows; atmosphere rows paint always
+      // to dodge the content-visibility compositing-ghost bug (see above).
+      contentVisibility: hasAtmosphere ? ('visible' as const) : ('auto' as const),
+      // Off-screen size hint, computed per-user from font size, spacing, and
+      // whether timestamps are on. Ignored when content-visibility is visible.
+      containIntrinsicBlockSize: hasAtmosphere ? undefined : intrinsicSizeCSS,
+    }),
+    [hasAtmosphere, intrinsicSizeCSS],
+  );
+  const chatMessageEl = (
+    <ChatMessage
+      message={message}
+      onUsernameClick={onUsernameClick}
+      onReplyClick={onReplyClick}
+      onMessageCopy={onMessageCopy}
+      isHighlighted={isHighlighted}
+      moderationContext={moderationContext}
+      onEmoteRightClick={onEmoteRightClick}
+      onUsernameRightClick={onUsernameRightClick}
+      onBadgeClick={onBadgeClick}
+      emotes={emotes}
+      isModerator={isModerator}
+      broadcasterId={broadcasterId}
+    />
+  );
   return (
     <div
       data-message-id={messageId || undefined}
       className={`chat-message-row${isModFocus ? ' is-mod-focus' : ''}`}
-      style={{
-        // Native virtualization for normal rows; atmosphere rows paint always
-        // to dodge the content-visibility compositing-ghost bug (see above).
-        contentVisibility: hasAtmosphere ? 'visible' : 'auto',
-        // Off-screen size hint, computed per-user from font size, spacing, and
-        // whether timestamps are on. Ignored when content-visibility is visible.
-        containIntrinsicBlockSize: hasAtmosphere ? undefined : intrinsicSizeCSS,
-      }}
+      style={style}
     >
-      {children}
+      {sourceProvider ? (
+        <div className="flex items-center gap-1.5 pl-1">
+          <ProviderLogo provider={sourceProvider} size={sourceLogoSize} />
+          <div className="min-w-0 flex-1">{chatMessageEl}</div>
+        </div>
+      ) : (
+        chatMessageEl
+      )}
     </div>
   );
-};
+}, messageRowAreEqual);
 
 interface ChatMessageListProps {
   messages: (string | BackendChatMessage)[];
@@ -563,22 +646,6 @@ const ChatMessageList = memo(function ChatMessageList({
             moderationContext = null;
           }
 
-          const chatMessageEl = (
-            <ChatMessage
-              message={message}
-              onUsernameClick={onUsernameClick}
-              onReplyClick={onReplyClick}
-              onMessageCopy={onMessageCopy}
-              isHighlighted={highlightedMessageId === messageId}
-              moderationContext={moderationContext}
-              onEmoteRightClick={onEmoteRightClick}
-              onUsernameRightClick={onUsernameRightClick}
-              onBadgeClick={onBadgeClick}
-              emotes={emotes}
-              isModerator={isModerator}
-              broadcasterId={broadcasterId}
-            />
-          );
           // Blended feed: prefix each message with its source platform's logo so
           // a merged multi-source feed is readable at a glance. Only when
           // showSource is on (and the row is a structured message carrying a
@@ -594,16 +661,21 @@ const ChatMessageList = memo(function ChatMessageList({
               userId={userId}
               isModFocus={!!modFocusId && messageId === modFocusId}
               intrinsicSizeCSS={intrinsicSizeCSS}
-            >
-              {sourceProvider ? (
-                <div className="flex items-center gap-1.5 pl-1">
-                  <ProviderLogo provider={sourceProvider} size={sourceLogoSize} />
-                  <div className="min-w-0 flex-1">{chatMessageEl}</div>
-                </div>
-              ) : (
-                chatMessageEl
-              )}
-            </MessageRow>
+              sourceProvider={sourceProvider}
+              sourceLogoSize={sourceLogoSize}
+              message={message}
+              isHighlighted={highlightedMessageId === messageId}
+              moderationContext={moderationContext}
+              emotes={emotes}
+              isModerator={isModerator}
+              broadcasterId={broadcasterId}
+              onUsernameClick={onUsernameClick}
+              onReplyClick={onReplyClick}
+              onMessageCopy={onMessageCopy}
+              onEmoteRightClick={onEmoteRightClick}
+              onUsernameRightClick={onUsernameRightClick}
+              onBadgeClick={onBadgeClick}
+            />
           );
         })}
       </div>

@@ -672,6 +672,8 @@ const VideoPlayer = () => {
   }, [availableQualities, settings.quality, activeQuality, changeStreamQuality]);
 
   // Update time display for live streams to show "LIVE" or time behind
+  const liveTimeNodeRef = useRef<Element | null>(null);
+  const lastLiveTickRef = useRef(0);
   const updateLiveTimeDisplay = useCallback(() => {
     const video = videoRef.current;
     const container = containerRef.current;
@@ -683,6 +685,15 @@ const VideoPlayer = () => {
       return;
     }
 
+    // The display has 1s resolution, so 4Hz is plenty; the rAF chain stays
+    // alive (cheap) but the DOM pass runs at most every 250ms.
+    const now = Date.now();
+    if (now - lastLiveTickRef.current < 250) {
+      progressUpdateIntervalRef.current = requestAnimationFrame(updateLiveTimeDisplay);
+      return;
+    }
+    lastLiveTickRef.current = now;
+
     // Only apply live time display if current media is live
     const { currentMediaType } = useAppStore.getState();
     if (currentMediaType !== 'live') {
@@ -690,8 +701,14 @@ const VideoPlayer = () => {
       return;
     }
 
-    // Update time display to show "LIVE"
-    const currentTimeDisplay = container.querySelector('.plyr__time--current');
+    // Update time display to show "LIVE". The control-bar node is cached; a
+    // player rebuild replaces the control bar, so revalidate via isConnected
+    // (cheap) and re-query only then.
+    let currentTimeDisplay = liveTimeNodeRef.current;
+    if (!currentTimeDisplay || !currentTimeDisplay.isConnected) {
+      currentTimeDisplay = container.querySelector('.plyr__time--current');
+      liveTimeNodeRef.current = currentTimeDisplay;
+    }
     if (currentTimeDisplay) {
       const buffered = video.buffered;
       let nextText = 'LIVE';

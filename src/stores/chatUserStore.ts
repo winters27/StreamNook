@@ -134,6 +134,40 @@ function enqueueCosmeticUpdate(userId: string, paint: any, seventvBadge: any) {
   scheduleStoreFlush();
 }
 
+// ── Identity changes (color / rename) ────────────────────────────────────────
+// Same coalescing contract as the cosmetics above, but for the rare mid-session
+// identity change (a /color, a display-name edit). Its own pending map + flush:
+// the cosmetics flush hard-codes {paint, seventvBadge} and would clobber a
+// same-microtask cosmetics resolution (and un-flip the cosmeticsResolved
+// sentinel) if identity fields were routed through it. Each flush spreads the
+// CURRENT record at flush time and writes only its own fields, so the two
+// coalescers compose in either order.
+type IdentityUpdate = { username: string; displayName: string; color: string };
+const pendingIdentityUpdates = new Map<string, IdentityUpdate>();
+let pendingIdentityFlushScheduled = false;
+
+function scheduleIdentityFlush() {
+  if (pendingIdentityFlushScheduled) return;
+  pendingIdentityFlushScheduled = true;
+  queueMicrotask(() => {
+    pendingIdentityFlushScheduled = false;
+    if (pendingIdentityUpdates.size === 0) return;
+    const updates = new Map(pendingIdentityUpdates);
+    pendingIdentityUpdates.clear();
+    useChatUserStore.setState((state) => {
+      const newUsers = new Map(state.users);
+      const newUsernameToId = new Map(state.usernameToId);
+      for (const [uid, identity] of updates) {
+        const current = newUsers.get(uid);
+        if (!current) continue;
+        newUsers.set(uid, { ...current, ...identity, lastSeen: Date.now() });
+        newUsernameToId.set(identity.username.toLowerCase(), uid);
+      }
+      return { users: newUsers, usernameToId: newUsernameToId };
+    });
+  });
+}
+
 // ── StreamNook third-party badge loadout ─────────────────────────────────────
 // Same once-per-user, read-synchronously contract as the 7TV cosmetics above,
 // but sourced from the Identity API's resolved bundle (the member's curated
@@ -475,6 +509,22 @@ function pushCologne(userId: string, cosmetics: CologneCosmetics | null) {
 // speaks again they are simply re-added (a cheap cosmetics re-resolve).
 const MAX_TRACKED_USERS = 8000;
 const USER_EVICT_SLACK = 1000;
+const MATCH_SCAN_CAP = 200;
+
+// Lowercased name pairs, keyed by user-object identity. Identity changes
+// (rename, color) replace the ChatUser object via the identity coalescer, so a
+// stale entry can never be served; the in-place lastSeen bump never touches
+// names. Kills the 2-per-user toLowerCase() allocations the autocomplete scan
+// paid on every keystroke.
+const lowerNameCache = new WeakMap<ChatUser, { u: string; d: string }>();
+function lowerNames(user: ChatUser): { u: string; d: string } {
+  let l = lowerNameCache.get(user);
+  if (!l) {
+    l = { u: user.username.toLowerCase(), d: user.displayName.toLowerCase() };
+    lowerNameCache.set(user, l);
+  }
+  return l;
+}
 
 function evictStaleUsers(
   users: Map<string, ChatUser>,
@@ -510,17 +560,24 @@ export const useChatUserStore = create<ChatUserStore>((set, get) => ({
       existingUser !== undefined &&
       (existingUser.paint !== undefined || existingUser.seventvBadge !== undefined);
     if (cosmeticsResolved) {
-      set((state) => {
-        const newUsers = new Map(state.users);
-        const newUsernameToId = new Map(state.usernameToId);
-        newUsers.set(user.userId, {
-          ...existingUser!,
-          ...user,
-          lastSeen: Date.now(),
+      const identityChanged =
+        existingUser!.username !== user.username ||
+        existingUser!.displayName !== user.displayName ||
+        existingUser!.color !== user.color;
+      if (identityChanged) {
+        pendingIdentityUpdates.set(user.userId, {
+          username: user.username,
+          displayName: user.displayName,
+          color: user.color,
         });
-        newUsernameToId.set(user.username.toLowerCase(), user.userId);
-        return { users: newUsers, usernameToId: newUsernameToId };
-      });
+        scheduleIdentityFlush();
+        return;
+      }
+      // Metadata-only bump. lastSeen has NO reactive readers (only call-time
+      // sorts: eviction, @-autocomplete, command palette), so mutate in place —
+      // no Map clones, no subscriber fan-out. This bypassing of setState is
+      // deliberate; do not "fix" it back into a store update.
+      existingUser!.lastSeen = Date.now();
       return;
     }
 
@@ -611,12 +668,17 @@ export const useChatUserStore = create<ChatUserStore>((set, get) => ({
     const matches: ChatUser[] = [];
     for (const user of users.values()) {
       const nick = overrides[user.userId]?.nickname?.toLowerCase();
+      const lower = lowerNames(user);
       if (
-        user.username.toLowerCase().startsWith(queryLower) ||
-        user.displayName.toLowerCase().startsWith(queryLower) ||
+        lower.u.startsWith(queryLower) ||
+        lower.d.startsWith(queryLower) ||
         (nick && nick.startsWith(queryLower))
       ) {
         matches.push(user);
+        // Runs per keystroke over up to ~9k users. Cap the collect: past this
+        // many matches (single-letter queries), the top-`limit` by recency is
+        // close enough for autocomplete and the full sort isn't worth it.
+        if (matches.length >= MATCH_SCAN_CAP) break;
       }
     }
 

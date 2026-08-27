@@ -49,6 +49,34 @@ export interface EmoteSet {
 // by bare id since they have a single canonical URL.
 const cachedEmoteFiles: Map<string, string> = new Map();
 
+// Lazily-built per-set name indexes, keyed by set identity. Emote sets are only
+// ever replaced wholesale (never mutated in place), so a WeakMap entry lives
+// exactly as long as its set and a refresh/channel switch drops it with the
+// old object. Insertion is first-wins in the same provider order as the
+// name-lookup chains this replaces.
+const emoteLookupCache = new WeakMap<
+  EmoteSet,
+  { byName: Map<string, Emote>; lowerNames: Set<string> }
+>();
+const LOOKUP_ORDER = ['7tv', 'bttv', 'ffz', 'twitch', 'kick', 'youtube'] as const;
+
+export function getEmoteLookup(set: EmoteSet): { byName: Map<string, Emote>; lowerNames: Set<string> } {
+  let entry = emoteLookupCache.get(set);
+  if (!entry) {
+    const byName = new Map<string, Emote>();
+    const lowerNames = new Set<string>();
+    for (const provider of LOOKUP_ORDER) {
+      for (const e of set[provider] ?? []) {
+        if (!byName.has(e.name)) byName.set(e.name, e);
+        lowerNames.add(e.name.toLowerCase());
+      }
+    }
+    entry = { byName, lowerNames };
+    emoteLookupCache.set(set, entry);
+  }
+  return entry;
+}
+
 // --- Per-DPI emote sizing -------------------------------------------------
 // 7TV serves discrete size tiers (1x..4x). We cache AND render the smallest
 // tier that still looks crisp at the display's pixel density, so the on-disk
@@ -128,6 +156,10 @@ const BURST_CONCURRENT = 5;
 const BURST_DELAY_MS = 15;
 let burstRefs = 0;
 const downloadQueue: Array<{ id: string, url: string }> = [];
+// Membership mirror of downloadQueue. The queue can hold a whole channel set
+// (thousands) while queueEmoteForCaching is called per rendered emote, so the
+// dedupe check must be O(1), not a queue scan.
+const queuedIds = new Set<string>();
 let activeDownloads = 0;
 let processingScheduled = false;
 let lastDownloadTime = 0;
@@ -188,6 +220,7 @@ function pumpQueue() {
     while (activeDownloads < currentConcurrency() && downloadQueue.length > 0) {
       const next = downloadQueue.shift();
       if (!next) break;
+      queuedIds.delete(next.id);
       activeDownloads++;
       lastDownloadTime = Date.now();
       void downloadEmoteIfNeeded(next.id, next.url)
@@ -249,7 +282,7 @@ async function downloadEmoteIfNeeded(id: string, url: string): Promise<string | 
 }
 
 export function queueEmoteForCaching(id: string, url: string, priority: boolean = false) {
-  if (cachedEmoteFiles.has(id) || pendingDownloads.has(id) || downloadQueue.some(item => item.id === id)) {
+  if (cachedEmoteFiles.has(id) || pendingDownloads.has(id) || queuedIds.has(id)) {
     return;
   }
 
@@ -259,6 +292,7 @@ export function queueEmoteForCaching(id: string, url: string, priority: boolean 
   } else {
     downloadQueue.push({ id, url });
   }
+  queuedIds.add(id);
   // Drain the queue: idle-gated trickle normally, fast burst while a picker is open.
   pumpQueue();
 }

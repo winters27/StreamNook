@@ -13,6 +13,7 @@
 // Nothing here touches the network. The dictionary ships with the app.
 
 import { getChannelEmotes } from '../stores/chatConnectionStore';
+import { getEmoteLookup } from '../services/emoteService';
 import { useChatUserStore } from '../stores/chatUserStore';
 import { useAppStore } from '../stores/AppStore';
 import { tokenizeForSpellcheck } from './chatInputWord';
@@ -129,23 +130,25 @@ function customWords(): Set<string> {
 }
 
 /** True when this word is chat vocabulary rather than English: an emote in the
- *  current channel, someone in chat, or a word the user has added. */
-export function isKnownChatToken(word: string, ctx: SpellContext): boolean {
+ *  current channel, someone in chat, or a word the user has added. `custom`
+ *  lets batch callers build the user-additions set once instead of per word. */
+export function isKnownChatToken(
+  word: string,
+  ctx: SpellContext,
+  custom: Set<string> = customWords(),
+): boolean {
   const lower = word.toLowerCase();
 
-  if (customWords().has(lower)) return true;
+  if (custom.has(lower)) return true;
 
   if (useChatUserStore.getState().getUserByUsername(lower)) return true;
 
   if (ctx.emoteKey) {
     const emotes = getChannelEmotes(ctx.emoteKey);
     if (emotes) {
-      // A linear scan across the provider arrays, deliberately uncached. Even a
-      // large 7TV set runs in well under a millisecond, and a cache keyed on the
-      // emote set would need invalidating on every /refresh and channel switch.
-      for (const provider of ['twitch', 'bttv', '7tv', 'ffz', 'kick'] as const) {
-        if (emotes[provider].some((e) => e.name.toLowerCase() === lower)) return true;
-      }
+      // Per-set name index, invalidated by set identity (sets are replaced
+      // wholesale on /refresh and channel switch, never mutated).
+      if (getEmoteLookup(emotes).lowerNames.has(lower)) return true;
     }
   }
 
@@ -157,7 +160,8 @@ export async function checkText(
   text: string,
   ctx: SpellContext,
 ): Promise<Array<[number, number]>> {
-  const tokens = tokenizeForSpellcheck(text).filter((t) => !isKnownChatToken(t.word, ctx));
+  const custom = customWords();
+  const tokens = tokenizeForSpellcheck(text).filter((t) => !isKnownChatToken(t.word, ctx, custom));
   if (tokens.length === 0) return [];
 
   // One round trip for the whole composer, deduped — "the the the" asks once.
