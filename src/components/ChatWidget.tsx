@@ -15,7 +15,7 @@ const ChannelPointsIcon = ({ className = "", size = 14 }: { className?: string; 
   </svg>
 );
 import { DropProgressStatus } from '../types';
-import { useTwitchChat } from '../hooks/useTwitchChat';
+import { useTwitchChat, type ModerationContext } from '../hooks/useTwitchChat';
 import { useChannelEmotes, ensureChannelEmotes, getChannelEmotes, emoteCacheKey, refreshChannelEmotes, useChannelChat, setChannelPaused, injectRedemptionMessage, injectSystemMessage, systemSourceFor } from '../stores/chatConnectionStore';
 import { useSpellcheck } from '../hooks/useSpellcheck';
 import { warmSpellcheck } from '../utils/spellcheck';
@@ -281,6 +281,106 @@ function formatFollowAge(minutes: number): string {
   }
   return `${minutes}m`;
 }
+
+// C7 checkpoint B: the message-list subtree owns its own per-channel chat
+// subscription. While the parent still holds its own subscription this is
+// behavior-identical; checkpoint C cuts the parent's per-flush subscription so
+// only this panel re-renders on message traffic. Replay mode has no live
+// slice, so the parent passes the replay snapshot through as an override.
+interface ChatMessagesPanelSource {
+  messages: (string | BackendChatMessage)[];
+  renderToken: number;
+  deletedMessageIds: Set<string>;
+  clearedUserContexts: Map<string, { context: ModerationContext; affectedMessageIds: Set<string> }>;
+}
+
+interface ChatMessagesPanelProps {
+  /** Live slice key (bare Twitch login / composite provider key); ignored when
+   *  an override snapshot is supplied. */
+  channelKey: string | null;
+  /** Replay-mode snapshot; null in live mode. */
+  override: ChatMessagesPanelSource | null;
+  isPaused: boolean;
+  onPauseIntent: () => void;
+  onScroll: (distanceToBottom: number, isUserScroll: boolean) => void;
+  onUsernameClick: React.ComponentProps<typeof ChatMessageList>['onUsernameClick'];
+  onReplyClick: (parentMsgId: string) => void;
+  onMessageCopy?: (content: string) => void;
+  onEmoteRightClick: (emoteName: string) => void;
+  onUsernameRightClick: (messageId: string, username: string) => void;
+  onBadgeClick: (badgeKey: string, badgeInfo: Record<string, unknown>) => void;
+  highlightedMessageId: string | null;
+  modFocusId?: string | null;
+  hiddenMessageIds?: Set<string>;
+  emotes: EmoteSet | null;
+  getMessageId: (message: string | BackendChatMessage) => string | null;
+  isModerator?: boolean;
+  broadcasterId?: string;
+  hoveringRef: React.MutableRefObject<boolean>;
+}
+
+const ChatMessagesPanel = ({
+  channelKey,
+  override,
+  isPaused,
+  onPauseIntent,
+  onScroll,
+  onUsernameClick,
+  onReplyClick,
+  onMessageCopy,
+  onEmoteRightClick,
+  onUsernameRightClick,
+  onBadgeClick,
+  highlightedMessageId,
+  modFocusId,
+  hiddenMessageIds,
+  emotes,
+  getMessageId,
+  isModerator,
+  broadcasterId,
+  hoveringRef,
+}: ChatMessagesPanelProps) => {
+  const live = useChannelChat(override ? null : channelKey);
+  const src: ChatMessagesPanelSource = override ?? live;
+  return (
+    <div
+      className="flex-1 overflow-hidden animate-panel-slide-down"
+      onMouseEnter={() => { hoveringRef.current = true; }}
+      onMouseLeave={() => { hoveringRef.current = false; }}
+    >
+      {src.messages.length === 0 ? (
+        <div className="h-full flex items-center justify-center">
+          <p className="text-textSecondary text-sm">Waiting for messages...</p>
+        </div>
+      ) : (
+        <ErrorBoundary componentName="ChatWidgetList" reportToLogService={true}>
+          <ChatMessageList
+            messages={src.messages}
+            renderToken={src.renderToken}
+            isPaused={isPaused}
+            onPauseIntent={onPauseIntent}
+            onScroll={onScroll}
+            onUsernameClick={onUsernameClick}
+            onReplyClick={onReplyClick}
+            onMessageCopy={onMessageCopy}
+            onEmoteRightClick={onEmoteRightClick}
+            onUsernameRightClick={onUsernameRightClick}
+            onBadgeClick={onBadgeClick}
+            highlightedMessageId={highlightedMessageId}
+            modFocusId={modFocusId}
+            deletedMessageIds={src.deletedMessageIds}
+            hiddenMessageIds={hiddenMessageIds}
+            clearedUserContexts={src.clearedUserContexts}
+            emotes={emotes}
+            getMessageId={getMessageId}
+            isModerator={isModerator}
+            broadcasterId={broadcasterId}
+          />
+        </ErrorBoundary>
+      )}
+    </div>
+  );
+};
 
 const ChatWidget = ({ channelOverride, hypeTrainOverride }: ChatWidgetProps = {}) => {
   // Single source of truth for the source platform. Twitch (the default) runs the
@@ -1366,6 +1466,16 @@ const ChatWidget = ({ channelOverride, hypeTrainOverride }: ChatWidgetProps = {}
 
   // Messages to render
   const visibleMessages = messages;
+  // Panel wiring (C7 checkpoint B): the live key mirrors the acquisition keys
+  // used by connectChat; replay mode passes the replay snapshot through since
+  // it has no live slice.
+  const panelChannelKey = isTwitch
+    ? currentStream?.user_login?.toLowerCase() ?? null
+    : providerKey;
+  const panelOverride =
+    isVodReplay && chatMode === 'replay'
+      ? { messages, renderToken, deletedMessageIds, clearedUserContexts }
+      : null;
 
 
   // Process new messages for user history tracking.
@@ -4439,40 +4549,29 @@ const ChatWidget = ({ channelOverride, hypeTrainOverride }: ChatWidgetProps = {}
         </AnimatePresence>
 
         {/* Chat messages area - flex-1 to take remaining space */}
-        {activeView === 'chat' && <div className="flex-1 overflow-hidden animate-panel-slide-down"
-          onMouseEnter={() => { isHoveringChatRef.current = true; }}
-          onMouseLeave={() => { isHoveringChatRef.current = false; }}>
-          {visibleMessages.length === 0 ? (
-            <div className="h-full flex items-center justify-center">
-              <p className="text-textSecondary text-sm">Waiting for messages...</p>
-            </div>
-          ) : (
-            <ErrorBoundary componentName="ChatWidgetList" reportToLogService={true}>
-              <ChatMessageList
-                messages={visibleMessages}
-                renderToken={renderToken}
-                isPaused={isPaused}
-                onPauseIntent={handlePauseIntent}
-                onScroll={handleListScroll}
-                onUsernameClick={handleUsernameClick}
-                onReplyClick={handleReplyClick}
-                onMessageCopy={handleMessageCopy}
-                onEmoteRightClick={handleEmoteRightClick}
-                onUsernameRightClick={handleUsernameRightClick}
-                onBadgeClick={handleBadgeClick}
-                highlightedMessageId={highlightedMessageId}
-                modFocusId={modFocusId}
-                deletedMessageIds={deletedMessageIds}
-                hiddenMessageIds={locallyHiddenMessageIds}
-                clearedUserContexts={clearedUserContexts}
-                emotes={emotes}
-                getMessageId={getMessageId}
-                isModerator={isModerator}
-                broadcasterId={currentStream?.user_id}
-              />
-            </ErrorBoundary>
-          )}
-        </div>}
+        {activeView === 'chat' && (
+          <ChatMessagesPanel
+            channelKey={panelChannelKey}
+            override={panelOverride}
+            isPaused={isPaused}
+            onPauseIntent={handlePauseIntent}
+            onScroll={handleListScroll}
+            onUsernameClick={handleUsernameClick}
+            onReplyClick={handleReplyClick}
+            onMessageCopy={handleMessageCopy}
+            onEmoteRightClick={handleEmoteRightClick}
+            onUsernameRightClick={handleUsernameRightClick}
+            onBadgeClick={handleBadgeClick}
+            highlightedMessageId={highlightedMessageId}
+            modFocusId={modFocusId}
+            hiddenMessageIds={locallyHiddenMessageIds}
+            emotes={emotes}
+            getMessageId={getMessageId}
+            isModerator={isModerator}
+            broadcasterId={currentStream?.user_id}
+            hoveringRef={isHoveringChatRef}
+          />
+        )}
 
         {/* Chat Paused indicator - positioned above input */}
         {activeView === 'chat' && isPaused && (
