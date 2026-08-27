@@ -1,6 +1,9 @@
 import React, { lazy, Suspense } from 'react';
 import ReactDOM from 'react-dom/client';
 import { MotionScope } from './components/MotionScope.tsx';
+// Side-effect import: starts the settings IPC now, before the lazy route
+// imports below, so it overlaps chunk loading.
+import './bootPreload';
 
 // Route components are lazy so each window only downloads/parses the code it
 // actually renders. The MultiChat / profile / plugin popouts no longer pull in

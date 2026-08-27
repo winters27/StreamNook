@@ -13,6 +13,7 @@ import { emitSettingsUpdated } from '../utils/settingsBroadcast';
 import { makeKey, parseKey } from '../utils/providerKey';
 import { buildProviderUrl, streamProvider } from '../utils/streamProvider';
 import { providerLabel, WATCHABLE_PROVIDERS, type ProviderId } from '../types/providers';
+import { takePreloadedSettings } from '../bootPreload';
 
 type StreamStartResult = {
   url: string;
@@ -515,6 +516,27 @@ interface AppState {
 // Flags to ensure we only show session toasts once per app session
 let hasShownWelcomeBackToast = false;
 
+// Mod-log dedup metadata, memoized per entry object. The dedup scan runs per
+// moderation event over up to MOD_LOG_CAP entries; without this it rebuilt the
+// key strings and re-parsed every entry's timestamp on each event (a ban wave
+// is many events per second). Entries are replaced, never mutated, so keying
+// by object identity is safe.
+const modLogNormAction = (a?: string) => {
+  const s = (a || '').toLowerCase();
+  return s === 'clear_chat' ? 'clear' : s;
+};
+const modLogKeyOf = (l: ModLogEvent) =>
+  `${(l.channel || '').toLowerCase()}|${modLogNormAction(l.action)}|${(l.target_user_name || '').toLowerCase()}`;
+const modLogMeta = new WeakMap<ModLogEvent, { key: string; ts: number }>();
+const modLogMetaOf = (l: ModLogEvent): { key: string; ts: number } => {
+  let m = modLogMeta.get(l);
+  if (!m) {
+    m = { key: modLogKeyOf(l), ts: new Date(l.timestamp).getTime() };
+    modLogMeta.set(l, m);
+  }
+  return m;
+};
+
 // Store EventSub listener cleanup functions at module level
 let eventSubListenerCleanup: (() => void)[] = [];
 let eventSubConnectionId = 0;
@@ -759,6 +781,15 @@ async function teardownProviderSession(): Promise<void> {
 const WATCH_STREAKS_TTL_MS = 60 * 60 * 1000;
 let lastWatchStreaksFetchAt = 0;
 
+// Sidebar and Home both fetch followed/recommended streams on mount with no
+// guard, so boot fires each fetch twice. In-flight dedupe (concurrent callers
+// share one promise) plus a short TTL (back-to-back callers skip) collapse it.
+let followedInFlight: Promise<void> | null = null;
+let followedFetchedAt = 0;
+let recommendedInFlight: Promise<void> | null = null;
+let recommendedFetchedAt = 0;
+const STREAMS_GUARD_TTL_MS = 10_000;
+
 export const useAppStore = create<AppState>((set, get) => ({
   settings: {} as Settings,
   followedStreams: [],
@@ -872,17 +903,12 @@ export const useAppStore = create<AppState>((set, get) => ({
       // moderator identity. De-dupe so the feeds don't double-log, and let a
       // richer EventSub entry upgrade a matching IRC one (or drop the IRC dup).
       const DEDUP_MS = 5000;
-      const normAction = (a?: string) => {
-        const s = (a || '').toLowerCase();
-        return s === 'clear_chat' ? 'clear' : s;
-      };
-      const keyOf = (l: ModLogEvent) =>
-        `${(l.channel || '').toLowerCase()}|${normAction(l.action)}|${(l.target_user_name || '').toLowerCase()}`;
-      const newKey = keyOf(log);
+      const newKey = modLogKeyOf(log);
       const now = Date.now();
-      const dupIdx = currentLogs.findIndex(
-        (l) => keyOf(l) === newKey && now - new Date(l.timestamp).getTime() < DEDUP_MS,
-      );
+      const dupIdx = currentLogs.findIndex((l) => {
+        const m = modLogMetaOf(l);
+        return m.key === newKey && now - m.ts < DEDUP_MS;
+      });
 
       if (dupIdx !== -1) {
         if (log.source === 'eventsub' && currentLogs[dupIdx].source !== 'eventsub') {
@@ -1318,7 +1344,11 @@ export const useAppStore = create<AppState>((set, get) => ({
     set(state => ({ toasts: state.toasts.filter(t => t.id !== id) }));
   },
   loadSettings: async () => {
-    const settings = await invoke('load_settings') as Settings;
+    // Boot preload, consume-once. A null/rejected preload falls through to a
+    // fresh invoke, NEVER to defaults: an early invoke can race state
+    // management, and defaults here would let the next save wipe real settings.
+    const pre = await (takePreloadedSettings() ?? Promise.resolve(null));
+    const settings = (pre as Settings | null) ?? ((await invoke('load_settings')) as Settings);
     // Ensure cache settings have defaults if not present
     if (!settings.cache) {
       settings.cache = { enabled: true, expiry_days: 7 };
@@ -1453,72 +1483,90 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
   },
   loadFollowedStreams: async () => {
-    try {
-      const streams = await invoke('get_followed_streams') as TwitchStream[];
-      set({ followedStreams: streams });
+    // Boot double-fetch guard: share the in-flight promise, skip inside the TTL.
+    if (followedInFlight) return followedInFlight;
+    if (Date.now() - followedFetchedAt < STREAMS_GUARD_TTL_MS) return;
+    followedInFlight = (async () => {
+      try {
+        const streams = await invoke('get_followed_streams') as TwitchStream[];
+        set({ followedStreams: streams });
 
-      // Fetch batched watch streaks for live followed streams.
-      // 1h TTL — see WATCH_STREAKS_TTL_MS above for why this matters.
-      const now = Date.now();
-      if (streams.length > 0 && now - lastWatchStreaksFetchAt > WATCH_STREAKS_TTL_MS) {
-        lastWatchStreaksFetchAt = now; // Set optimistically to dedupe concurrent callers.
-        const channelIds = streams.map(s => s.user_id);
-        invoke('get_watch_streaks_batch', { channelIds })
-          .then(res => {
-            const streakData = res as Record<string, { streak_count: number; share_status: string }>;
-            Logger.debug('[WatchStreak] Batched response data:', streakData);
-            const formattedStreaks: Record<string, number> = {};
-            for (const [id, summary] of Object.entries(streakData)) {
-              if (summary.streak_count > 0) {
-                formattedStreaks[id] = summary.streak_count;
+        // Fetch batched watch streaks for live followed streams.
+        // 1h TTL — see WATCH_STREAKS_TTL_MS above for why this matters.
+        const now = Date.now();
+        if (streams.length > 0 && now - lastWatchStreaksFetchAt > WATCH_STREAKS_TTL_MS) {
+          lastWatchStreaksFetchAt = now; // Set optimistically to dedupe concurrent callers.
+          const channelIds = streams.map(s => s.user_id);
+          invoke('get_watch_streaks_batch', { channelIds })
+            .then(res => {
+              const streakData = res as Record<string, { streak_count: number; share_status: string }>;
+              Logger.debug('[WatchStreak] Batched response data:', streakData);
+              const formattedStreaks: Record<string, number> = {};
+              for (const [id, summary] of Object.entries(streakData)) {
+                if (summary.streak_count > 0) {
+                  formattedStreaks[id] = summary.streak_count;
+                }
               }
-            }
-            // Merge with existing streaks to avoid clearing others
-            set(state => ({ watchStreaks: { ...state.watchStreaks, ...formattedStreaks } }));
-          })
-          .catch(e => {
-            // Roll back the timestamp so a retry can happen
-            lastWatchStreaksFetchAt = 0;
-            Logger.debug('[Sidebar] Failed to fetch batched watch streaks:', e);
-          });
-      }
+              // Merge with existing streaks to avoid clearing others
+              set(state => ({ watchStreaks: { ...state.watchStreaks, ...formattedStreaks } }));
+            })
+            .catch(e => {
+              // Roll back the timestamp so a retry can happen
+              lastWatchStreaksFetchAt = 0;
+              Logger.debug('[Sidebar] Failed to fetch batched watch streaks:', e);
+            });
+        }
 
-    } catch (e) {
-      Logger.warn('Could not load followed streams:', e);
-      // User is not authenticated, this is expected on first launch
-      set({ followedStreams: [] });
+      } catch (e) {
+        Logger.warn('Could not load followed streams:', e);
+        // User is not authenticated, this is expected on first launch
+        set({ followedStreams: [] });
 
-      // Show toast if user tries to view followed streams but isn't logged in
-      const state = get();
-      if (!state.isAuthenticated && state.showLiveStreamsOverlay) {
-        state.addToast('Please log in to Twitch to view your followed streams', 'warning');
+        // Show toast if user tries to view followed streams but isn't logged in
+        const state = get();
+        if (!state.isAuthenticated && state.showLiveStreamsOverlay) {
+          state.addToast('Please log in to Twitch to view your followed streams', 'warning');
+        }
       }
-    }
+    })().finally(() => {
+      followedInFlight = null;
+      followedFetchedAt = Date.now();
+    });
+    return followedInFlight;
   },
   loadRecommendedStreams: async () => {
-    try {
-      const result = await invoke('get_recommended_streams_paginated', {
-        cursor: null,
-        limit: 20,
-        languages: get().settings.discovery_languages ?? [],
-        personalized: get().settings.discovery_personalized ?? false
-      }) as [TwitchStream[], string | null];
+    // Boot double-fetch guard: share the in-flight promise, skip inside the TTL.
+    if (recommendedInFlight) return recommendedInFlight;
+    if (Date.now() - recommendedFetchedAt < STREAMS_GUARD_TTL_MS) return;
+    recommendedInFlight = (async () => {
+      try {
+        const result = await invoke('get_recommended_streams_paginated', {
+          cursor: null,
+          limit: 20,
+          languages: get().settings.discovery_languages ?? [],
+          personalized: get().settings.discovery_personalized ?? false
+        }) as [TwitchStream[], string | null];
 
-      const [streams, cursor] = result;
+        const [streams, cursor] = result;
 
-      // Filter out streams that are already in followed streams
-      const followedIds = new Set(get().followedStreams.map(s => s.user_id));
-      const filteredStreams = streams.filter(s => !followedIds.has(s.user_id));
+        // Filter out streams that are already in followed streams
+        const followedIds = new Set(get().followedStreams.map(s => s.user_id));
+        const filteredStreams = streams.filter(s => !followedIds.has(s.user_id));
 
-      set({
-        recommendedStreams: filteredStreams,
-        recommendedCursor: cursor,
-        hasMoreRecommended: cursor !== null
-      });
-    } catch (e) {
-      Logger.warn('Could not load recommended streams:', e);
-      set({ recommendedStreams: [], recommendedCursor: null, hasMoreRecommended: false });
-    }
+        set({
+          recommendedStreams: filteredStreams,
+          recommendedCursor: cursor,
+          hasMoreRecommended: cursor !== null
+        });
+      } catch (e) {
+        Logger.warn('Could not load recommended streams:', e);
+        set({ recommendedStreams: [], recommendedCursor: null, hasMoreRecommended: false });
+      }
+    })().finally(() => {
+      recommendedInFlight = null;
+      recommendedFetchedAt = Date.now();
+    });
+    return recommendedInFlight;
   },
 
   loadMoreRecommendedStreams: async () => {
@@ -3058,28 +3106,27 @@ export const useAppStore = create<AppState>((set, get) => ({
         throw new Error('No stored credentials');
       }
 
-      // Explicitly check token health to catch missing scopes (like moderation upgrades)
-      try {
-        const health = await invoke<{ is_valid: boolean; needs_refresh: boolean; error?: string }>('verify_token_health');
-        
-        // If the token is invalid specifically because of missing scopes, we must abort auth.
-        // If it's invalid but `needs_refresh` is true, we let get_user_info handle the auto-refresh cycle natively.
-        // If it's simply a network error on Twitch's end, we don't maliciously destroy the session.
-        if (!health.is_valid && health.error && health.error.includes('Missing scopes')) {
-          throw new Error(health.error);
-        }
-      } catch (healthErr) {
-        const msg = healthErr instanceof Error ? healthErr.message : String(healthErr);
-        
-        // Re-throw only if it's explicitly the missing scopes error we care about
-        if (msg.includes('Missing scopes')) {
-          throw new Error(msg);
-        }
-        
-        // Otherwise, gracefully ignore the health check failure (e.g. offline network or temporary 500 code) 
-        // and let get_user_info function as the true source of truth for auth state and auto-refresh.
-        Logger.debug('[Auth] verify_token_health failed or threw network error, proceeding to get_user_info fallback');
-      }
+      // Token-health probe, deliberately NOT awaited: it is a network round trip
+      // whose result only matters for the missing-scopes case (like moderation
+      // upgrades). Rejections are network noise and are swallowed; get_user_info
+      // below stays the source of truth for auth state and auto-refresh.
+      // Keep this the only call site: the missing-scopes path triggers a full
+      // account-registry reset in Rust, so it must never fire twice per check.
+      invoke<{ is_valid: boolean; needs_refresh: boolean; error?: string }>('verify_token_health')
+        .then((health) => {
+          if (!health.is_valid && health.error && health.error.includes('Missing scopes')) {
+            set({ isAuthenticated: false, currentUser: null, followedStreams: [] });
+            get().addToast(
+              'We added new features! Please log in again to grant the new permissions.',
+              'warning',
+              {
+                label: 'Log In',
+                onClick: () => get().loginToTwitch()
+              }
+            );
+          }
+        })
+        .catch(() => {});
 
       // Try to get user info - if it works, we're authenticated
       const userInfo = await invoke('get_user_info') as UserInfo;
