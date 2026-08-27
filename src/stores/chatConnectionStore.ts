@@ -145,12 +145,19 @@ interface ChatConnectionState {
    *  fully re-create slice objects (the slice holds Sets/Maps that we mutate
    *  in place for perf, which Zustand wouldn't otherwise notice). */
   revision: number;
+  /** Per-channel change counters ALONGSIDE the global revision. Channel-scoped
+   *  consumers (useChannelChat and the tab counters) subscribe to their own
+   *  key so a flood in one channel no longer re-renders every mounted pane;
+   *  cross-channel consumers (BlendedChatPane sources, LiveOverlayFeed,
+   *  useChannelSocial) keep the global signal. */
+  revisionByChannel: Record<string, number>;
 }
 
 export const useChatConnectionStore = create<ChatConnectionState>(() => ({
   channels: new Map(),
   wsPort: null,
   revision: 0,
+  revisionByChannel: {},
 }));
 
 // --- Module-scope mutable bridge state --------------------------------------
@@ -532,6 +539,20 @@ function bumpRevision() {
   useChatConnectionStore.setState((state) => ({ revision: state.revision + 1 }));
 }
 
+/// Global bump plus the given channels' counters, in one setState. Only the
+/// paths that know their channel use this (flushPending, withSlice, slice
+/// lifecycle); the ~25 no-arg bumpRevision sites keep global-only semantics,
+/// which several of them (NOTICE loops, all-channel connect state) need.
+function bumpRevisionFor(channelKeys: string[]) {
+  useChatConnectionStore.setState((state) => {
+    const next = { ...state.revisionByChannel };
+    for (const key of channelKeys) {
+      next[key] = (next[key] ?? 0) + 1;
+    }
+    return { revision: state.revision + 1, revisionByChannel: next };
+  });
+}
+
 /**
  * Lazily-loaded per-message engines, resolved once and then called synchronously.
  *
@@ -720,10 +741,12 @@ function flushPending(): void {
     slice.messages = trimWithEventRetention(slice.messages, limit);
     pruneModerationMarks(slice);
   }
+  const touched = Array.from(pendingByChannel.keys());
   pendingByChannel.clear();
   // flushPending only runs when something called scheduleFlush(), so a render is
   // always warranted (covers both new-message appends and in-place upgrades).
-  bumpRevision();
+  // In-place upgrades ride the global counter their own callers already bump.
+  bumpRevisionFor(touched);
 }
 
 // Drain any queued messages into their slices immediately, outside the scheduled
@@ -753,7 +776,7 @@ function withSlice(channel: string, mutator: (slice: ChannelSlice) => void): voi
   const slice = getSlice(channel);
   if (!slice) return;
   mutator(slice);
-  bumpRevision();
+  bumpRevisionFor([slice.channel]);
 }
 
 /// Seed a Kick pane with the channel's recent scrollback.
@@ -824,18 +847,24 @@ function emptySlice(
 }
 
 function setSlice(channel: string, slice: ChannelSlice) {
+  const key = channel.toLowerCase();
   useChatConnectionStore.setState((state) => {
     const next = new Map(state.channels);
-    next.set(channel.toLowerCase(), slice);
-    return { channels: next, revision: state.revision + 1 };
+    next.set(key, slice);
+    const rev = { ...state.revisionByChannel };
+    rev[key] = (rev[key] ?? 0) + 1;
+    return { channels: next, revision: state.revision + 1, revisionByChannel: rev };
   });
 }
 
 function removeSlice(channel: string) {
+  const key = channel.toLowerCase();
   useChatConnectionStore.setState((state) => {
     const next = new Map(state.channels);
-    next.delete(channel.toLowerCase());
-    return { channels: next, revision: state.revision + 1 };
+    next.delete(key);
+    const rev = { ...state.revisionByChannel };
+    rev[key] = (rev[key] ?? 0) + 1;
+    return { channels: next, revision: state.revision + 1, revisionByChannel: rev };
   });
 }
 
@@ -3065,7 +3094,8 @@ const EMPTY_SNAPSHOT: ChannelChatSnapshot = {
 
 /** React hook returning the live message count for a channel. */
 export function useChannelMessageCount(channel: string | null | undefined): number {
-  useChatConnectionStore((state) => state.revision);
+  const key = channel ? channel.toLowerCase() : null;
+  useChatConnectionStore((state) => (key ? state.revisionByChannel[key] ?? 0 : state.revision));
   if (!channel) return 0;
   const slice = useChatConnectionStore.getState().channels.get(channel.toLowerCase());
   return slice ? slice.messages.length : 0;
@@ -3105,7 +3135,8 @@ export function useChannelMentionCount(
   channel: string | null | undefined,
   login: string | null | undefined,
 ): number {
-  useChatConnectionStore((state) => state.revision);
+  const key = channel ? channel.toLowerCase() : null;
+  useChatConnectionStore((state) => (key ? state.revisionByChannel[key] ?? 0 : state.revision));
   if (!channel || !login) return 0;
   const slice = useChatConnectionStore.getState().channels.get(channel.toLowerCase());
   if (!slice) return 0;
@@ -3150,7 +3181,9 @@ export function useChannelChat(channel: string | null | undefined): ChannelChatS
   // avoid Map.get returning new references on every render. The revision is
   // also handed back as `renderToken` (see ChannelChatSnapshot) so memoized
   // consumers have a change signal that in-place message mutations can't hide.
-  const renderToken = useChatConnectionStore((state) => state.revision);
+  const renderToken = useChatConnectionStore((state) =>
+    key ? state.revisionByChannel[key] ?? 0 : state.revision,
+  );
   if (!key) return EMPTY_SNAPSHOT;
   const slice = useChatConnectionStore.getState().channels.get(key);
   if (!slice) return EMPTY_SNAPSHOT;

@@ -16,7 +16,7 @@ import { ProviderLogo } from '../ProviderLogo';
 import { useChatConnectionStore, sendChannelMessage, injectSystemMessage, systemSourceFor } from '../../stores/chatConnectionStore';
 import { useChatUserStore } from '../../stores/chatUserStore';
 import { useAppStore } from '../../stores/AppStore';
-import { parseKey } from '../../utils/providerKey';
+import { makeKey, parseKey } from '../../utils/providerKey';
 import { openProfilePopup } from '../../utils/openProfilePopup';
 import { PROVIDERS, PROVIDER_IDS, type ProviderId } from '../../types/providers';
 import { parseMessage, type BackendChatMessage } from '../../services/twitchChat';
@@ -134,8 +134,19 @@ function Check({ checked, indeterminate }: { checked: boolean; indeterminate?: b
 }
 
 export function BlendedChatPane({ channels }: { channels: BlendedChannel[] }) {
-  // Re-render on any chat update across all channels.
-  const revision = useChatConnectionStore((s) => s.revision);
+  // Re-render when any of THIS blend's sources change. Summing the per-channel
+  // counters (instead of the global revision) keeps the O(all sources) reconcile
+  // below from re-running on flushes of channels this pane doesn't show.
+  const revision = useChatConnectionStore((s) =>
+    channels.reduce((sum, c) => {
+      // Slice keys are the acquisition keys: bare login for Twitch, composite
+      // provider:channel otherwise (mirrors the store's channel map).
+      const prov = provOf(c);
+      const sliceKey =
+        prov === 'twitch' ? c.channel.toLowerCase() : makeKey(prov, c.channel);
+      return sum + (s.revisionByChannel[sliceKey] ?? 0);
+    }, 0),
+  );
   // Twitch Hype Trains across the blended Twitch sources (blended mounts no per-pane
   // poller, so this drives both the banner here and the activity-feed rows).
   const hypeTrains = useBlendedHypeTrains(channels);
