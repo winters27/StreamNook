@@ -9,7 +9,7 @@
 
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ProviderStream {
     /// "kick" | "youtube" | "tiktok" (matches ProviderId on the frontend).
     pub provider: String,

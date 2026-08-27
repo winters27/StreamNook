@@ -621,15 +621,7 @@ fn handle_entitlement(d: &Value, dispatch_type: &str, app_handle: &AppHandle) {
         match action {
             "create" | "update" => {
                 if let (Some(tid), Some(set_id)) = (twitch_id, set_id) {
-                    tokio::spawn(async move {
-                        // Same entitlement is re-delivered on every reconnect /
-                        // presence rebootstrap; resolve the set only once.
-                        if IrcService::has_personal_set(&tid, &set_id).await {
-                            return;
-                        }
-                        let emotes = emote_service::fetch_personal_emote_set(&set_id).await;
-                        IrcService::set_personal_emotes(tid, set_id, emotes).await;
-                    });
+                    enqueue_entitlement_fetch(tid, set_id);
                 }
             }
             "delete" => {
@@ -652,4 +644,52 @@ fn handle_entitlement(d: &Value, dispatch_type: &str, app_handle: &AppHandle) {
         "7tv://cosmetic-update",
         json!({ "twitch_id": twitch_id, "action": action }),
     );
+}
+
+// Entitlement fetch lane. A reconnect / presence rebootstrap re-delivers the
+// same EMOTE_SET entitlement for every personal-emote user in the channel at
+// once; spawning a task per dispatch meant hundreds of concurrent tasks all
+// contending the personal-emote store and racing HTTP fetches. One worker
+// drains a bounded queue; the inflight set dedupes before anything is queued,
+// and a dropped entry self-heals on the next reconnect's re-delivery.
+static ENTITLEMENT_TX: OnceLock<tokio::sync::mpsc::Sender<(String, String)>> = OnceLock::new();
+static ENTITLEMENT_INFLIGHT: OnceLock<std::sync::Mutex<std::collections::HashSet<(String, String)>>> =
+    OnceLock::new();
+
+fn entitlement_inflight() -> &'static std::sync::Mutex<std::collections::HashSet<(String, String)>>
+{
+    ENTITLEMENT_INFLIGHT.get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()))
+}
+
+fn enqueue_entitlement_fetch(twitch_id: String, set_id: String) {
+    let key = (twitch_id.clone(), set_id.clone());
+    {
+        let Ok(mut inflight) = entitlement_inflight().lock() else {
+            return;
+        };
+        if !inflight.insert(key.clone()) {
+            return;
+        }
+    }
+    let tx = ENTITLEMENT_TX.get_or_init(|| {
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<(String, String)>(512);
+        tokio::spawn(async move {
+            while let Some((tid, set_id)) = rx.recv().await {
+                if !IrcService::has_personal_set(&tid, &set_id).await {
+                    let emotes = emote_service::fetch_personal_emote_set(&set_id).await;
+                    IrcService::set_personal_emotes(tid.clone(), set_id.clone(), emotes).await;
+                }
+                if let Ok(mut inflight) = entitlement_inflight().lock() {
+                    inflight.remove(&(tid, set_id));
+                }
+            }
+        });
+        tx
+    });
+    if tx.try_send(key.clone()).is_err() {
+        if let Ok(mut inflight) = entitlement_inflight().lock() {
+            inflight.remove(&key);
+        }
+        log::warn!("[7TV] entitlement lane full; dropped fetch (re-delivered on next reconnect)");
+    }
 }

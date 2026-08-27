@@ -1477,6 +1477,7 @@ fn main() {
                 let _ = services::universal_cache_service::flush_manifest_now();
                 let _ = services::mod_log_storage_service::ModLogStorageService::flush_now();
                 let _ = services::whisper_storage_service::WhisperStorageService::flush_now();
+            let _ = services::chat_logger_service::ChatLoggerService::flush_all();
                 // Ask running plugin processes to shut down before the app
                 // process dies, waiting briefly so well-behaved plugins exit
                 // gracefully (stragglers are killed with the supervisor).

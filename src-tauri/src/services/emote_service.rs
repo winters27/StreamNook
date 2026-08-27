@@ -370,8 +370,11 @@ struct CachedEmoteSet {
 // holding the lock across the await.
 #[derive(Clone)]
 pub struct EmoteService {
-    // Memory cache: channel_id -> EmoteSet
-    cache: Arc<RwLock<HashMap<String, CachedEmoteSet>>>,
+    // Memory cache: channel_id -> EmoteSet. LRU-bounded: entries were only
+    // ever removed by a 7TV invalidation or an explicit clear, so a session
+    // hopping channels retained every visited set (~0.5-1MB each) for process
+    // life. 32 channels comfortably covers MultiNook + hopping.
+    cache: Arc<RwLock<lru::LruCache<String, CachedEmoteSet>>>,
     // HTTP client with connection pooling
     client: reqwest::Client,
     // Cache duration (5 minutes like the TS version)
@@ -395,7 +398,9 @@ fn twitch_broadcaster_id<'a>(is_twitch: bool, channel_id: Option<&'a str>) -> Op
 impl EmoteService {
     pub fn new() -> Self {
         Self {
-            cache: Arc::new(RwLock::new(HashMap::new())),
+            cache: Arc::new(RwLock::new(lru::LruCache::new(
+                std::num::NonZeroUsize::new(32).expect("nonzero"),
+            ))),
             client: reqwest::Client::builder()
                 .timeout(Duration::from_secs(10))
                 .gzip(true)
@@ -443,7 +448,7 @@ impl EmoteService {
         // Check memory cache first
         {
             let cache = self.cache.read().await;
-            if let Some(cached) = cache.get(&cache_key) {
+            if let Some(cached) = cache.peek(&cache_key) {
                 if let Ok(elapsed) = cached.timestamp.elapsed() {
                     if elapsed < self.cache_duration {
                         debug!("[EmoteService] Memory cache hit for {}", cache_key);
@@ -556,7 +561,7 @@ impl EmoteService {
                 SystemTime::now()
             };
 
-            cache.insert(
+            cache.put(
                 cache_key,
                 CachedEmoteSet {
                     set: emote_set.clone(),
@@ -574,7 +579,7 @@ impl EmoteService {
     /// a freshly opened window (which reads through this cache) does not serve a
     /// stale set until the 5 minute TTL expires.
     pub async fn invalidate_channel(&self, channel_id: &str) {
-        self.cache.write().await.remove(channel_id);
+        self.cache.write().await.pop(channel_id);
     }
 
     /// Get emote by name from cached emote set
@@ -586,7 +591,7 @@ impl EmoteService {
         let cache_key = channel_id.unwrap_or_else(|| "global".to_string());
 
         let cache = self.cache.read().await;
-        if let Some(cached) = cache.get(&cache_key) {
+        if let Some(cached) = cache.peek(&cache_key) {
             // Search in priority order: 7TV > FFZ > BTTV > Twitch
             for emote in &cached.set.seven_tv {
                 if emote.name == emote_name {

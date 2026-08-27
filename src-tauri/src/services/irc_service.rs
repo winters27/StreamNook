@@ -100,8 +100,13 @@ static OWN_IDENTITY: OnceLock<Mutex<Option<(String, String)>>> = OnceLock::new()
 // service fills this from EMOTE_SET entitlements; parse_text_segment overlays
 // the sender's entry with priority over channel emotes. PERSONAL_EMOTES_PRESENT
 // lets the per-message hot path skip the lock entirely while no user has any.
-static PERSONAL_EMOTES: OnceLock<std::sync::RwLock<HashMap<String, (String, Arc<HashMap<String, Emote>>)>>> =
-    OnceLock::new();
+// LRU-bounded: one personal set accrues per 7TV-entitled user ever seen and
+// nothing evicted them (entitlements only revoke explicitly). 512 covers any
+// realistic set of concurrently active personal-emote users.
+#[allow(clippy::type_complexity)]
+static PERSONAL_EMOTES: OnceLock<
+    std::sync::RwLock<lru::LruCache<String, (String, Arc<HashMap<String, Emote>>)>>,
+> = OnceLock::new();
 static PERSONAL_EMOTES_PRESENT: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
@@ -832,8 +837,12 @@ fn get_own_identity() -> &'static Mutex<Option<(String, String)>> {
 
 #[allow(clippy::type_complexity)]
 fn get_personal_emotes(
-) -> &'static std::sync::RwLock<HashMap<String, (String, Arc<HashMap<String, Emote>>)>> {
-    PERSONAL_EMOTES.get_or_init(|| std::sync::RwLock::new(HashMap::new()))
+) -> &'static std::sync::RwLock<lru::LruCache<String, (String, Arc<HashMap<String, Emote>>)>> {
+    PERSONAL_EMOTES.get_or_init(|| {
+        std::sync::RwLock::new(lru::LruCache::new(
+            std::num::NonZeroUsize::new(512).expect("nonzero"),
+        ))
+    })
 }
 
 /// The lean wire shape of the on_chat_message plugin event (PROTOCOL.md):
@@ -2917,6 +2926,42 @@ impl IrcService {
             }
         }
         let _ = Self::fetch_and_store_emotes(channel_name, emote_service).await;
+        Self::reap_parse_only_channels(&key).await;
+    }
+
+    /// Channels entered ONLY through the parse path (VOD replay) never JOIN, so
+    /// part_channel's eviction never runs for them and their emote sets would
+    /// accumulate for the session. A small ring reaps the oldest once more than
+    /// a handful are held; membership in CURRENT_CHANNELS is re-checked at
+    /// evict time so a channel that later genuinely JOINed is never touched.
+    async fn reap_parse_only_channels(key: &str) {
+        const PARSE_ONLY_MAX: usize = 8;
+        static PARSE_ONLY_KEYS: OnceLock<Mutex<VecDeque<String>>> = OnceLock::new();
+        let ring = PARSE_ONLY_KEYS.get_or_init(|| Mutex::new(VecDeque::new()));
+
+        if get_current_channels().lock().await.contains(key) {
+            return;
+        }
+        let evict = {
+            let mut g = ring.lock().await;
+            if !g.iter().any(|k| k == key) {
+                g.push_back(key.to_string());
+            }
+            if g.len() > PARSE_ONLY_MAX {
+                g.pop_front()
+            } else {
+                None
+            }
+        };
+        if let Some(old_key) = evict {
+            if !get_current_channels().lock().await.contains(&old_key) {
+                get_channel_emotes().lock().await.remove(&old_key);
+                drop_parse_lookup(&old_key);
+                if let Ok(mut g) = get_channel_cheermotes().write() {
+                    g.remove(&old_key);
+                }
+            }
+        }
     }
 
     /// Parse message content into segments (text, emotes, emojis, links)
@@ -2931,7 +2976,7 @@ impl IrcService {
     pub async fn has_personal_set(twitch_id: &str, set_id: &str) -> bool {
         get_personal_emotes()
             .read()
-            .map(|g| g.get(twitch_id).map(|(s, _)| s == set_id).unwrap_or(false))
+            .map(|g| g.peek(twitch_id).map(|(s, _)| s == set_id).unwrap_or(false))
             .unwrap_or(false)
     }
 
@@ -2942,7 +2987,7 @@ impl IrcService {
         let has_any = !emotes.is_empty();
         let map: HashMap<String, Emote> = emotes.into_iter().map(|e| (e.name.clone(), e)).collect();
         if let Ok(mut g) = get_personal_emotes().write() {
-            g.insert(twitch_id, (set_id, Arc::new(map)));
+            g.put(twitch_id, (set_id, Arc::new(map)));
         }
         if has_any {
             PERSONAL_EMOTES_PRESENT.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -2958,19 +3003,19 @@ impl IrcService {
         };
         match set_id {
             Some(sid) => {
-                if g.get(twitch_id).map(|(s, _)| s == sid).unwrap_or(false) {
-                    g.remove(twitch_id);
+                if g.peek(twitch_id).map(|(s, _)| s == sid).unwrap_or(false) {
+                    g.pop(twitch_id);
                 }
             }
             None => {
-                g.remove(twitch_id);
+                g.pop(twitch_id);
             }
         }
         // Recompute rather than leave the fast-path gate latched on: this was
         // the one path that never reset it, so a single personal set ever seen
         // taxed every message for the rest of the session.
         PERSONAL_EMOTES_PRESENT.store(
-            g.values().any(|(_, m)| !m.is_empty()),
+            g.iter().any(|(_, (_, m))| !m.is_empty()),
             std::sync::atomic::Ordering::Relaxed,
         );
     }
@@ -3001,7 +3046,7 @@ impl IrcService {
             get_personal_emotes()
                 .read()
                 .ok()
-                .and_then(|g| g.get(sender_id).map(|(_, m)| m.clone()))
+                .and_then(|g| g.peek(sender_id).map(|(_, m)| m.clone()))
         };
         let cheermotes = get_channel_cheermotes()
             .read()

@@ -122,7 +122,9 @@ struct HomiesBadgeDatabase {
 
 pub struct ProfileCacheService {
     // User profile cache
-    profiles: Arc<RwLock<HashMap<String, CachedProfile>>>,
+    // LRU-bounded: one profile was retained per user card ever opened, with
+    // the TTL gating freshness but never evicting.
+    profiles: Arc<RwLock<lru::LruCache<String, CachedProfile>>>,
 
     // Global badge databases (all users)
     ffz_database: Arc<RwLock<Option<FFZBadgeDatabase>>>,
@@ -145,7 +147,9 @@ struct CachedProfile {
 impl ProfileCacheService {
     pub fn new() -> Self {
         Self {
-            profiles: Arc::new(RwLock::new(HashMap::new())),
+            profiles: Arc::new(RwLock::new(lru::LruCache::new(
+                std::num::NonZeroUsize::new(500).expect("nonzero"),
+            ))),
             ffz_database: Arc::new(RwLock::new(None)),
             chatterino_database: Arc::new(RwLock::new(None)),
             homies_database: Arc::new(RwLock::new(None)),
@@ -182,7 +186,7 @@ impl ProfileCacheService {
         // Check cache first
         {
             let cache = self.profiles.read().await;
-            if let Some(cached) = cache.get(&user_id) {
+            if let Some(cached) = cache.peek(&user_id) {
                 if now - cached.timestamp < self.profile_cache_duration.as_secs() {
                     debug!("[ProfileCache] Cache hit for user {}", user_id);
                     return Ok(cached.profile.clone());
@@ -296,7 +300,7 @@ impl ProfileCacheService {
             profile: profile.clone(),
             timestamp: Self::current_timestamp(),
         };
-        self.profiles.write().await.insert(user_id, cached);
+        self.profiles.write().await.put(user_id, cached);
 
         Ok(profile)
     }

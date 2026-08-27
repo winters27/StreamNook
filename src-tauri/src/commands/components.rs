@@ -663,6 +663,7 @@ pub async fn restart_to_apply_update(app_handle: tauri::AppHandle) -> Result<(),
         let _ = crate::services::universal_cache_service::flush_manifest_now();
         let _ = crate::services::mod_log_storage_service::ModLogStorageService::flush_now();
         let _ = crate::services::whisper_storage_service::WhisperStorageService::flush_now();
+        let _ = crate::services::chat_logger_service::ChatLoggerService::flush_all();
         std::process::exit(0);
     }
 

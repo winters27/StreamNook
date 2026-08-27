@@ -129,6 +129,22 @@ pub fn start(app: AppHandle, state: AppState) {
         loop {
             tick.tick().await;
 
+            let reg = registry().await;
+            // Due-check BEFORE the settings lock: the tick is more frequent than
+            // any provider cadence, so most ticks used to clone the whole follow
+            // list just to decide nothing was due.
+            let any_due = reg.sources().any(|(provider, src)| {
+                let caps = src.caps();
+                (caps.live_check || caps.native_follows)
+                    && last_run
+                        .get(provider)
+                        .map(|t| t.elapsed() >= cadence_for(provider))
+                        .unwrap_or(true)
+            });
+            if !any_due {
+                continue;
+            }
+
             // Re-read the follow list every sweep so following a channel takes
             // effect immediately rather than at the next app start.
             let follows = {
@@ -149,7 +165,6 @@ pub fn start(app: AppHandle, state: AppState) {
                     .push(f.channel.clone());
             }
 
-            let reg = registry().await;
             for (provider, src) in reg.sources() {
                 let caps = src.caps();
                 if !caps.live_check && !caps.native_follows {
@@ -227,19 +242,31 @@ pub fn start(app: AppHandle, state: AppState) {
 async fn apply(app: &AppHandle, provider: &str, rows: Vec<ProviderStream>, notify: bool) {
     let live: Vec<ProviderStream> = rows.into_iter().filter(|r| r.is_live).collect();
     let mut fresh_live = Vec::new();
+    let mut rows_changed = false;
 
     {
         let mut st = STATE.write().await;
+        let prefix = format!("{}:", provider);
+        // Full-row comparison against the outgoing snapshot: an unchanged sweep
+        // (the overwhelmingly common case) skips the all-windows emit below.
+        let prev: HashMap<&String, &ProviderStream> = st
+            .snapshot
+            .iter()
+            .filter(|(_, v)| v.provider == provider)
+            .collect();
+        rows_changed = prev.len() != live.len()
+            || live.iter().any(|r| prev.get(&r.key) != Some(&r));
+        drop(prev);
         // Drop this provider's previous rows so channels that went offline (or
         // were unfollowed) disappear, leaving other providers untouched.
         st.snapshot.retain(|_, v| v.provider != provider);
         let previously: HashSet<String> = st
             .live_keys
             .iter()
-            .filter(|k| k.starts_with(&format!("{}:", provider)))
+            .filter(|k| k.starts_with(&prefix))
             .cloned()
             .collect();
-        st.live_keys.retain(|k| !k.starts_with(&format!("{}:", provider)));
+        st.live_keys.retain(|k| !k.starts_with(&prefix));
 
         for row in &live {
             st.live_keys.insert(row.key.clone());
@@ -250,10 +277,12 @@ async fn apply(app: &AppHandle, provider: &str, rows: Vec<ProviderStream>, notif
         }
     }
 
-    let _ = app.emit(
-        "provider-live-update",
-        serde_json::json!({ "provider": provider, "streams": live }),
-    );
+    if rows_changed {
+        let _ = app.emit(
+            "provider-live-update",
+            serde_json::json!({ "provider": provider, "streams": live }),
+        );
+    }
 
     if !notify {
         return;

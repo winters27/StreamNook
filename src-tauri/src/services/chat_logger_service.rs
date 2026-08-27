@@ -23,7 +23,8 @@ static STATE: OnceLock<Mutex<LoggerState>> = OnceLock::new();
 
 struct OpenLog {
     date: String,
-    file: File,
+    file: std::io::BufWriter<File>,
+    last_flush: std::time::Instant,
 }
 
 #[derive(Default)]
@@ -51,6 +52,15 @@ impl ChatLoggerService {
         let settings = SETTINGS.get()?;
         let guard = settings.lock().ok()?;
         Some(guard.chat_logging.clone())
+    }
+
+    /// Enabled probe without the full config clone (channel filter Vec and
+    /// all): log_message runs per chat message and logging is off by default.
+    fn logging_enabled() -> bool {
+        SETTINGS
+            .get()
+            .and_then(|s| s.lock().ok().map(|g| g.chat_logging.enabled))
+            .unwrap_or(false)
     }
 
     pub fn default_dir() -> Option<PathBuf> {
@@ -119,6 +129,10 @@ impl ChatLoggerService {
     /// write their readable system line; an attached user message (e.g. a
     /// resub message) gets its own normal line after it.
     pub fn log_message(msg: &ChatMessage) {
+        if !Self::logging_enabled() {
+            Self::release_handles();
+            return;
+        }
         let Some(cfg) = Self::config() else { return };
         if !cfg.enabled {
             Self::release_handles();
@@ -221,7 +235,21 @@ impl ChatLoggerService {
     /// so handles don't linger on files the user turned off.
     fn release_handles() {
         if let Ok(mut st) = state().lock() {
+            for entry in st.open.values_mut() {
+                let _ = entry.file.flush();
+            }
             st.open.clear();
+        }
+    }
+
+    /// Flush every buffered writer without closing it. Wired into both exit
+    /// paths so the buffering below can never cost lines on quit.
+    pub fn flush_all() {
+        if let Ok(mut st) = state().lock() {
+            for entry in st.open.values_mut() {
+                let _ = entry.file.flush();
+                entry.last_flush = std::time::Instant::now();
+            }
         }
     }
 
@@ -239,7 +267,14 @@ impl ChatLoggerService {
         if stale {
             match Self::open_file(&base, channel, &date) {
                 Ok(file) => {
-                    st.open.insert(channel.to_string(), OpenLog { date, file });
+                    st.open.insert(
+                        channel.to_string(),
+                        OpenLog {
+                            date,
+                            file,
+                            last_flush: std::time::Instant::now(),
+                        },
+                    );
                 }
                 Err(e) => {
                     warn!("[ChatLogger] could not open a log file for {channel}: {e}");
@@ -248,10 +283,16 @@ impl ChatLoggerService {
             }
         }
         let entry = st.open.get_mut(channel).expect("opened above");
-        let result = lines
+        // Buffered: one syscall per ~8KB or per 2s instead of a write+flush
+        // syscall pair per line. Crash exposure is <=2s of a channel's lines;
+        // exit paths call flush_all.
+        let mut result = lines
             .iter()
-            .try_for_each(|line| writeln!(entry.file, "{line}"))
-            .and_then(|_| entry.file.flush());
+            .try_for_each(|line| writeln!(entry.file, "{line}"));
+        if result.is_ok() && entry.last_flush.elapsed() >= std::time::Duration::from_secs(2) {
+            result = entry.file.flush();
+            entry.last_flush = std::time::Instant::now();
+        }
         if let Err(e) = result {
             // Drop the handle so the next message retries with a fresh open.
             warn!("[ChatLogger] write failed for {channel}: {e}");
@@ -259,13 +300,18 @@ impl ChatLoggerService {
         }
     }
 
-    fn open_file(base: &PathBuf, channel: &str, date: &str) -> std::io::Result<File> {
+    fn open_file(
+        base: &PathBuf,
+        channel: &str,
+        date: &str,
+    ) -> std::io::Result<std::io::BufWriter<File>> {
         let dir = base.join(safe_dir_name(channel));
         fs::create_dir_all(&dir)?;
-        let mut file = OpenOptions::new()
+        let file = OpenOptions::new()
             .create(true)
             .append(true)
             .open(dir.join(format!("{date}.log")))?;
+        let mut file = std::io::BufWriter::new(file);
         writeln!(
             file,
             "# Logging started {}",
