@@ -1,9 +1,12 @@
-/* Plyr's stylesheet in a named layer: unlayered author styles below always
-   beat layered ones regardless of load order, so our .video-player-container
-   .plyr overrides win even though the player (and this import's chunk) is
-   lazy-loaded. Replaces the old eager main.tsx import that existed purely to
-   win a specificity tie by source order. */
-@import 'plyr/dist/plyr.css' layer(vendor);
+/* Plyr's stylesheet must be UNLAYERED and load first: putting it in a cascade
+   layer makes every unlayered rule beat it regardless of specificity, so even
+   Tailwind's element-level preflight resets (button padding/background/color)
+   override Plyr's class-level control styles and wreck the control bar.
+   Importing it here, above everything else, keeps the original order: preflight
+   loses to Plyr on specificity, and the .video-player-container overrides
+   below win their equal-specificity ties by source order. Replaces the old
+   eager main.tsx import that existed for the same ordering reason. */
+@import 'plyr/dist/plyr.css';
 
 /* 
  * Satoshi Variable Font
