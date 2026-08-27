@@ -21,6 +21,7 @@ import {
   type LucideIcon,
 } from 'lucide-react';
 import { useState, useEffect, useRef } from 'react';
+import { useShallow } from 'zustand/react/shallow';
 import { motion, AnimatePresence } from 'framer-motion';
 import InterfaceSettings from './settings/InterfaceSettings';
 import PlayerSettings from './settings/PlayerSettings';
@@ -82,7 +83,27 @@ const TILE_BEVEL = 'var(--bevel-tile)';
 const HERO_BEVEL = 'var(--bevel-hero)';
 
 const SettingsDialog = () => {
-  const { isSettingsOpen, settingsInitialTab, settingsInitialSection, closeSettings, isAuthenticated, currentUser, signOutActiveAccount, settings } = useAppStore();
+  // Actions without a subscription (stable for the store's lifetime); state
+  // through a shallow-compared selector so unrelated store writes (toasts,
+  // viewer counts) stop re-rendering the dialog.
+  const { closeSettings, signOutActiveAccount } = useAppStore.getState();
+  const {
+    isSettingsOpen,
+    settingsInitialTab,
+    settingsInitialSection,
+    isAuthenticated,
+    currentUser,
+    settings,
+  } = useAppStore(
+    useShallow((s) => ({
+      isSettingsOpen: s.isSettingsOpen,
+      settingsInitialTab: s.settingsInitialTab,
+      settingsInitialSection: s.settingsInitialSection,
+      isAuthenticated: s.isAuthenticated,
+      currentUser: s.currentUser,
+      settings: s.settings,
+    })),
+  );
   const [activeTab, setActiveTab] = useState<SettingsTab>('Player');
   const [searchQuery, setSearchQuery] = useState('');
   const [signOutConfirm, setSignOutConfirm] = useState(false);

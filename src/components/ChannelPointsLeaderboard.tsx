@@ -18,7 +18,10 @@ const ChannelPointsLeaderboard = ({ onStreamClick, onTotalsChange }: ChannelPoin
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [profilePics, setProfilePics] = useState<Record<string, string>>({});
-  const { followedStreams, startStream } = useAppStore();
+  // Action without a subscription; only the followed-streams list (read for
+  // live status and click-through) drives re-renders.
+  const { startStream } = useAppStore.getState();
+  const followedStreams = useAppStore((s) => s.followedStreams);
 
   useEffect(() => {
     // On open, pull every followed channel's balance (throttled backend-side);

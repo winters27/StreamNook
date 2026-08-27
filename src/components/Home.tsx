@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useState, useRef, useCallback, useMemo } from 'react';
+import { useShallow } from 'zustand/react/shallow';
 import { useAppStore, clipSourceOf, HomeTab } from '../stores/AppStore';
 import { createPortal } from 'react-dom';
 import { Search, ArrowLeft, Heart, X, Gift, Pickaxe, LayoutGrid, Flame, ArrowUpRight, Undo2, Users, User, Loader2, Clock, Play, Check, Plus } from 'lucide-react';
@@ -93,7 +94,8 @@ const ReverseFlyingDot = ({ startX, startY, targetX, targetY }: { startX: number
 
 const MultiNookToggle = () => {
     const { isMultiNookActive, toggleMultiNook, slots, flyingAnimation, recallAnimation } = usemultiNookStore();
-    const { toggleHome } = useAppStore();
+    // Action only, stable for the store's lifetime: no subscription needed.
+    const { toggleHome } = useAppStore.getState();
     const [animateBadge, setAnimateBadge] = useState(false);
     const buttonRef = useRef<HTMLButtonElement>(null);
     const [flyingDots, setFlyingDots] = useState<Array<{ id: number, startX: number, startY: number, targetX: number, targetY: number }>>([]);
@@ -306,51 +308,90 @@ const QuickAddButton = ({ stream }: { stream: TwitchStream }) => {
 
 
 const Home = () => {
+    // Actions without a subscription (stable for the store's lifetime); state
+    // through one shallow-compared selector below, so unrelated store writes
+    // (toasts, viewer-count updates, hype-train ticks on other surfaces) no
+    // longer re-render all of Home.
     const {
-        followedStreams,
-        recommendedStreams,
         loadFollowedStreams,
         loadRecommendedStreams,
         loadMoreRecommendedStreams,
-        hasMoreRecommended,
-        isLoadingMore,
         startStream,
-        isAuthenticated,
         toggleFavoriteStreamer,
         isFavoriteStreamer,
         loginToTwitch,
+        setHomeActiveTab,
+        setHomeSelectedCategory,
+        setSearchReturnTab,
+        setCachedTopGames,
+        appendCachedTopGames,
+        refreshHypeTrainStatuses,
+        setOfflineFollowedChannels,
+        setProfileModalUser,
+        openDropsWithSearch,
+        playMedia,
+        setHomeCategoryTab,
+        setClipsPeriod,
+        setVideosSort,
+        setVideosPeriod,
+        setMediaSearchQuery,
+    } = useAppStore.getState();
+    const {
+        followedStreams,
+        recommendedStreams,
+        hasMoreRecommended,
+        isLoadingMore,
+        isAuthenticated,
         isLoading,
         streamUrl,
         // Navigation state from AppStore
         homeActiveTab,
         homeSelectedCategory,
-        setHomeActiveTab,
-        setHomeSelectedCategory,
         searchReturnTab,
-        setSearchReturnTab,
         // Category cache
         cachedTopGames,
         cachedGamesCursor,
         cachedHasMoreGames,
         cachedTopGamesTimestamp,
-        setCachedTopGames,
-        appendCachedTopGames,
         // Hype Train status for stream badges
         activeHypeTrainChannels,
-        refreshHypeTrainStatuses,
         watchStreaks,
         offlineFollowedChannels,
-        setOfflineFollowedChannels,
-        setProfileModalUser,
-        openDropsWithSearch,
-        playMedia,
         homeCategoryTab,
-        setHomeCategoryTab,
-        clipsPeriod, setClipsPeriod,
-        videosSort, setVideosSort,
-        videosPeriod, setVideosPeriod,
-        mediaSearchQuery, setMediaSearchQuery,
-    } = useAppStore();
+        clipsPeriod,
+        videosSort,
+        videosPeriod,
+        mediaSearchQuery,
+    } = useAppStore(
+        useShallow((s) => ({
+            followedStreams: s.followedStreams,
+            recommendedStreams: s.recommendedStreams,
+            hasMoreRecommended: s.hasMoreRecommended,
+            isLoadingMore: s.isLoadingMore,
+            isAuthenticated: s.isAuthenticated,
+            isLoading: s.isLoading,
+            streamUrl: s.streamUrl,
+            homeActiveTab: s.homeActiveTab,
+            homeSelectedCategory: s.homeSelectedCategory,
+            searchReturnTab: s.searchReturnTab,
+            cachedTopGames: s.cachedTopGames,
+            cachedGamesCursor: s.cachedGamesCursor,
+            cachedHasMoreGames: s.cachedHasMoreGames,
+            cachedTopGamesTimestamp: s.cachedTopGamesTimestamp,
+            activeHypeTrainChannels: s.activeHypeTrainChannels,
+            watchStreaks: s.watchStreaks,
+            offlineFollowedChannels: s.offlineFollowedChannels,
+            homeCategoryTab: s.homeCategoryTab,
+            clipsPeriod: s.clipsPeriod,
+            videosSort: s.videosSort,
+            videosPeriod: s.videosPeriod,
+            mediaSearchQuery: s.mediaSearchQuery,
+            // Not destructured: isFavoriteStreamer is called during render (the
+            // favorite sort and star icons) and reads settings.favorite_streamers,
+            // so track that slice here purely to re-render when a favorite toggles.
+            favoriteStreamers: s.settings.favorite_streamers,
+        })),
+    );
     const externalDropsProvider = useAppStore((s) => s.externalDropsProvider);
 
     const [isLoadingOfflineChannels, setIsLoadingOfflineChannels] = useState(false);

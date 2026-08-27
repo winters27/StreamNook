@@ -176,9 +176,10 @@ const BadgeDetailOverlay = ({ badge, setId, onClose, onBack }: BadgeDetailOverla
   const [refinedLinks, setRefinedLinks] = useState<DisplayLink[]>([]);
   const [loadingCategories, setLoadingCategories] = useState(false);
 
-  // Get navigation functions from store
+  // Navigation actions only, so no store subscription at all: read them once
+  // (stable for the store's lifetime) instead of re-rendering on every write.
   const { navigateToCategoryByName, openDropsWithSearch, setShowBadgesOverlay, startStream } =
-    useAppStore();
+    useAppStore.getState();
 
   // Deep links for the badge. The campaign category is used verbatim when the
   // relay supplied one; the prose parser is a fallback for badges without a

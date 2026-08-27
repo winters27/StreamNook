@@ -1,4 +1,5 @@
 import { useEffect, useState, useMemo, useRef, useSyncExternalStore } from 'react';
+import { useShallow } from 'zustand/react/shallow';
 import { createPortal } from 'react-dom';
 import { X, ArrowUpDown, RefreshCw, Check, Trophy, Award, ChevronUp, ChevronDown, Search, ExternalLink, Lock } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
@@ -155,7 +156,15 @@ interface BadgesOverlayProps {
 }
 
 const BadgesOverlay = ({ onClose, onBadgeClick, initialPaintId, initialBadgeId, initialStreamNook, initialTarget }: BadgesOverlayProps) => {
-  const { isAuthenticated, currentUser, currentStream } = useAppStore();
+  // Shallow-compared selector so unrelated store writes (toasts, viewer
+  // counts) stop re-rendering the overlay.
+  const { isAuthenticated, currentUser, currentStream } = useAppStore(
+    useShallow((s) => ({
+      isAuthenticated: s.isAuthenticated,
+      currentUser: s.currentUser,
+      currentStream: s.currentStream,
+    })),
+  );
   
   // Tab state
   const [activeTab, setActiveTab] = useState<AttainableTab>('twitch-badges');
