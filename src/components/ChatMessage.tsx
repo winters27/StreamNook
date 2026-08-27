@@ -2,7 +2,7 @@ import React, { useMemo, useState, useEffect, useRef, memo, useSyncExternalStore
 import { Gift } from 'lucide-react';
 import { Tooltip } from './ui/Tooltip';
 import { parseMessage } from '../services/twitchChat';
-import { queueEmoteForDisplayCaching, getCachedEmoteUrl, inlineEmoteTier, sevenTvTierUrl, EmoteSet, Emote } from '../services/emoteService';
+import { queueEmoteForDisplayCaching, getCachedEmoteUrl, getEmoteLookup, inlineEmoteTier, sevenTvTierUrl, EmoteSet } from '../services/emoteService';
 import { getCachedEmojiUrl, parseEmojisSync } from '../services/emojiService';
 import { calculateHalfPadding } from '../utils/chatLayoutUtils';
 import { computePaintStyle, getBadgeImageUrl, getBadgeFallbackUrls, queueCosmeticForCaching } from '../services/seventvService';
@@ -16,6 +16,7 @@ import { useAppStore } from '../stores/AppStore';
 import { openBadgesWithBadgeInMain } from '../utils/openBadgesInMain';
 import { useChatUserStore } from '../stores/chatUserStore';
 import { useShallow } from 'zustand/react/shallow';
+import { boundedSet } from '../utils/boundedMap';
 import { useGiftBombRecipients } from '../stores/giftBombStore';
 import { useMessageRepeat } from '../stores/messageRepeatStore';
 import { ChannelPointsIcon } from './ChannelPointsIcon';
@@ -212,17 +213,12 @@ const parseTextWithEmoteSets = (text: string, emotes?: EmoteSet | null): EmoteSe
   words.forEach((word, i) => {
     if (i > 0) segments.push({ type: 'text', content: ' ' });
 
-    const emote = emotes
-      ? emotes['7tv'].find((e: Emote) => e.name === word) ||
-        emotes.bttv.find((e: Emote) => e.name === word) ||
-        emotes.ffz.find((e: Emote) => e.name === word) ||
-        emotes.twitch.find((e: Emote) => e.name === word) ||
-        // Provider-native sets. A Kick reply preview arrives as plain text with
-        // its emote tokens already reduced to names, so without these the
-        // parent's emotes render as bare words.
-        emotes.kick?.find((e: Emote) => e.name === word) ||
-        emotes.youtube?.find((e: Emote) => e.name === word)
-      : undefined;
+    // Per-set name index (7tv > bttv > ffz > twitch > kick > youtube,
+    // first-wins - same order the old find() chain searched). Kick/YouTube
+    // matter here because a Kick reply preview arrives as plain text with its
+    // emote tokens already reduced to names. This runs per word of every reply
+    // preview, so the old six-array linear scan was O(words x set size).
+    const emote = emotes ? getEmoteLookup(emotes).byName.get(word) : undefined;
 
     if (emote) {
       segments.push({
@@ -333,6 +329,41 @@ interface ChatMessageProps {
 /**
  * Component for rendering @mentions with user's 7TV paint styling
  */
+// Resolution cache for @mentions of users NOT in the chat store. Without it,
+// every rendered mention of an absent user fired its own uncached Helix
+// round-trip per row (a wall of "@someuser" spam = one request per message).
+// Rejections are cached too (unknown/misspelled names), on a shorter TTL.
+type MentionUser = { id: string; login: string; display_name: string } | null;
+const mentionUserCache = new Map<string, { user: MentionUser; ts: number }>();
+const mentionUserInflight = new Map<string, Promise<MentionUser>>();
+const MENTION_POS_TTL_MS = 10 * 60_000;
+const MENTION_NEG_TTL_MS = 60_000;
+const MENTION_CACHE_MAX = 500;
+
+function resolveMentionUser(username: string): Promise<MentionUser> {
+  const key = username.toLowerCase();
+  const hit = mentionUserCache.get(key);
+  if (hit && Date.now() - hit.ts < (hit.user ? MENTION_POS_TTL_MS : MENTION_NEG_TTL_MS)) {
+    return Promise.resolve(hit.user);
+  }
+  const inflight = mentionUserInflight.get(key);
+  if (inflight) return inflight;
+  const p = import('@tauri-apps/api/core')
+    .then(({ invoke }) =>
+      invoke<{ id: string; login: string; display_name: string }>('get_user_by_login', { login: key }),
+    )
+    .catch(() => null as MentionUser)
+    .then((user) => {
+      boundedSet(mentionUserCache, key, { user, ts: Date.now() }, MENTION_CACHE_MAX);
+      return user;
+    })
+    .finally(() => {
+      mentionUserInflight.delete(key);
+    });
+  mentionUserInflight.set(key, p);
+  return p;
+}
+
 const MentionSpan: React.FC<{
   username: string;
   onUsernameClick?: ChatMessageProps['onUsernameClick'];
@@ -348,33 +379,33 @@ const MentionSpan: React.FC<{
   const userPaint = cachedUser?.paint || apiUserPaint;
   const paintShadowMode = useAppStore((s) => s.settings.cosmetics?.paint_shadows) ?? 'all';
   
-  // Only do API lookup if user is NOT in the chat store
+  // Only do API lookup if user is NOT in the chat store. resolveMentionUser
+  // dedupes and caches (including not-found), so repeated mentions of the same
+  // absent user across many rows cost one request total.
   useEffect(() => {
     if (cachedUser) return; // Already have data from store
-    
+
     let isMounted = true;
-    
-    // Try to look up via API and get cosmetics
-    import('@tauri-apps/api/core').then(({ invoke }) => {
-      invoke<{ id: string; login: string; display_name: string }>('get_user_by_login', { login: username })
-        .then((user) => {
-          if (!isMounted) return;
-          if (user) {
-            // Try to get cosmetics for this user (includes paint)
-            getCosmeticsWithFallback(user.id).then((cosmetics) => {
-              if (!isMounted) return;
-              if (cosmetics) {
-                const selectedPaint = cosmetics.paints?.find((p: SevenTVPaintWithSelection) => p.selected);
-                if (selectedPaint) {
-                  setApiUserPaint(selectedPaint);
-                }
-              }
-            }).catch(() => {});
-          }
-        })
-        .catch(() => {});
-    });
-    
+
+    resolveMentionUser(username)
+      .then((user) => {
+        if (!isMounted || !user) return;
+        // Try to get cosmetics for this user (includes paint); this path has
+        // its own in-flight dedupe + LRU in cosmeticsCache.
+        getCosmeticsWithFallback(user.id)
+          .then((cosmetics) => {
+            if (!isMounted || !cosmetics) return;
+            const selectedPaint = cosmetics.paints?.find(
+              (p: SevenTVPaintWithSelection) => p.selected,
+            );
+            if (selectedPaint) {
+              setApiUserPaint(selectedPaint);
+            }
+          })
+          .catch(() => {});
+      })
+      .catch(() => {});
+
     return () => {
       isMounted = false;
     };
@@ -409,10 +440,9 @@ const MentionSpan: React.FC<{
       return;
     }
     
-    // Fallback to API lookup
+    // Fallback to API lookup (shared cache with the mount effect)
     try {
-      const { invoke } = await import('@tauri-apps/api/core');
-      const user = await invoke<{ id: string; login: string; display_name: string }>('get_user_by_login', { login: username });
+      const user = await resolveMentionUser(username);
       if (user) {
         onUsernameClick(
           user.id,
@@ -490,9 +520,14 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
   // On a high-traffic channel that render storm pegs the main thread and freezes
   // the video. Selecting only what we read means a row re-renders only when its
   // own inputs change.
-  const settings = useAppStore((s) => s.settings);
+  // Narrow subscriptions: rows re-render only when a CHAT-relevant settings
+  // slice changes, not on every settings write (player quality, sidebar, etc.
+  // previously re-rendered every mounted row - memo does not gate a
+  // component's own hook-driven updates).
+  const chatDesign = useAppStore((s) => s.settings.chat_design);
+  const chatCustomization = useAppStore((s) => s.settings.chat_customization);
+  const chatHighlights = useAppStore((s) => s.settings.chat_highlights);
   const currentUser = useAppStore((s) => s.currentUser);
-  const chatDesign = settings.chat_design;
   // Whole-message pickup attaches transient window listeners; this ref holds the
   // current teardown so an unmount can run it if the row is removed mid-press
   // (a virtualized chat can unmount a held row before any terminal pointer event
@@ -800,7 +835,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
   // stay in the click payload (so the profile card still opens to the real
   // person) and in the IRC mention insertion path (Twitch only resolves real
   // @logins, never nicknames). Render path swaps in the nickname.
-  const userOverrides = settings.chat_customization?.user_overrides;
+  const userOverrides = chatCustomization?.user_overrides;
   const originalDisplayName = useMemo(
     () => parsed.tags.get('display-name') || parsed.displayName || parsed.username,
     [parsed.tags, parsed.displayName, parsed.username],
@@ -874,11 +909,18 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
   const atmosphereFrost = !!atmosphere?.chatFrost;
   const cologneAtm = cologne ? getAtmosphere(MAJOR_COLOGNE_THEME_ID) : null;
   const [broadcasterType] = useState<string | null>(null);
+  // Hover-action DOM (copy/pin cluster + mod menu) mounts on the row's FIRST
+  // hover and stays mounted, so the CSS group-hover fade still runs on every
+  // later hover. Before this, every row carried ~30-60 hidden nodes (mods:
+  // the full punitive toolbar with tooltips) whether or not it was ever
+  // hovered. Keyboard and drag moderation don't need this DOM (verified:
+  // ChatModController invokes commands directly; drags target data-message-id).
+  const [hoverArmed, setHoverArmed] = useState(false);
   const [isMentioned, setIsMentioned] = useState(false);
   const [isReplyToMe, setIsReplyToMe] = useState(false);
-  const highlightPhrases = settings.chat_highlights?.phrases;
-  const highlightUsers = settings.chat_highlights?.users;
-  const highlightBadges = settings.chat_highlights?.badges;
+  const highlightPhrases = chatHighlights?.phrases;
+  const highlightUsers = chatHighlights?.users;
+  const highlightBadges = chatHighlights?.badges;
 
   // PHASE 3.1d - OPTIMIZED: Check if this message mentions the current user or is a reply to them
   // NO REGEX - simple case-insensitive string check is much faster
@@ -970,7 +1012,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
   // and don't need title flash to attract attention).
   useEffect(() => {
     if (!phraseMatch) return;
-    if (!settings?.chat_highlights?.appearance?.flash_title_when_unfocused) return;
+    if (!chatHighlights?.appearance?.flash_title_when_unfocused) return;
     const sentTsRaw = parsed.tags.get('tmi-sent-ts');
     const sentTs = sentTsRaw ? parseInt(sentTsRaw, 10) : NaN;
     if (Number.isFinite(sentTs) && Date.now() - sentTs > 5000) return;
@@ -1011,7 +1053,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
 
   // Create username style with paint. effectiveColor is the override-aware
   // base color; the 7TV paint (if present) renders on top of it.
-  const paintShadowMode = settings?.cosmetics?.paint_shadows ?? 'all';
+  const paintShadowMode = useAppStore((s) => s.settings.cosmetics?.paint_shadows) ?? 'all';
 
   const usernameStyle = useMemo(() => {
     if (!seventvPaint) {
@@ -1278,7 +1320,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
       // preview, name, provider, optional Zero-Width chip, and the
       // "Right-click to copy" hint at the bottom so the copy affordance
       // still surfaces.
-      const isCompactTooltip = !!settings?.chat_design?.compact_emote_tooltips;
+      const isCompactTooltip = !!chatDesign?.compact_emote_tooltips;
       // is7TVEmote was computed at the top of this branch (reused here).
       const providerLabel =
         is7TVEmote || emoteUrl.includes('7tv') ? '7TV'
@@ -1292,7 +1334,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
       // User-configurable hover-preview height. Defaults to 96px (one step up
       // from the original fixed 64px preview). maxWidth scales with it so wide
       // 7TV emotes aren't clipped in the card.
-      const hoverPreviewSize = settings?.chat_design?.emote_hover_size ?? 96;
+      const hoverPreviewSize = chatDesign?.emote_hover_size ?? 96;
       const tooltipContent: React.ReactNode | string = isCompactTooltip
         ? segment.content
         : (
@@ -1540,7 +1582,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
   // normal emote, matching both FFZ and BetterTTV). Members 1..n are the
   // attached overlays / modifiers: a modifier with the Hidden bit renders no
   // image and instead contributes its effect to the whole group.
-  const ffzEffectsOn = settings?.chat_design?.ffz_emote_effects !== false;
+  const ffzEffectsOn = chatDesign?.ffz_emote_effects !== false;
   // Which toggle owns a member is read off MOD_PREFIX: BetterTTV modifiers
   // always set it, FFZ modifiers never do. BetterTTV needs no check here
   // because Phase 1 already keeps its modifiers out of groups when its
@@ -1801,7 +1843,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
   // Defaults preserve prior behavior: first-time chatter ON (purple), all
   // others OFF. When ON, applies a tinted background + left border in the
   // configured color via the inline style stamp below.
-  const builtInHighlights = settings?.chat_highlights?.built_in;
+  const builtInHighlights = chatHighlights?.built_in;
   // Tag first, metadata fallback: the overlay already accepts either
   // (OverlayChat), and backfilled or future paths may deliver one without
   // the other.
@@ -2986,7 +3028,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
   // Global highlight appearance — applies to BOTH built-in event highlights
   // and the phrase/user/badge match (phraseMatch). Defaults preserve prior
   // visual: standard display style with ~20% opacity background.
-  const appearance = settings?.chat_highlights?.appearance;
+  const appearance = chatHighlights?.appearance;
   const displayStyle = appearance?.display_style ?? 'standard';
   const tintOpacityPct = Math.max(0, Math.min(100, appearance?.opacity ?? 20));
   // Hex alpha 00-ff. 20% → 0x33, 100% → 0xff, 0% → 0x00.
@@ -3047,6 +3089,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
           : {}),
       }}
       onPointerDown={handleBodyPickup}
+      onPointerEnter={hoverArmed ? undefined : () => setHoverArmed(true)}
     >
       {/* Atmosphere wash: the same animated aurora as the member's profile
           backdrop, masked to fade out before the text so it stays readable. */}
@@ -3440,7 +3483,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
       {/* Inline quick-actions ON the message itself (top-right) — NOT the mod
           menu: Copy for everyone + Pin for mods (when the pin style includes
           inline). Hover-revealed; data-no-drag so they never start a mod drag. */}
-      {(onMessageCopy || showInlinePin) && broadcasterId && (
+      {hoverArmed && (onMessageCopy || showInlinePin) && broadcasterId && (
         <div
           data-no-drag="true"
           className="absolute top-1 right-2 z-[50] opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-0.5 p-0.5 rounded-lg bg-tertiary/90 backdrop-blur-sm border border-white/10 shadow-[0_4px_12px_rgba(0,0,0,0.4)]"
@@ -3492,7 +3535,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
       {/* Moderation menu: floats ABOVE the message (7TV-style), mod-only. The
           punitive actions live here, away from the message text; Copy + Pin are
           inline above. */}
-      {isModerator && showModButtons && broadcasterId && (
+      {hoverArmed && isModerator && showModButtons && broadcasterId && (
         <div
           data-no-drag="true"
           className="absolute bottom-full right-2 mb-0.5 opacity-0 group-hover:opacity-100 transition-[opacity,transform] duration-200 flex items-center gap-0.5 p-0.5 backdrop-blur-md border border-white/10 shadow-[0_8px_24px_rgba(0,0,0,0.55)] rounded-xl overflow-visible z-[50] translate-y-1 group-hover:translate-y-0"
