@@ -38,7 +38,7 @@ use commands::{
     universal_cache::*,
     user_profile::*, watch_streak::*, whisper_storage::*,
 };
-use log::{debug, error, warn};
+use log::{debug, error, info, warn};
 use models::settings::{AppState, CloseToTrayMode, Settings};
 use services::background_service::BackgroundService;
 use services::cache_service;
@@ -120,6 +120,11 @@ fn reveal_main_window(app: tauri::AppHandle) {
             let _ = window.restore_state(
                 StateFlags::SIZE | StateFlags::POSITION | StateFlags::MAXIMIZED,
             );
+            info!("[Main] reveal: first paint signaled, geometry restored");
+        } else {
+            // Failsafe or tray already showed it; the signal still proves the
+            // frontend->reveal path works (it was silently ACL-blocked once).
+            info!("[Main] reveal: first paint signaled (window already shown)");
         }
         let _ = window.show();
         let _ = window.set_focus();

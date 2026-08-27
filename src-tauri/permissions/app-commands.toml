@@ -24,6 +24,7 @@ allow = [
   "fetch_exchange_rates",
   "get_window_size",
   "take_pending_watch_link",
+  "reveal_main_window",
   "ensure_main_window",
   "close_main_window",
   "calculate_aspect_ratio_size",
