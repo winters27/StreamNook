@@ -368,10 +368,17 @@ fn main() {
     // alt-tab/minimize freeze, which was the composited child-HWND webview and is fixed
     // by not enabling `tauri/unstable`. Disabling the occlusion calc only stops Chromium
     // throttling hidden windows, a negligible cost for one media window.
-    std::env::set_var(
-        "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",
+    let mut webview_args = String::from(
         "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection,AudioServiceOutOfProcess,CalculateNativeWinOcclusion",
     );
+    // Dev-only headless debugging: SN_CDP_PORT=<port> opens the webview's
+    // remote debug port (localhost) so tooling can inspect the live page.
+    // Compiled out of release builds; off in dev unless the env var is set.
+    #[cfg(debug_assertions)]
+    if let Ok(port) = std::env::var("SN_CDP_PORT") {
+        webview_args.push_str(&format!(" --remote-debugging-port={port}"));
+    }
+    std::env::set_var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", webview_args);
 
     // Initialize the logging system FIRST so all debug!/error! macros work
     services::diagnostic_logger::init_logging();
