@@ -21,7 +21,7 @@ import {
 } from '../services/cosmeticsCache';
 import { Tooltip } from './ui/Tooltip';
 import { getStreamNookUserNumber, subscribeStreamNookRegistryVersion, getStreamNookRegistryVersion, getOwnedCosmeticSlugs, getActiveCosmeticSlug, getCosmeticBySlug, getCosmeticsVersion, subscribeCosmeticsVersion } from '../services/supabaseService';
-import { COSMETIC_ASSET_BY_SLUG } from './cosmeticAssets';
+import { COSMETIC_ASSET_BY_SLUG, COSMETIC_ASSET_CHAT_BY_SLUG } from './cosmeticAssets';
 import { StreamNookBadge } from './StreamNookBadge';
 import {
   getIdentityWithCache,
@@ -2025,7 +2025,7 @@ const UserProfileCard = ({
                         <StreamNookBadge userId={userId} userNumber={streamNookUserNumber} />
                       )}
                       {inactiveOwnedSlugs.map(({ slug, cosmetic }) => {
-                        const asset = COSMETIC_ASSET_BY_SLUG[slug];
+                        const asset = COSMETIC_ASSET_CHAT_BY_SLUG[slug];
                         return (
                           <Tooltip key={`sn-${slug}`} content={cosmetic.name} side="top">
                             <img

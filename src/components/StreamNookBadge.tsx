@@ -382,7 +382,11 @@ const useActiveCosmeticAsset = (userId: string | undefined): string | null => {
   // Bundled cosmetics win (the original gold trio, fingerprinted by Vite); cloud
   // cosmetics fall back to the catalog's R2 asset_path, so a new badge ships as a
   // DB row + an upload with no desktop release (same model as atmospheres).
-  return resolveCosmeticAsset({ slug, asset_path: getCosmeticBySlug(slug)?.asset_path });
+  // chatSize: this component renders at 24px everywhere it mounts.
+  return resolveCosmeticAsset(
+    { slug, asset_path: getCosmeticBySlug(slug)?.asset_path },
+    { chatSize: true },
+  );
 };
 
 export const StreamNookBadge = memo(function StreamNookBadge({

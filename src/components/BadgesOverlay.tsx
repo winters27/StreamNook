@@ -2359,7 +2359,9 @@ const BadgesOverlay = ({ onClose, onBadgeClick, initialPaintId, initialBadgeId, 
                   </p>
                   <div className="grid grid-cols-3 gap-6 max-w-md mx-auto">
                     {cosmeticsCatalog.map((cosmetic) => {
-                      const asset = resolveCosmeticAsset(cosmetic);
+                      // Grid tiles render at 64px; the detail modal below keeps
+                      // the full-size asset for its 112px render.
+                      const asset = resolveCosmeticAsset(cosmetic, { chatSize: true });
                       if (!asset) return null;
                       const owned = ownedCosmeticSlugs.has(cosmetic.slug);
                       const isActive = activeCosmeticSlug === cosmetic.slug;

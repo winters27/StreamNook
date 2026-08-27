@@ -1361,7 +1361,7 @@ const ProfileSettings = () => {
           </div>
           <div className="flex flex-wrap gap-2">
             {ownedBadges.map((cosmetic) => {
-              const asset = resolveCosmeticAsset(cosmetic);
+              const asset = resolveCosmeticAsset(cosmetic, { chatSize: true });
               if (!asset) return null;
               const isActive = activeCosmeticSlug === cosmetic.slug;
               // Switch only — never unequip. A StreamNook member always wears a
