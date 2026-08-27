@@ -23,6 +23,7 @@ pub mod emote_service;
 pub mod emote_set_cache;
 pub mod eventsub_moderation;
 pub mod eventsub_service;
+pub mod file_log;
 pub mod http;
 pub mod irc_service;
 pub mod kick_auth_service;

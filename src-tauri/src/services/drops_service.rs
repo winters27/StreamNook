@@ -899,7 +899,7 @@ impl DropsService {
                                         });
                                     }
                                 }
-                                info!(
+                                debug!(
                                     "[Drops/ACL] details campaign '{}' game '{}': is_acl_based={}, raw_channels={}, parsed_channels={}, allow.isEnabled={:?}",
                                     campaign_json["name"].as_str().unwrap_or("unknown"),
                                     campaign_json["game"]["name"].as_str().unwrap_or("?"),

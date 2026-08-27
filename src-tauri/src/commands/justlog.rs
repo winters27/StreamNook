@@ -225,7 +225,7 @@ pub async fn fetch_user_chat_logs(
     // Per-source diagnostic. Count: -1 = errored, 0 = empty, >0 = messages.
     let count_of = |r: &Result<Vec<JustlogMessage>, String>| r.as_ref().map(|m| m.len() as i64).unwrap_or(-1);
     let err_of = |r: &Result<Vec<JustlogMessage>, String>| r.as_ref().err().cloned().unwrap_or_default();
-    eprintln!(
+    log::info!(
         "[chatlogs/fast] channel={} user={} -> modlogs={} ({:?}) buffer={} robotty={}\n  buffer_err=[{}]\n  robotty_err=[{}]",
         channel_lower,
         username_lower,
@@ -281,7 +281,7 @@ pub async fn fetch_user_deep_logs(
         .await
         .unwrap_or_else(|_| Err("justlog: timed out".to_string()));
 
-    eprintln!(
+    log::info!(
         "[chatlogs/deep] channel={} user={} -> justlog={}\n  justlog_err=[{}]",
         channel_lower,
         username_lower,
@@ -513,20 +513,20 @@ async fn fetch_from_twitch_gql(
     {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("[chatlogs/modlogs] request failed: {}", e);
+            log::warn!("[chatlogs/modlogs] request failed: {}", e);
             return (Vec::new(), ModLogsStatus::Failed);
         }
     };
 
     if !response.status().is_success() {
-        eprintln!("[chatlogs/modlogs] HTTP {}", response.status());
+        log::warn!("[chatlogs/modlogs] HTTP {}", response.status());
         return (Vec::new(), ModLogsStatus::Failed);
     }
 
     let json: serde_json::Value = match response.json().await {
         Ok(j) => j,
         Err(e) => {
-            eprintln!("[chatlogs/modlogs] parse failed: {}", e);
+            log::warn!("[chatlogs/modlogs] parse failed: {}", e);
             return (Vec::new(), ModLogsStatus::Failed);
         }
     };
@@ -544,13 +544,13 @@ async fn fetch_from_twitch_gql(
                 .and_then(|m| m.get("code"))
                 .and_then(|c| c.as_str())
                 .unwrap_or("");
-            eprintln!("[chatlogs/modlogs] denied: {}", code);
+            log::info!("[chatlogs/modlogs] denied: {}", code);
             return (Vec::new(), ModLogsStatus::NoAccess);
         }
         Some("ViewerCardModLogsMessagesConnection") => {}
         // Null logs (channel/user not found) or a shape we don't recognize.
         other => {
-            eprintln!("[chatlogs/modlogs] unexpected union variant: {:?}", other);
+            log::warn!("[chatlogs/modlogs] unexpected union variant: {:?}", other);
             return (Vec::new(), ModLogsStatus::Failed);
         }
     }
@@ -560,7 +560,7 @@ async fn fetch_from_twitch_gql(
         .and_then(|v| v.as_bool())
         .unwrap_or(false)
     {
-        eprintln!("[chatlogs/modlogs] more than 500 messages available; result truncated");
+        log::info!("[chatlogs/modlogs] more than 500 messages available; result truncated");
     }
 
     let edges = match messages_node

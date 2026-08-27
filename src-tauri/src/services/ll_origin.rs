@@ -990,8 +990,11 @@ impl LlOrigin {
             part_target: PART_TARGET,
             segments,
         });
+        // Query string stripped: it is most of the length and can carry signed
+        // playback params that have no business in a log people send around.
         info!(
-            "[LLOrigin] activated ({container:?} low-latency origin) for {upstream_playlist_url}"
+            "[LLOrigin] activated ({container:?} low-latency origin) for {}",
+            upstream_playlist_url.split('?').next().unwrap_or("")
         );
 
         let handle = tokio::spawn(run_reader(self.clone(), upstream_playlist_url, client, gen));

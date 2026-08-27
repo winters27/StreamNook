@@ -28,8 +28,11 @@ const extractCategory = (message: string): { category: string; cleanMessage: str
     return { category: 'App', cleanMessage: message };
 };
 
-// Forward log to Rust backend
-const forwardToRust = async (level: LogLevel, args: unknown[]): Promise<void> => {
+// Forward log to Rust backend. Exported so utils/logger.ts can forward its
+// lines directly: Logger binds the native console at module load (before
+// initLogCapture patches it), so its output never reaches the patched console
+// and this is its only path into the backend log file.
+export const forwardToRust = async (level: LogLevel, args: unknown[]): Promise<void> => {
     try {
         const firstArg = String(args[0] || '');
         const { category, cleanMessage } = extractCategory(firstArg);
@@ -170,6 +173,15 @@ export const generateBugReport = async (): Promise<string> => {
     const errorLogs = logs.filter(l => l.level === 'error' || l.level === 'warn');
     const recentLogs = logs.slice(-100); // Last 100 logs
 
+    // The IRC lifecycle ring records every connect/JOIN/drop with its reason;
+    // it is the primary evidence for chat-connection reports.
+    let lifecycle: string[] = [];
+    try {
+        lifecycle = await invoke<string[]>('get_chat_lifecycle_log');
+    } catch {
+        // Ignore; the section renders as empty
+    }
+
     const report = `
 ================================================================================
                          STREAMNOOK BUG REPORT
@@ -188,6 +200,11 @@ User Agent: ${navigator.userAgent}
 ERROR/WARNING LOGS (${errorLogs.length} entries)
 --------------------------------------------------------------------------------
 ${errorLogs.length > 0 ? formatLogsForExport(errorLogs) : 'No errors or warnings recorded.'}
+
+--------------------------------------------------------------------------------
+CHAT CONNECTION LIFECYCLE (${lifecycle.length} events)
+--------------------------------------------------------------------------------
+${lifecycle.length > 0 ? lifecycle.join('\n') : 'No lifecycle events recorded.'}
 
 --------------------------------------------------------------------------------
 RECENT ACTIVITY (Last 100 logs)

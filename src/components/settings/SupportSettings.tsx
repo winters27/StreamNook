@@ -1,4 +1,5 @@
 import { useState, useEffect, type CSSProperties } from 'react';
+import { invoke } from '@tauri-apps/api/core';
 import { DiscordGlyph } from '../ui/DiscordGlyph';
 import streamnookLogo from '../../assets/streamnook-logo.png';
 import { SettingsSection, SettingsRow } from './_primitives';
@@ -254,7 +255,7 @@ const DiagnosticLoggingSection = () => {
         <SettingsSection
             id="settings-section-diagnostics"
             label="Diagnostics"
-            description="Controls how much detail the app writes to its log file."
+            description="Controls how much detail the app writes to its log file (streamnook.log in the app's logs folder)."
         >
             <SettingsRow
                 title="Verbose diagnostic logging"
@@ -264,6 +265,22 @@ const DiagnosticLoggingSection = () => {
                         enabled={enabled}
                         onChange={() => updateSettings({ ...settings, error_reporting_enabled: !enabled })}
                     />
+                }
+            />
+            <SettingsRow
+                title="Log file"
+                description="streamnook.log records connection and chat activity. Attach it when reporting a bug."
+                control={
+                    <button
+                        onClick={() => {
+                            void invoke('open_logs_folder').catch((e) =>
+                                Logger.warn('[Support] open logs folder failed:', e),
+                            );
+                        }}
+                        className="px-3 py-1.5 rounded-md text-sm text-textPrimary bg-white/[0.06] hover:bg-white/[0.1] transition-colors"
+                    >
+                        Open logs folder
+                    </button>
                 }
             />
         </SettingsSection>

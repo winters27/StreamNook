@@ -418,6 +418,24 @@ fn reconnect_delay(consecutive_failures: u32, auth_failure: bool) -> std::time::
     std::time::Duration::from_secs((2u64 << (n - 1)).min(60))
 }
 
+// Set once any session in this PROCESS reaches the read loop (IRC_CONNECTED
+// went out). Splits "lost an established session the user was watching"
+// (IRC_RECONNECTING, which the frontend may surface) from "still trying to
+// establish one" (IRC_CONNECT_RETRY, which stays quiet). Process-global on
+// purpose: the frontend's stale-ladder recovery restarts the supervisor, and a
+// supervisor-local flag would relabel a real ongoing outage as a first connect
+// after that restart, hiding it forever.
+static EVER_ESTABLISHED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+fn outage_frame(ever_established: bool) -> &'static str {
+    if ever_established {
+        "IRC_RECONNECTING"
+    } else {
+        "IRC_CONNECT_RETRY"
+    }
+}
+
 // ":tmi.twitch.tv RECONNECT" as the command token. Strips a tag prefix
 // defensively; a PRIVMSG whose text contains the word can never match
 // because its command token is PRIVMSG.
@@ -923,7 +941,12 @@ impl IrcService {
                         e,
                         d.as_secs()
                     ));
-                    send_to_bridge("IRC_RECONNECTING".to_string(), false).await;
+                    send_to_bridge(
+                        outage_frame(EVER_ESTABLISHED.load(std::sync::atomic::Ordering::Relaxed))
+                            .to_string(),
+                        false,
+                    )
+                    .await;
                     tokio::time::sleep(d).await;
                     continue;
                 }
@@ -950,6 +973,9 @@ impl IrcService {
 
             let delay = match outcome {
                 Ok(reason) => {
+                    // An Ok return proves IRC_CONNECTED went out this attempt
+                    // (irc_session's contract), so this loss is a real one.
+                    EVER_ESTABLISHED.store(true, std::sync::atomic::Ordering::Relaxed);
                     send_to_bridge("IRC_RECONNECTING".to_string(), false).await;
                     if session_lived_ms < SESSION_FLAP_THRESHOLD_MS {
                         consecutive_failures = consecutive_failures.saturating_add(1);
@@ -985,7 +1011,12 @@ impl IrcService {
                         e,
                         d.as_secs()
                     ));
-                    send_to_bridge("IRC_RECONNECTING".to_string(), false).await;
+                    send_to_bridge(
+                        outage_frame(EVER_ESTABLISHED.load(std::sync::atomic::Ordering::Relaxed))
+                            .to_string(),
+                        false,
+                    )
+                    .await;
                     d
                 }
                 Err(SessionError::Auth(e)) => {
@@ -1205,23 +1236,48 @@ impl IrcService {
         // departed channel. Channels joined later keep their own emote maps
         // and EventAPI subscriptions across IRC sessions, so they need no
         // per-reconnect setup here.
-        if get_current_channels()
-            .lock()
-            .await
-            .contains(&initial_channel.to_lowercase())
+        // Spawned, not awaited: these are network-bound (Helix lookup, emote
+        // CDNs, EventSub), and awaiting them here left the initial channel's
+        // ROOMSTATE/USERSTATE acks unread in the socket buffer until they
+        // finished, which the JOIN watchdog could misread as a lost JOIN and
+        // escalate into a session drop. The read loop must start draining
+        // immediately after the JOIN burst. Failure handling is a lifecycle
+        // record only: every reconnect and every join_channel re-runs this
+        // work, and both subscribes are idempotent. Deliberately not tied to
+        // the keepalive abort set: the task is finite, holds no writer, and
+        // only writes channel-keyed caches, with the CURRENT_CHANNELS re-check
+        // below as its lifetime guard.
         {
-            let initial_channel_id =
-                Self::fetch_and_store_emotes(initial_channel, Arc::clone(emote_service)).await;
+            let init_channel = initial_channel.to_string();
+            let emote_svc = Arc::clone(emote_service);
+            tokio::spawn(async move {
+                if !get_current_channels()
+                    .lock()
+                    .await
+                    .contains(&init_channel.to_lowercase())
+                {
+                    return;
+                }
+                let initial_channel_id =
+                    Self::fetch_and_store_emotes(&init_channel, emote_svc).await;
 
-            // Idempotent, so a reconnect re-calling this is a no-op for an
-            // already-subscribed channel.
-            if let Some(cid) = initial_channel_id {
-                crate::services::seventv_eventapi::subscribe_channel(initial_channel, &cid).await;
-                // Subscribe the moderator view (channel.moderate) for this chat.
-                // Silently skipped server-side if you don't moderate the channel.
-                crate::services::eventsub_moderation::subscribe_channel(initial_channel, &cid)
-                    .await;
-            }
+                // Idempotent, so a reconnect re-calling this is a no-op for an
+                // already-subscribed channel.
+                if let Some(cid) = initial_channel_id {
+                    crate::services::seventv_eventapi::subscribe_channel(&init_channel, &cid)
+                        .await;
+                    // Subscribe the moderator view (channel.moderate) for this
+                    // chat. Silently skipped server-side if you don't moderate
+                    // the channel.
+                    crate::services::eventsub_moderation::subscribe_channel(&init_channel, &cid)
+                        .await;
+                } else {
+                    record_lifecycle(&format!(
+                        "post-connect init: emote/id fetch failed for #{} (next session or join retries it)",
+                        init_channel
+                    ));
+                }
+            });
         }
 
         // Send connection success notification
@@ -1382,6 +1438,14 @@ impl IrcService {
                                         "[IRC Chat] message handler stalled for {}s, dropping session",
                                         HANDLER_STALL_TIMEOUT.as_secs()
                                     );
+                                    // Name the offending line so a field log
+                                    // can attribute the stall, not just count it.
+                                    let snippet: String = line.trim().chars().take(120).collect();
+                                    record_lifecycle(&format!(
+                                        "handler stalled >{}s on: {}",
+                                        HANDLER_STALL_TIMEOUT.as_secs(),
+                                        snippet
+                                    ));
                                     Some("handler stall")
                                 }
                                 Ok(Err(e)) => {
@@ -1417,12 +1481,26 @@ impl IrcService {
 
         // Handle PING - extract the server data after "PING "
         if trimmed.starts_with("PING") {
-            let mut w = writer.lock().await;
             // Safe slice: extract everything after "PING " (5 chars), or empty if too short
             let ping_data = if trimmed.len() > 5 { &trimmed[5..] } else { "" };
-            w.write_all(format!("PONG {}\r\n", ping_data).as_bytes())
-                .await?;
-            w.flush().await?;
+            // Bound the LOCK WAIT only, never an in-flight write (a cancelled
+            // write_all can leave a torn protocol line on a live socket). The
+            // paced-JOIN task and JOIN watchdog hold this writer across
+            // write_all to raw TCP; on a congested link that parks for longer
+            // than the handler's 10s stall deadman, which then dropped the
+            // session as a false "handler stall". Skipping one PONG is
+            // survivable, and if the congestion is real Twitch closes the
+            // socket and the session ends with an honest "closed by server".
+            match tokio::time::timeout(std::time::Duration::from_secs(5), writer.lock()).await {
+                Ok(mut w) => {
+                    w.write_all(format!("PONG {}\r\n", ping_data).as_bytes())
+                        .await?;
+                    w.flush().await?;
+                }
+                Err(_) => {
+                    record_lifecycle("PONG skipped: writer lock busy >5s (socket congested)");
+                }
+            }
             return Ok(());
         }
 
@@ -2583,7 +2661,11 @@ impl IrcService {
                 // chat. An authoritative result is written through to disk too, so
                 // the next join is disk-first and legit removals persist.
                 {
-                    let emote_svc = emote_service.read().await;
+                    // Snapshot the service out of the RwLock (guard drops at
+                    // end of statement) so the lock is never held across the
+                    // network fetch; a future writer would otherwise convoy
+                    // every reader behind an in-flight HTTP call.
+                    let emote_svc = emote_service.read().await.clone();
                     match emote_svc
                         .fetch_channel_emotes_checked(
                             Some(channel_name.to_string()),
@@ -3310,18 +3392,41 @@ impl IrcService {
                 parent_user_login: reply_parent_user_login.clone().unwrap_or_default(),
             });
 
-        // Strip redundant @mention from reply messages BEFORE parsing segments
-        // The UI shows reply context, so the leading @username is redundant
-        let content_for_segments = if let Some(ref login) = reply_parent_user_login {
-            // Case-insensitive regex to strip "@username " from the start
-            let pattern = format!(r"(?i)^@{}\s*", regex::escape(login));
-            if let Ok(re) = regex::Regex::new(&pattern) {
-                re.replace(&content, "").trim().to_string()
-            } else {
-                content.clone()
+        // Strip redundant @mention from reply messages BEFORE parsing segments.
+        // The UI shows reply context, so the leading @username is redundant.
+        // Twitch's composer inserts the DISPLAY name, not the login; matching
+        // login alone silently no-oped for localized display names and left
+        // the mention doubled, so match either, case-insensitively.
+        let reply_parent_display_name = tag_map
+            .get("reply-parent-display-name")
+            .map(|s| s.to_string());
+        let content_for_segments = {
+            let mut alts: Vec<String> = Vec::new();
+            if let Some(ref login) = reply_parent_user_login {
+                if !login.is_empty() {
+                    alts.push(regex::escape(login));
+                }
             }
-        } else {
-            content.clone()
+            if let Some(ref disp) = reply_parent_display_name {
+                if !disp.is_empty() {
+                    alts.push(regex::escape(disp));
+                }
+            }
+            if alts.is_empty() {
+                content.clone()
+            } else {
+                // Boundary is REQUIRED (\s+ or end of message), never \s*:
+                // with alternation, a short name that prefixes a longer one
+                // would otherwise partially strip the mention. This also
+                // closes the same latent hazard the old single-alternative
+                // pattern had ("@foobarbaz" with login "foobar").
+                let pattern = format!(r"(?i)^@(?:{})(?:\s+|$)", alts.join("|"));
+                if let Ok(re) = regex::Regex::new(&pattern) {
+                    re.replace(&content, "").trim().to_string()
+                } else {
+                    content.clone()
+                }
+            }
         };
 
         // Also update emote positions if we stripped the @mention
@@ -3956,6 +4061,12 @@ impl IrcService {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn outage_frame_picks_lost_vs_pre() {
+        assert_eq!(outage_frame(false), "IRC_CONNECT_RETRY");
+        assert_eq!(outage_frame(true), "IRC_RECONNECTING");
+    }
 
     #[test]
     fn reconnect_delay_backs_off_and_caps() {

@@ -365,6 +365,10 @@ struct CachedEmoteSet {
     seven_tv_ok: bool,
 }
 
+// Clone is cheap (two Arcs, a pooled client handle, a Duration) and lets
+// callers snapshot the service out of a lock before a network fetch instead of
+// holding the lock across the await.
+#[derive(Clone)]
 pub struct EmoteService {
     // Memory cache: channel_id -> EmoteSet
     cache: Arc<RwLock<HashMap<String, CachedEmoteSet>>>,

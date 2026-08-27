@@ -616,6 +616,13 @@ fn main() {
             // AppState, which only exists at this point.
             services::provider_live_service::start(app_handle.clone(), app_state_for_provider_live);
 
+            // Keep the Kick OAuth pair perpetually fresh (single-flight refresh
+            // on a clock), and the YouTube cookie harvest young. Both are what
+            // makes those logins behave like the Twitch one: renewed as a matter
+            // of course instead of dying quietly between uses.
+            services::kick_auth_service::start_refresh_daemon();
+            services::youtube_auth_service::start_reharvest_daemon();
+
             // Start the plugin host: loads the registry and starts plugins
             // the user previously enabled. No-op with none installed.
             tauri::async_runtime::spawn(async move {
@@ -1195,6 +1202,7 @@ fn main() {
             get_logs_by_level,
             get_recent_activity,
             clear_logs,
+            open_logs_folder,
             // EventSub commands
             connect_eventsub,
             disconnect_eventsub,
