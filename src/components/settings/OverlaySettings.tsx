@@ -643,6 +643,20 @@ const OverlaySettings = () => {
   const [renaming, setRenaming] = useState(false);
   const [renameValue, setRenameValue] = useState('');
   const [confirmDelete, setConfirmDelete] = useState(false);
+  // Whether the pinned switcher/tab bar is actually stuck. At rest the bar is
+  // fully transparent (no box chrome around rows that are just sitting in the
+  // page); the glass + hairline fade in only while content scrolls beneath it.
+  // A 1px sentinel above the bar leaves the dialog's clipped scrollport the
+  // moment the bar sticks, which IntersectionObserver reports for free.
+  const [barPinned, setBarPinned] = useState(false);
+  const pinSentinelRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const el = pinSentinelRef.current;
+    if (!el) return;
+    const io = new IntersectionObserver(([entry]) => setBarPinned(!entry.isIntersecting));
+    io.observe(el);
+    return () => io.disconnect();
+  }, []);
   const [style, setStyle] = useState<OverlayStyle>(initial.profiles[initial.active].style);
   // Reset-everything is armed by a first click and disarms on its own.
   const [resetArmed, setResetArmed] = useState(false);
@@ -1155,6 +1169,31 @@ const OverlaySettings = () => {
           </Tooltip>
         </div>
 
+        {/* Pinned: which overlay + which group. Sticks against the settings
+            dialog's scroll port so switching overlays or tabs never means
+            scrolling back to the top. data-settings-sticky lets the dialog's
+            deep-link scroll math subtract this bar's height. */}
+        {/* Inline margins beat the parent's space-y selector, so this adds no
+            vertical space; it fades the veil in as the bar approaches the
+            top, finishing right as it sticks. */}
+        <div ref={pinSentinelRef} aria-hidden="true" className="h-px" style={{ marginTop: 0, marginBottom: -1 }} />
+        <div data-settings-sticky className="sticky top-0 z-20 -mx-1 px-1 pt-1 pb-2.5">
+          {/* Dissolve veil, not a panel: scrolled content fades out beneath
+              the pinned rows through a gradient tail, with no fill slab, no
+              border and no blur, so there is no box silhouette at all. Base
+              background tone on purpose; tertiary is LIGHTER than the dialog
+              ground and read as a gray plate. Hidden until the bar is stuck. */}
+          <div
+            aria-hidden="true"
+            className="pointer-events-none absolute inset-x-0 top-0 -z-10 transition-opacity duration-200"
+            style={{
+              bottom: -18,
+              opacity: barPinned ? 1 : 0,
+              background:
+                'linear-gradient(to bottom, color-mix(in srgb, var(--color-background) 94%, transparent) 0%, color-mix(in srgb, var(--color-background) 94%, transparent) 62%, transparent 100%)',
+            }}
+          />
+          <div className="space-y-3">
         {/* Profiles: each is its own published overlay (own OBS link + style +
             sources). A compact inline cluster — the picker sizes to its content
             and the actions are small icon buttons beside it. */}
@@ -1236,6 +1275,8 @@ const OverlaySettings = () => {
               {t.label}
             </button>
           ))}
+        </div>
+          </div>
         </div>
 
         {activeTab === 'sources' && (

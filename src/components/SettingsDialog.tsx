@@ -117,7 +117,12 @@ const SettingsDialog = () => {
         if (el && contentRef.current) {
           const containerTop = contentRef.current.getBoundingClientRect().top;
           const elTop = el.getBoundingClientRect().top;
-          contentRef.current.scrollBy({ top: elTop - containerTop - 8, behavior: 'smooth' });
+          // A tab with a pinned header (data-settings-sticky) overlays the top
+          // of the scroll port; land the section fully below it. Tabs without
+          // one measure 0 and behave as before.
+          const sticky = contentRef.current.querySelector('[data-settings-sticky]');
+          const stickyOffset = sticky ? sticky.getBoundingClientRect().height : 0;
+          contentRef.current.scrollBy({ top: elTop - containerTop - 8 - stickyOffset, behavior: 'smooth' });
         }
       });
     });
@@ -154,8 +159,11 @@ const SettingsDialog = () => {
         if (el && contentRef.current) {
           const containerTop = contentRef.current.getBoundingClientRect().top;
           const elTop = el.getBoundingClientRect().top;
+          // Same pinned-header compensation as the initial-section scroll above.
+          const sticky = contentRef.current.querySelector('[data-settings-sticky]');
+          const stickyOffset = sticky ? sticky.getBoundingClientRect().height : 0;
           contentRef.current.scrollBy({
-            top: elTop - containerTop - 8,
+            top: elTop - containerTop - 8 - stickyOffset,
             behavior: 'smooth',
           });
         }
