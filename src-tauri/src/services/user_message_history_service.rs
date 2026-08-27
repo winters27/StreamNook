@@ -34,7 +34,9 @@ struct LruEntry {
 /// 20 messages and evicted early speakers entirely.
 pub struct UserMessageHistoryService {
     cache: Mutex<HashMap<String, LruEntry>>,
-    access_counter: Mutex<u64>,
+    // Atomic rather than a second mutex: add_message runs per chat message and
+    // paid two lock acquisitions where a fetch_add does.
+    access_counter: std::sync::atomic::AtomicU64,
 }
 
 static INSTANCE: OnceLock<UserMessageHistoryService> = OnceLock::new();
@@ -43,17 +45,17 @@ impl UserMessageHistoryService {
     pub fn global() -> &'static UserMessageHistoryService {
         INSTANCE.get_or_init(|| UserMessageHistoryService {
             cache: Mutex::new(HashMap::with_capacity(MAX_USERS)),
-            access_counter: Mutex::new(0),
+            access_counter: std::sync::atomic::AtomicU64::new(0),
         })
     }
 
     pub async fn add_message(&self, user_id: &str, message: &ChatMessage) {
         let summary: UserMessageSummary = message.into();
         let mut cache = self.cache.lock().await;
-        let mut counter = self.access_counter.lock().await;
-        *counter += 1;
-        let current_access = *counter;
-        drop(counter);
+        let current_access = self
+            .access_counter
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            + 1;
 
         let entry = cache
             .entry(user_id.to_string())
@@ -82,10 +84,10 @@ impl UserMessageHistoryService {
 
     pub async fn get_history(&self, user_id: &str) -> Vec<UserMessageSummary> {
         let mut cache = self.cache.lock().await;
-        let mut counter = self.access_counter.lock().await;
-        *counter += 1;
-        let current_access = *counter;
-        drop(counter);
+        let current_access = self
+            .access_counter
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            + 1;
 
         if let Some(entry) = cache.get_mut(user_id) {
             entry.last_access = current_access;

@@ -45,6 +45,10 @@ static IRC_HEARTBEAT_ABORT: OnceLock<Mutex<Option<tokio::task::AbortHandle>>> = 
 static IRC_WRITER: OnceLock<Mutex<Option<Arc<Mutex<tokio::io::WriteHalf<TcpStream>>>>>> =
     OnceLock::new();
 static SHARED_CHAT_ROOMS: OnceLock<Mutex<HashMap<String, Vec<String>>>> = OnceLock::new();
+// Fast-path gate for enhance_message_with_shared_chat: the overwhelming
+// majority of sessions never see a shared-chat room, so the per-message
+// lock + line copy is skipped entirely until one is detected.
+static SHARED_CHAT_ACTIVE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 // Process-wide port of the local WebSocket bridge. Stored so a second
 // `start_chat` call (typically from a popout window like StreamNook MultiChat
 // opening its own JS store) can be made idempotent — instead of tearing the
@@ -334,31 +338,103 @@ struct MessageSideEffects {
 // Ordered side-effect lane: history LRU, chat logger (synchronous file IO), and
 // plugin fan-out ran ON the IRC read loop, so any of them stalling froze the
 // reader — undetectably, since sends kept working. One long-lived consumer
-// preserves chat-log line order; the read loop only pays an unbounded-channel
-// send per message.
-static SIDE_EFFECT_TX: OnceLock<tokio::sync::mpsc::UnboundedSender<MessageSideEffects>> =
-    OnceLock::new();
+// preserves chat-log line order; the read loop only pays a queue push per
+// message. Bounded with drop-OLDEST: the real stall vector is the logger's
+// file IO to a user-configurable folder (a sleeping disk or network share can
+// block seconds per line), and an unbounded queue would then hold every full
+// ChatMessage in RAM. Drops are counted per channel and surface as an honest
+// marker line in the affected chat logs once the lane catches up.
+const SIDE_EFFECT_CAP: usize = 2048;
 
-fn side_effect_lane() -> &'static tokio::sync::mpsc::UnboundedSender<MessageSideEffects> {
-    SIDE_EFFECT_TX.get_or_init(|| {
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<MessageSideEffects>();
+struct SideEffectLane {
+    queue: std::sync::Mutex<VecDeque<MessageSideEffects>>,
+    notify: tokio::sync::Notify,
+    /// channel -> messages dropped while the lane was saturated.
+    dropped: std::sync::Mutex<HashMap<String, u64>>,
+}
+
+static SIDE_EFFECT_LANE: OnceLock<Arc<SideEffectLane>> = OnceLock::new();
+
+fn side_effect_lane() -> &'static Arc<SideEffectLane> {
+    SIDE_EFFECT_LANE.get_or_init(|| {
+        let lane = Arc::new(SideEffectLane {
+            queue: std::sync::Mutex::new(VecDeque::new()),
+            notify: tokio::sync::Notify::new(),
+            dropped: std::sync::Mutex::new(HashMap::new()),
+        });
+        let consumer = lane.clone();
         tokio::spawn(async move {
-            while let Some(se) = rx.recv().await {
-                if se.add_history && !se.history_key.is_empty() {
-                    UserMessageHistoryService::global()
-                        .add_message(&se.history_key, &se.msg)
-                        .await;
-                }
-                ChatLoggerService::log_message(&se.msg);
-                if let Some(host) = PLUGIN_HOST.get() {
-                    if host.wants_chat_messages().await {
-                        host.emit_chat_message(chat_event_params(&se.msg)).await;
+            loop {
+                consumer.notify.notified().await;
+                // Drain to EMPTY per wake: Notify coalesces permits, so a
+                // one-item-per-wake loop would lose wakeups.
+                loop {
+                    let next = consumer.queue.lock().ok().and_then(|mut q| q.pop_front());
+                    let Some(se) = next else { break };
+                    if se.add_history && !se.history_key.is_empty() {
+                        UserMessageHistoryService::global()
+                            .add_message(&se.history_key, &se.msg)
+                            .await;
                     }
+                    ChatLoggerService::log_message(&se.msg);
+                    if let Some(host) = PLUGIN_HOST.get() {
+                        if host.wants_chat_messages().await {
+                            host.emit_chat_message(chat_event_params(&se.msg)).await;
+                        }
+                    }
+                }
+                // Caught up: make any saturation loss visible in the logs it hit.
+                let flushed: Vec<(String, u64)> = consumer
+                    .dropped
+                    .lock()
+                    .map(|mut d| d.drain().collect())
+                    .unwrap_or_default();
+                for (channel, count) in flushed {
+                    ChatLoggerService::log_dropped_marker(&channel, count);
                 }
             }
         });
-        tx
+        lane
     })
+}
+
+fn enqueue_side_effect(se: MessageSideEffects) {
+    let lane = side_effect_lane();
+    let dropped_channel = {
+        let Ok(mut q) = lane.queue.lock() else { return };
+        let dropped = if q.len() >= SIDE_EFFECT_CAP {
+            q.pop_front().map(|old| old.msg.channel)
+        } else {
+            None
+        };
+        q.push_back(se);
+        dropped
+    };
+    if let Some(channel) = dropped_channel {
+        if let Ok(mut d) = lane.dropped.lock() {
+            *d.entry(channel).or_insert(0) += 1;
+        }
+        // Rate-limited: one warn per 30s however fast the lane overflows.
+        static LAST_WARN_S: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let now_s = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let last = LAST_WARN_S.load(std::sync::atomic::Ordering::Relaxed);
+        if now_s.saturating_sub(last) >= 30
+            && LAST_WARN_S
+                .compare_exchange(
+                    last,
+                    now_s,
+                    std::sync::atomic::Ordering::Relaxed,
+                    std::sync::atomic::Ordering::Relaxed,
+                )
+                .is_ok()
+        {
+            warn!("[IRC Chat] side-effect lane full ({SIDE_EFFECT_CAP}); dropping oldest");
+        }
+    }
+    lane.notify.notify_one();
 }
 
 /// Run the shared per-message side effects (persisted user history, chat-log
@@ -373,7 +449,7 @@ fn side_effect_lane() -> &'static tokio::sync::mpsc::UnboundedSender<MessageSide
 pub fn run_message_side_effects(msg: ChatMessage) {
     let add_history = !msg.user_id.is_empty();
     let history_key = history_key_for(&msg);
-    let _ = side_effect_lane().send(MessageSideEffects {
+    enqueue_side_effect(MessageSideEffects {
         msg,
         add_history,
         history_key,
@@ -1603,6 +1679,7 @@ impl IrcService {
         if trimmed.contains("PRIVMSG") {
             // Regular chat message - forward as-is with shared chat detection
             let enhanced_message = Self::enhance_message_with_shared_chat(trimmed).await;
+            let enhanced_message: &str = &enhanced_message;
 
             // Debug: Log cheer/bits messages (raw IRC data)
             if enhanced_message.contains("bits=") {
@@ -1653,14 +1730,14 @@ impl IrcService {
                 if let Ok(json_msg) = serde_json::to_string(&chat_msg) {
                     send_to_bridge(json_msg, true).await;
                 }
-                let _ = side_effect_lane().send(MessageSideEffects {
+                enqueue_side_effect(MessageSideEffects {
                     history_key: history_key_for(&chat_msg),
                     msg: chat_msg,
                     add_history: true,
                 });
             } else {
                 // Fallback to sending raw string if parsing fails
-                send_to_bridge(enhanced_message, true).await;
+                send_to_bridge(enhanced_message.to_string(), true).await;
             }
         } else if trimmed.contains("USERNOTICE") {
             // Subscription, resub, gift sub, etc.
@@ -1709,7 +1786,7 @@ impl IrcService {
                 if let Ok(json_msg) = serde_json::to_string(&chat_msg) {
                     send_to_bridge(json_msg, true).await;
                 }
-                let _ = side_effect_lane().send(MessageSideEffects {
+                enqueue_side_effect(MessageSideEffects {
                     history_key: history_key_for(&chat_msg),
                     msg: chat_msg,
                     add_history: false,
@@ -1951,7 +2028,12 @@ impl IrcService {
         Ok(())
     }
 
-    async fn enhance_message_with_shared_chat(message: &str) -> String {
+    async fn enhance_message_with_shared_chat(message: &str) -> std::borrow::Cow<'_, str> {
+        // No shared-chat session known anywhere: borrow the line untouched
+        // (this ran an unconditional String copy per PRIVMSG before).
+        if !SHARED_CHAT_ACTIVE.load(std::sync::atomic::Ordering::Relaxed) {
+            return std::borrow::Cow::Borrowed(message);
+        }
         // Extract room-id from the message to determine source channel
         if let Some(room_id) = Self::extract_tag_value(message, "room-id") {
             // Check if this room is part of a shared chat session
@@ -1973,12 +2055,12 @@ impl IrcService {
                         enhanced.insert_str(tag_end - 1, &shared_tag);
                     }
 
-                    return enhanced;
+                    return std::borrow::Cow::Owned(enhanced);
                 }
             }
         }
 
-        message.to_string()
+        std::borrow::Cow::Borrowed(message)
     }
 
     async fn check_shared_chat_status(room_id: &str) {
@@ -2022,6 +2104,12 @@ impl IrcService {
                                             for id in &partner_ids {
                                                 shared_rooms
                                                     .insert(id.clone(), partner_ids.clone());
+                                            }
+                                            if !partner_ids.is_empty() {
+                                                SHARED_CHAT_ACTIVE.store(
+                                                    true,
+                                                    std::sync::atomic::Ordering::Relaxed,
+                                                );
                                             }
 
                                             debug!(
@@ -3974,6 +4062,7 @@ impl IrcService {
 
         // Clear shared chat rooms
         get_shared_chat_rooms().lock().await.clear();
+        SHARED_CHAT_ACTIVE.store(false, std::sync::atomic::Ordering::Relaxed);
 
         // Clear all per-channel caches
         get_channel_emotes().lock().await.clear();
@@ -4019,6 +4108,7 @@ impl IrcService {
         get_current_channels().lock().await.clear();
         tracker_clear().await;
         get_shared_chat_rooms().lock().await.clear();
+        SHARED_CHAT_ACTIVE.store(false, std::sync::atomic::Ordering::Relaxed);
         get_channel_emotes().lock().await.clear();
         clear_parse_lookups();
         if let Ok(mut g) = get_channel_cheermotes().write() { g.clear(); }

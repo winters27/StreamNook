@@ -195,6 +195,18 @@ impl ChatLoggerService {
     }
 
     /// A standalone event line (moderation actions), gated like other events.
+    /// Honest gap marker for a saturated side-effect lane: the log must never
+    /// silently omit messages, so a drop burst leaves one line saying how many.
+    pub fn log_dropped_marker(channel: &str, count: u64) {
+        if count == 0 {
+            return;
+        }
+        Self::log_event_line(
+            channel,
+            &format!("# {count} messages not logged (side-effect lane saturated)"),
+        );
+    }
+
     fn log_event_line(channel: &str, text: &str) {
         let Some(cfg) = Self::config() else { return };
         let channel = channel.to_lowercase();
