@@ -546,6 +546,10 @@ fn main() {
         .manage(emote_prefetch_state)
         .manage(eventsub_service_state)
         .setup(move |app| {
+            // Only the primary instance reaches setup (a deep-link secondary
+            // exits inside the single-instance plugin), so this is the proof
+            // that unlocks the file log and its "==== started ====" banner.
+            services::file_log::arm();
             let app_handle = app.handle().clone();
             // Runtime stall detector: measures backend freezes (tokio-blocked vs
             // whole-process) and records them to the capture file. Started here,

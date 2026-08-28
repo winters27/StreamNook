@@ -23,9 +23,9 @@ use std::borrow::Cow;
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Mutex, Once};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const MAX_LOG_BYTES: u64 = 5_000_000;
 const DRAIN_INTERVAL_MS: u64 = 300;
@@ -38,6 +38,22 @@ const MAX_QUEUE_LINES: usize = 10_000;
 static FILE_LEVEL: AtomicUsize = AtomicUsize::new(LevelFilter::Info as usize);
 static QUEUE: Lazy<Mutex<Vec<String>>> = Lazy::new(|| Mutex::new(Vec::new()));
 static WRITER: Once = Once::new();
+
+/// Nothing reaches the file until the process proves it is the PRIMARY
+/// instance. A warm deep link spawns a second process that lives just long
+/// enough for the single-instance plugin to forward the URL and exit, and it
+/// used to stamp its own "==== started ====" banner into the shared log,
+/// corrupting boot-segment analysis (which anchors on the last banner). Only
+/// the primary reaches the Tauri setup hook, which calls `arm()`; queued
+/// early-boot lines then drain in order behind the banner. The writer thread
+/// arms itself after a failsafe delay so a crash-before-setup still flushes
+/// evidence (and a second instance alive that long is itself worth seeing).
+static ARMED: AtomicBool = AtomicBool::new(false);
+const ARM_FAILSAFE_SECS: u64 = 5;
+
+pub fn arm() {
+    ARMED.store(true, Ordering::Release);
+}
 
 pub struct FanoutLogger {
     stderr: env_logger::Logger,
@@ -186,8 +202,16 @@ fn ensure_writer() {
                 let old_path = path.with_extension("log.old");
                 let mut current: Option<(std::fs::File, u64)> = None;
                 let mut banner_pending = true;
+                let spawned = Instant::now();
                 loop {
                     std::thread::sleep(Duration::from_millis(DRAIN_INTERVAL_MS));
+                    if !ARMED.load(Ordering::Acquire) {
+                        if spawned.elapsed() < Duration::from_secs(ARM_FAILSAFE_SECS) {
+                            continue; // hold everything; a secondary instance exits first
+                        }
+                        ARMED.store(true, Ordering::Release);
+                        enqueue("[FileLog] armed by failsafe (setup hook never ran)".into());
+                    }
                     let mut batch = {
                         let mut q = match QUEUE.lock() {
                             Ok(q) => q,
