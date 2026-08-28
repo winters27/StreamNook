@@ -4,10 +4,10 @@
 // producing a BARE login key, because favorites, resume snapshots and chat
 // slices persisted before multi-platform browsing all store bare logins.
 
-import { test } from 'vitest';
+import { describe, expect, it, test } from 'vitest';
 import assert from 'node:assert/strict';
 
-import { streamProvider, streamKey, streamThumbnail, buildProviderUrl } from './streamProvider.ts';
+import { followIdentifier, streamProvider, streamKey, streamThumbnail, buildProviderUrl } from './streamProvider.ts';
 
 test('an untagged row reads as twitch', () => {
   assert.equal(streamProvider({}), 'twitch');
@@ -45,4 +45,30 @@ test('watch URLs match what the backend classifier accepts', () => {
     'https://www.youtube.com/channel/UCXuqSBlHAE6Xw-yeJA0Tunw/live',
   );
   assert.equal(buildProviderUrl('youtube', 'jfKfPfyJRdk'), 'https://www.youtube.com/watch?v=jfKfPfyJRdk');
+});
+
+describe('followIdentifier', () => {
+  it('keys Kick follows by the slug, never the numeric user id', () => {
+    expect(
+      followIdentifier({ provider: 'kick', user_login: 'theburntpeanut', user_id: '1234567' } as any),
+    ).toBe('theburntpeanut');
+  });
+
+  it('keys YouTube follows by the channel UC id, not the per-broadcast login', () => {
+    expect(
+      followIdentifier({ provider: 'youtube', user_login: 'AGr94tpNVkw', user_id: 'UCabc123' } as any),
+    ).toBe('UCabc123');
+  });
+
+  it('keys Twitch follows by the login', () => {
+    expect(
+      followIdentifier({ provider: 'twitch', user_login: 'nickmercs', user_id: '15564828' } as any),
+    ).toBe('nickmercs');
+  });
+
+  it('falls back to the login when YouTube carries no channel id', () => {
+    expect(
+      followIdentifier({ provider: 'youtube', user_login: 'somelogin', user_id: '' } as any),
+    ).toBe('somelogin');
+  });
 });

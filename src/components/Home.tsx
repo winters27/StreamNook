@@ -1554,8 +1554,19 @@ const Home = () => {
     // it is toggled rather than on the next unrelated render.
     const isProviderFollowed = (stream: TwitchStream) => {
         const provider = streamProvider(stream);
-        const channel = stream.user_login.toLowerCase();
-        return providerFollows.some((f) => f.provider === provider && f.channel === channel);
+        // One canonical identity both ways: the same followIdentifier the write
+        // side stores (YouTube's UC id, everyone else's login/slug). Comparing
+        // user_login here could never read back a YouTube follow at all.
+        const id = followIdentifier(stream);
+        const key = provider === 'youtube' ? id : id.toLowerCase();
+        return providerFollows.some((f) =>
+            f.provider === provider &&
+            (f.channel === key ||
+                // Legacy: Kick follows written before the identity fix were
+                // keyed by the numeric user id; read them as followed so the
+                // control tells the truth until the entry is re-toggled.
+                (provider === 'kick' && !!stream.user_id && f.channel === stream.user_id)),
+        );
     };
 
     const handleProviderFollowClick = (e: React.MouseEvent, stream: TwitchStream) => {
@@ -1567,8 +1578,15 @@ const Home = () => {
         // never match the `UC` ids the subscriptions import writes, which is why
         // the heart and the player disagreed about the same channel.
         const target = followIdentifier(stream);
-        if (follows.isFollowed(provider, target)) {
+        const legacyKickId =
+            provider === 'kick' && stream.user_id && stream.user_id !== target
+                ? stream.user_id
+                : null;
+        if (follows.isFollowed(provider, target) || (legacyKickId && follows.isFollowed(provider, legacyKickId))) {
             void follows.unfollow(provider, target);
+            // Also remove the numeric-keyed legacy form, or the entry the old
+            // bug wrote would survive the unfollow and re-read as followed.
+            if (legacyKickId) void follows.unfollow(provider, legacyKickId);
         } else {
             void follows.follow(provider, target, stream.user_name);
         }

@@ -29,12 +29,17 @@ export function streamProvider(stream: Pick<TwitchStream, 'provider'> | null | u
  * subscriptions import stores, so following by it is also what makes the two
  * lists agree.
  *
- * Twitch and Kick have no such split: the login / slug IS the channel.
+ * Twitch and Kick have no such split: the login / slug IS the channel — so
+ * only YouTube takes the `user_id` branch. The old `!isTwitchStream` guard
+ * swallowed Kick too, keying its follows by the NUMERIC user id: an entry the
+ * live check (which queries `slug=`) could never resolve and the followed
+ * check (which compares logins) could never read back. Instance eight in
+ * Brain/references/StreamNook_Identity_Keying.md.
  */
 export function followIdentifier(
   stream: Pick<TwitchStream, 'provider' | 'user_login' | 'user_id'>,
 ): string {
-  if (!isTwitchStream(stream) && stream.user_id) return stream.user_id;
+  if (streamProvider(stream) === 'youtube' && stream.user_id) return stream.user_id;
   return stream.user_login;
 }
 
