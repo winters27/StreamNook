@@ -1592,6 +1592,16 @@ html[data-motion="reduced"] .animate-shimmer {
   .hype-train-fill-wave { animation: none; }
 }
 
+/* Favorited stream card: the watchlist identity as a whisper. An inset 1px
+   pink hairline (box-shadow, so it never fights glass-panel's own border);
+   shared-chat's iridescent border outranks it at the call site. */
+.favorite-card {
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-highlight-pink) 20%, transparent);
+}
+.favorite-card:hover {
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-highlight-pink) 32%, transparent);
+}
+
 /* Glow text shadow for celebration text */
 .drop-shadow-glow {
   text-shadow: 
