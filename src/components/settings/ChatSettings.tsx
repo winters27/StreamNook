@@ -315,7 +315,7 @@ const ChatSettings = ({ hidePlacement = false }: { hidePlacement?: boolean } = {
   };
 
   const rp = settings.message_repeat;
-  const repeatMode: RepeatDisplayMode = rp?.mode ?? 'collapse';
+  const repeatMode: RepeatDisplayMode = rp?.mode ?? 'off';
   const repeatThreshold = Math.max(2, rp?.threshold ?? 2);
   const repeatWindow = rp?.window_seconds ?? 60;
   const setRepeat = (patch: Partial<MessageRepeatSettings>) =>

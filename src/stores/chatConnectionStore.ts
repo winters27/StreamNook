@@ -2281,7 +2281,9 @@ function appendStructuredMessage(slice: ChannelSlice, parsed: any) {
     channelPushSeq.set(chKey, seq);
 
     const rp = useAppStore.getState().settings.message_repeat;
-    const mode = rp?.mode ?? 'collapse';
+    // Opt-in: a user who never touched the setting gets every message, like
+    // Twitch's own chat. Folding cross-user spam is a choice, not a default.
+    const mode = rp?.mode ?? 'off';
     // Moderators need every message actionable, so runs stay expanded in
     // channels they moderate unless they opt out.
     const moderatingHere = (rp?.keep_all_when_moderator ?? true) && isModeratorOfSlice(slice);
@@ -2338,7 +2340,13 @@ function appendStructuredMessage(slice: ChannelSlice, parsed: any) {
           useMessageRepeatStore
             .getState()
             .noteRun(rowId, existing.count, existing.participants);
-          repeatSuppressed = mode === 'collapse';
+          // The threshold ("show the count from N copies") gates the FOLD,
+          // not just the badge: copies below it render as their own rows, and
+          // hiding starts only once the run is big enough to earn its counter.
+          // Mirrors ChatMessage's display gate exactly; below-threshold copies
+          // still count into the run so the anchor's badge is the true total.
+          const threshold = Math.max(2, rp?.threshold ?? 2);
+          repeatSuppressed = mode === 'collapse' && existing.count >= threshold;
         } else {
           runs.set(key, {
             anchorId: messageId,
