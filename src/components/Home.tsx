@@ -3575,8 +3575,14 @@ const Home = () => {
                                                                     platforms mixed an unmarked card is a guess. */}
                                                                 {isUnifiedView && (
                                                                     <Tooltip content={providerLabel(streamProvider(stream))} side="top">
-                                                                        <span className="flex flex-shrink-0 items-center pb-1 pl-1 opacity-80">
-                                                                            <ProviderLogo provider={streamProvider(stream)} size={13} opticalAlign="ink-bottom" />
+                                                                        {/* Same 24px box the heart button uses (p-1 + 16px icon),
+                                                                            mark centered, so the two icons share one center line
+                                                                            instead of mixing padded-box and bottom-padded
+                                                                            geometries. Cross-card alignment comes from the
+                                                                            reserved category line, so center optical mode is
+                                                                            right here. */}
+                                                                        <span className="flex h-6 w-6 flex-shrink-0 items-center justify-center opacity-80">
+                                                                            <ProviderLogo provider={streamProvider(stream)} size={13} />
                                                                         </span>
                                                                     </Tooltip>
                                                                 )}
