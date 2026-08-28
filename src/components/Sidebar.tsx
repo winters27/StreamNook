@@ -311,6 +311,10 @@ const Sidebar = ({ side = 'left' }: { side?: 'left' | 'right' }) => {
             isAuthenticated: s.isAuthenticated,
             activeHypeTrainChannels: s.activeHypeTrainChannels,
             watchStreaks: s.watchStreaks,
+            // Not destructured: isFavoriteStreamer is called during render (the
+            // favorite sort and star icons) and reads settings.favorite_streamers,
+            // so track that slice here purely to re-render when a favorite toggles.
+            favoriteStreamers: s.settings.favorite_streamers,
         })),
     );
 
