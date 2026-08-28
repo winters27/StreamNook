@@ -1108,14 +1108,26 @@ const VideoPlayer = () => {
             getLatency: () =>
               typeof hls.latency === 'number' && hls.latency > 0 ? hls.latency : null,
             gain: 0.12,
-            ceiling: 1.08,
-            // Engage just past the target so the playhead is held near ~3.5 rather than
-            // drifting further back.
-            band: 0.1,
+            // 1.05 is the edge of pitch-corrector transparency; the old 1.08 was
+            // audible as crackle whenever a large behind-live excess pinned the
+            // rate at the ceiling for minutes.
+            ceiling: 1.05,
+            // The band must clear LL delivery jitter (parts land in ~0.3-0.5s
+            // lurches), or the excess crosses it on every tick and the rate
+            // micro-hunts forever (1.001-1.014 churn, measured 56 rate writes
+            // in 150s) - continuous work for the pitch corrector. Within
+            // +-0.75s of target the rate is exactly 1.0; real drift still
+            // engages. The old 0.1 held latency tighter than anyone can see
+            // at the cost of never letting the audio path rest.
+            band: 0.75,
             // Low-buffer protection: when delivery wobbles and the forward buffer dips
             // under the floor, ease down to 0.97x instead of running it dry (a 3%
             // slowdown is imperceptible; it prevents stalls by milliseconds).
             floor: 0.8,
+            // Full ceiling only with floor+1.5s of real consumable buffer; a
+            // behind-live signal the buffer cannot back (relay at its own edge)
+            // resolves to 1.0 instead of overspeed-drain-stall cycles.
+            engageSpan: 1.5,
             slowRate: 0.97,
             tickMs: 500,
             rampStep: 0.01,

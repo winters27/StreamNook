@@ -69,6 +69,18 @@ export interface LatencyGovernorOptions {
    *  options (<= 0.75) so user selections are still recognized as manual. */
   slowRate?: number;
   /**
+   * Seconds of forward buffer ABOVE `floor` at which the full `ceiling` becomes
+   * available. Overspeed consumes the forward buffer, so the allowed rate scales
+   * with the headroom actually there to consume: 1.0 at the floor, the full
+   * ceiling at floor + engageSpan, linear between. Without this, a catch-up
+   * signal (behind-live or buffer excess) pins the rate at the ceiling while
+   * the buffer sits barely above the floor, drains it into the floor regime,
+   * eases down, refills, and seesaws forever: the rate never settles (audible
+   * as continuous pitch-corrector crackle) and the drain regularly overshoots
+   * into a hard stall. Only meaningful when `floor` is set. Default 1.5.
+   */
+  engageSpan?: number;
+  /**
    * Behind-live target in seconds. When set (with `getLatency`), rate control is
    * driven by behind-live distance, not forward-buffer excess, and works in BOTH
    * directions: the governor speeds up to pull the PLAYHEAD closer to live when
@@ -136,6 +148,7 @@ export function startLatencyGovernor(
   const dvrSlack = options.dvrSlack ?? DEFAULTS.dvrSlack;
   const floor = options.floor;
   const slowRate = options.slowRate ?? 0.97;
+  const engageSpan = options.engageSpan ?? 1.5;
   // The lowest rate this governor will ever set itself; anything below it is
   // a manual user speed selection and must not be fought. Both the low-buffer
   // floor and the latency-target slow side (below) can ease the rate down to
@@ -206,19 +219,35 @@ export function startLatencyGovernor(
     //    the buffer is at/below target, which the floor already handles;
     //  - otherwise: real time.
     const gain = options.gain ?? 0.03;
+    // Overspeed only against buffer that is actually there to consume: the
+    // ceiling scales from 1.0 at the floor to its full value at
+    // floor + engageSpan. A catch-up signal the buffer cannot back (the
+    // downloadable edge sits just ahead of the playhead, e.g. the relay itself
+    // is the bottleneck) then resolves to 1.0 instead of grinding at the
+    // ceiling, draining into the floor, and seesawing between regimes.
+    const effCeiling =
+      floor != null
+        ? 1 + (ceiling - 1) * Math.min(1, Math.max(0, (fb - floor) / engageSpan))
+        : ceiling;
     const desired =
       floor != null && fb < floor
         ? slowRate
         : excess > band
-          ? Math.max(1.0, Math.min(ceiling, 1 + gain * (excess - band)))
+          ? Math.max(1.0, Math.min(effCeiling, 1 + gain * (excess - band)))
           : usingLatency && excess < -band
             ? Math.min(1.0, Math.max(slowRate, 1 + gain * (excess + band)))
             : 1.0;
     const rampStep =
       typeof options.rampStep === 'function' ? options.rampStep() : options.rampStep;
-    const next = rampStep
+    let next = rampStep
       ? rate + Math.max(-rampStep, Math.min(rampStep, desired - rate))
       : desired;
+    // Safety beats the audible-comfort ramp: never keep overspeeding a
+    // sub-floor buffer while a slow ramp glides down (at 0.01/tick the descent
+    // from the ceiling takes many seconds, which is exactly how a wobble
+    // becomes a hard stall). One step down to real time is far less audible
+    // than the stall it prevents; the ramp still handles 1.0 -> slowRate.
+    if (floor != null && fb < floor && next > 1.0) next = 1.0;
     if (Math.abs(next - rate) > 0.0049) {
       // Round away float dust so repeated ramp arithmetic stays on clean values.
       video.playbackRate = Math.round(next * 1000) / 1000;
