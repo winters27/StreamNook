@@ -1530,34 +1530,66 @@ html[data-motion="reduced"] .animate-shimmer {
   to   { transform: translateY(100px); }
 }
 
-.hype-train-wave-edge {
-  /* Positioning only — the masked, animated fill is the ::before below. */
-  background-color: transparent;
+/* Frosted track behind the WHOLE bar.
+   The wave used to float directly on whatever sat behind the banner, which left
+   the level on the left and the bits/subs/time on the right standing on
+   nothing. One full-width frost gives that text a surface. Built from the theme
+   background rather than a literal colour, so a light theme gets a light frost
+   instead of a dark hole punched through it. */
+.hype-train-track {
+  background: color-mix(in srgb, var(--color-background) 62%, transparent);
+  -webkit-backdrop-filter: blur(12px) saturate(115%);
+  backdrop-filter: blur(12px) saturate(115%);
+  border: 1px solid var(--color-border-subtle);
 }
 
-.hype-train-wave-edge::before {
-  content: '';
-  position: absolute;
-  left: 0;
-  right: 0;
+/* The fill's wavy leading edge, CARVED with a mask. Nothing is painted.
+
+   Earlier versions painted a 20px band across the fill's leading edge in
+   opaque `var(--color-background)` and used the band's silhouette as the wave.
+   That only looks right when whatever sits behind the bar IS that flat colour;
+   over anything else (translucent surfaces, atmospheres, a stream) it reads as
+   a black shape sliding in front of the wave. A painted band can only ever
+   approximate what is behind it; the only band you cannot see is one that does
+   not exist.
+
+   So this masks the fill instead. The catch that made earlier attempts avoid
+   masking: the note on `wave-flow` above is right that animating
+   `mask-position` re-rasterizes the SVG every frame, once per banner, and
+   MultiChat renders one per channel. But a transform works here for a reason
+   that is easy to miss - the fill gradient is `linear-gradient(90deg, ...)`,
+   so it is UNIFORM VERTICALLY. Translating the masked layer down by exactly one
+   100px mask tile moves the wavy edge while the gradient underneath looks
+   completely unchanged. Same trick the old band used; it just needed the
+   realisation that it applies to the gradient too, not only to a flat colour.
+
+   Two mask layers: a solid rectangle for everything but the last 19px, plus the
+   wave tile down the leading edge. The tile is the MIRROR of the band's (it
+   fills to the LEFT of the wavy boundary) because it now says where the fill
+   ENDS rather than where the cover-up began. */
+.hype-train-fill-wave {
+  /* Overscan, so translating by one whole tile wraps seamlessly. The banner's
+     own overflow-hidden clips it. */
   top: -100px;
   bottom: -100px;
-  background-color: var(--color-background);
-  /* Create a wavy left edge using a repeating gradient mask - longer smoother waves */
-  -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 100'%3E%3Cpath d='M10,0 Q20,25 10,50 Q0,75 10,100 L20,100 L20,0 Z' fill='black'/%3E%3C/svg%3E");
-  mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 100'%3E%3Cpath d='M10,0 Q20,25 10,50 Q0,75 10,100 L20,100 L20,0 Z' fill='black'/%3E%3C/svg%3E");
-  -webkit-mask-size: 20px 100px;
-  mask-size: 20px 100px;
-  -webkit-mask-repeat: repeat-y;
-  mask-repeat: repeat-y;
-  -webkit-mask-position: 0 0;
-  mask-position: 0 0;
+  -webkit-mask-image:
+    linear-gradient(#000, #000),
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 100'%3E%3Cpath d='M10,0 Q20,25 10,50 Q0,75 10,100 L0,100 L0,0 Z' fill='black'/%3E%3C/svg%3E");
+  mask-image:
+    linear-gradient(#000, #000),
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 100'%3E%3Cpath d='M10,0 Q20,25 10,50 Q0,75 10,100 L0,100 L0,0 Z' fill='black'/%3E%3C/svg%3E");
+  -webkit-mask-size: calc(100% - 19px) 100%, 20px 100px;
+  mask-size: calc(100% - 19px) 100%, 20px 100px;
+  -webkit-mask-repeat: no-repeat, repeat-y;
+  mask-repeat: no-repeat, repeat-y;
+  -webkit-mask-position: left top, right top;
+  mask-position: left top, right top;
   will-change: transform;
   animation: wave-flow 3s linear infinite;
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .hype-train-wave-edge::before { animation: none; }
+  .hype-train-fill-wave { animation: none; }
 }
 
 /* Glow text shadow for celebration text */

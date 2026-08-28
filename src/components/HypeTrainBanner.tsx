@@ -170,24 +170,26 @@ export default function HypeTrainBanner({ train, confettiTarget, onExpire }: Hyp
         createPortal(<ConfettiBurst key={celebrationId} golden={!!isGolden} />, confettiTarget)}
 
       <div className="relative h-9 overflow-hidden rounded-md mt-2 pointer-events-none">
-        {/* Progress fill background */}
+        {/* Frosted track spanning the whole bar, under everything. Gives the
+            level, the remaining count and the timer a surface to sit on
+            instead of floating over raw chat. */}
+        <div className="absolute inset-0 hype-train-track" />
+        {/* Progress fill. Its wavy leading edge is a MASK on this wrapper, so
+            nothing is ever painted over the fill and there is no band to see
+            (globals.css explains why that matters and how the animation stays
+            a cheap transform). The gradient sits on the child because it runs
+            its own flow animation, and the wave animation would otherwise
+            overwrite it. */}
         <div
-          className={`absolute inset-0 ${
-            isGolden ? 'hype-train-progress-golden' : 'hype-train-progress-rainbow'
-          }`}
+          className="absolute left-0 hype-train-fill-wave"
           style={{ width: `${percentage}%`, transition: 'width 0.5s ease-out' }}
-        />
-        {/* Unfilled portion with animated wavy left edge. The fill colour lives
-            on the ::before layer in globals.css, which is what carries the mask
-            and the animation. */}
-        <div
-          className="absolute inset-0 hype-train-wave-edge"
-          style={{
-            left: `calc(${percentage}% - 19px)`,
-            width: `calc(${100 - percentage}% + 19px)`,
-            transition: 'left 0.5s ease-out, width 0.5s ease-out',
-          }}
-        />
+        >
+          <div
+            className={`absolute inset-0 ${
+              isGolden ? 'hype-train-progress-golden' : 'hype-train-progress-rainbow'
+            }`}
+          />
+        </div>
         {/* Percentage / celebration content, centered within the strip */}
         <div className="absolute inset-0 flex items-center justify-center z-20 pointer-events-none">
           {isLevelUpCelebration ? (
