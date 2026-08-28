@@ -11,10 +11,15 @@
 //! reveal_main_window cost a debugging cycle the same way in dev.
 //!
 //! This test parses both files as text, so it needs no runtime and fails the
-//! suite the moment the two drift. The reverse direction (allowlisted but not
-//! registered) is only a warning: such an entry is inert, and it legitimately
-//! happens mid-flight when a feature's ACL entry lands before its
-//! registration commit.
+//! suite the moment the two drift. It deliberately derives everything from
+//! `generate_handler!` and never from command attributes: commands are written
+//! in BOTH attribute forms (`#[tauri::command]` and the short `#[command]`),
+//! and an attribute-based audit silently under-counted by 61 once.
+//! The reverse direction (allowlisted but not registered) is only a warning:
+//! such an entry is inert, and it legitimately happens mid-flight when a
+//! feature's ACL entry lands before its registration commit. NOTE: the test
+//! harness captures output of passing tests, so the stale warning is only
+//! visible via `cargo test -- --nocapture` (or on a failure).
 
 use std::collections::BTreeSet;
 
