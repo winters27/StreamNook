@@ -3496,7 +3496,12 @@ const Home = () => {
                                                                             </svg>
                                                                         )}
                                                                     </button>
-                                                                    <div className="flex items-center w-full">
+                                                                    {/* min-h reserves this line even when a platform sends no
+                                                                        category (YouTube), so the bottom-anchored platform mark
+                                                                        sits on the same baseline on every card in the row
+                                                                        instead of riding up on shorter info blocks. */}
+                                                                    <div className="flex items-center w-full min-h-4">
+                                                                        {stream.game_name && (
                                                                         <Tooltip content={stream.game_name} side="bottom">
                                                                             <button 
                                                                                 onClick={(e) => {
@@ -3517,6 +3522,7 @@ const Home = () => {
                                                                                 )}
                                                                             </button>
                                                                         </Tooltip>
+                                                                        )}
                                                                     </div>
                                                                 </div>
 
