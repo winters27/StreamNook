@@ -1,9 +1,9 @@
-// Run with: node --test src/utils/streamStats.test.ts
+// Run with: npm test
 //
 // The uptime clock feeds both the chat header and the Compact View chips, so a
 // mistake at the hour boundary or in the zero-padding is visible every second.
 
-import test from 'node:test';
+import { test } from 'vitest';
 import assert from 'node:assert/strict';
 
 import { formatViewerCount, formatUptimeClock } from './streamStats.ts';

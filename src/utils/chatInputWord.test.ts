@@ -1,10 +1,10 @@
-// Run with: node --test src/utils/chatInputWord.test.ts
+// Run with: npm test
 //
 // These rules decide what the spell checker is even allowed to look at. Get
 // them wrong in one direction and every emote in the composer turns red; get
 // them wrong in the other and real typos slip through unflagged.
 
-import test from 'node:test';
+import { test } from 'vitest';
 import assert from 'node:assert/strict';
 
 import {

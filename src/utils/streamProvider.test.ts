@@ -1,10 +1,10 @@
-// Run with: node --test src/utils/streamProvider.test.ts
+// Run with: npm test
 //
 // The "bare = twitch" convention is load-bearing: a Twitch row must keep
 // producing a BARE login key, because favorites, resume snapshots and chat
 // slices persisted before multi-platform browsing all store bare logins.
 
-import test from 'node:test';
+import { test } from 'vitest';
 import assert from 'node:assert/strict';
 
 import { streamProvider, streamKey, streamThumbnail, buildProviderUrl } from './streamProvider.ts';

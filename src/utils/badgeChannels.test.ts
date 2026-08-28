@@ -1,10 +1,10 @@
-// Run with: node --test src/utils/badgeChannels.test.ts
+// Run with: npm test
 //
 // Every input below is copied from a real badge's earn text. The possessive
 // case matters most: the previous pattern only accepted a straight apostrophe,
 // while 126 badges in the catalogue use the curly one, so it never matched.
 
-import test from 'node:test';
+import { test } from 'vitest';
 import assert from 'node:assert/strict';
 
 import { extractChannelLogins } from './badgeChannels.ts';
