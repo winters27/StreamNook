@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo, useRef, useCallback, useSyncExternalStore } from 'react';
-import { MessageCircle, UserPlus, UserMinus, Loader2, ChevronDown, ChevronUp, Pencil, X, Gift, Share2, Check } from 'lucide-react';
+import { MessageCircle, UserPlus, UserMinus, Loader2, ChevronDown, ChevronUp, Pencil, X, Gift, Share2, Check, EyeOff } from 'lucide-react';
+import { isHiddenInScope, withHiddenUser } from '../utils/chatFilters';
 import { buildShareUrl } from '../utils/shareLink';
 import { providerLabel, type ProviderId } from '../types/providers';
 import { motion, AnimatePresence, useScroll, useTransform, useReducedMotion, useMotionValue, animate } from 'framer-motion';
@@ -545,6 +546,74 @@ const NicknameEditor: React.FC<NicknameEditorProps> = ({ userId, username, displ
           <span className="font-mono">{fallbackColor}<span className="text-textMuted/70 ml-1">(Twitch)</span></span>
         )}
       </div>
+    </div>
+  );
+};
+
+// Local chat filter controls: hide this user's messages in this channel or in
+// every channel. Purely local (nothing is sent to any platform); the gate runs
+// at chat-store ingest, so it applies to the widget, MultiChat panes and the
+// overlay feed alike. State reads live from settings so the buttons flip to
+// "Unhide" without reopening the card.
+const ChatFilterActions = ({
+  username,
+  displayName,
+  provider,
+  channel,
+}: {
+  username: string;
+  displayName: string;
+  provider: ProviderId;
+  channel: string;
+}) => {
+  const cf = useAppStore((s) => s.settings.chat_filters);
+  const scope = channel ? ({ provider, channel } as const) : null;
+  const hiddenHere = scope ? isHiddenInScope(cf, username, scope) : false;
+  const hiddenGlobal = isHiddenInScope(cf, username, 'global');
+  const toggle = (target: 'channel' | 'global') => {
+    const st = useAppStore.getState();
+    const next = withHiddenUser(
+      st.settings.chat_filters,
+      username,
+      target === 'global' ? 'global' : scope!,
+      target === 'global' ? !hiddenGlobal : !hiddenHere,
+    );
+    st.updateSettings({ ...st.settings, chat_filters: next });
+  };
+  return (
+    <div className="pt-3 border-t border-borderSubtle">
+      <div className="flex items-center gap-1.5 mb-2.5">
+        <EyeOff size={13} className="text-textSecondary" />
+        <span className="text-[10px] uppercase font-bold text-textSecondary tracking-wider">Chat Filters</span>
+      </div>
+      <div className="grid grid-cols-2 gap-2">
+        <Tooltip content={`Only affects your own chat, only in this channel`} side="top">
+          <button
+            onClick={() => scope && toggle('channel')}
+            disabled={!scope}
+            className={`w-full py-1.5 glass-button text-xs font-semibold rounded flex items-center justify-center transition-colors border disabled:opacity-40 ${
+              hiddenHere ? 'text-white bg-accent/20 border-accent/30' : 'text-white/70 hover:text-white'
+            }`}
+          >
+            {hiddenHere ? 'Unhide here' : 'Hide in this channel'}
+          </button>
+        </Tooltip>
+        <Tooltip content={`Only affects your own chat, in every channel`} side="top">
+          <button
+            onClick={() => toggle('global')}
+            className={`w-full py-1.5 glass-button text-xs font-semibold rounded flex items-center justify-center transition-colors border ${
+              hiddenGlobal ? 'text-white bg-accent/20 border-accent/30' : 'text-white/70 hover:text-white'
+            }`}
+          >
+            {hiddenGlobal ? 'Unhide everywhere' : 'Hide everywhere'}
+          </button>
+        </Tooltip>
+      </div>
+      {(hiddenHere || hiddenGlobal) && (
+        <p className="mt-2 text-[11px] text-textSecondary">
+          New messages from {displayName || username} won't appear in your chat.
+        </p>
+      )}
     </div>
   );
 };
@@ -2207,6 +2276,19 @@ const UserProfileCard = ({
               Show recent messages
             </button>
           </div>
+
+            {/* Chat filters: hide this user's messages locally, in this channel
+                or everywhere. Available to every viewer (not a mod action, and
+                nothing is sent to the platform); hidden for your own card since
+                own messages are exempt at ingest anyway. */}
+            {!targetIsSelf && username && (
+              <ChatFilterActions
+                username={username}
+                displayName={displayName}
+                provider={provider ?? 'twitch'}
+                channel={getChannelContext().channelName || ''}
+              />
+            )}
 
             {/* YouTube mod zone. Addressed by CHANNEL IDENTIFIER (what channel_meta
                 is keyed by, i.e. propChannelName / user_login) and the chatter's

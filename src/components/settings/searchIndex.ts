@@ -698,6 +698,27 @@ export const SETTINGS_INDEX: SettingsIndexEntry[] = [
   },
   {
     tab: 'Chat',
+    section: 'Hidden Users & Bots',
+    sectionId: 'settings-section-chat-filters',
+    title: 'Hide known bots',
+    description: 'Hide chat messages from StreamElements, Nightbot, Moobot and other well-known bots in every channel. Local only; nothing is sent to the platform.'
+  },
+  {
+    tab: 'Chat',
+    section: 'Hidden Users & Bots',
+    sectionId: 'settings-section-chat-filters',
+    title: 'Hidden everywhere',
+    description: 'Users whose messages never appear in your chat, on any platform. Add names here or from a user card in chat.'
+  },
+  {
+    tab: 'Chat',
+    section: 'Hidden Users & Bots',
+    sectionId: 'settings-section-chat-filters',
+    title: 'Hidden in one channel',
+    description: 'Users hidden only in a single channel, added from their user card while watching. Remove a name to see their messages again.'
+  },
+  {
+    tab: 'Chat',
     section: 'Repeated Messages',
     sectionId: 'settings-section-repeated-messages',
     title: 'When a message repeats',

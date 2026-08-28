@@ -723,6 +723,19 @@ export interface MessageRepeatSettings {
   keep_all_when_moderator?: boolean;
 }
 
+// Hiding chat from chosen users and known bots. Names match the stream
+// overlay's blocklist dialect: case-insensitive, leading @ stripped, matched
+// against login OR display name. Per-channel keys are composite provider keys
+// (`makeKey`, e.g. `twitch:xqc`); utils/chatFilters.ts owns the matching.
+export interface ChatFilterSettings {
+  // Hide well-known bots (StreamElements, Nightbot, ...) in every channel.
+  hide_bots?: boolean;
+  // Hidden everywhere, on every platform.
+  hidden_users?: string[];
+  // Hidden only in one channel: composite channel key -> names.
+  per_channel?: Record<string, string[]>;
+}
+
 // Which rows the chat user card shows. Everything defaults to on, so a user
 // who never opens this sees the card exactly as it has always looked.
 export interface UserCardSettings {
@@ -825,6 +838,9 @@ export interface Settings {
   user_card?: UserCardSettings;
   // Folding runs of the same message into one row with a count.
   message_repeat?: MessageRepeatSettings;
+  // Hiding chat from chosen users and known bots, per channel or everywhere.
+  // Only the frontend reads it, so it rides Rust's `extra` catch-all.
+  chat_filters?: ChatFilterSettings;
   // Last 10 polls and predictions you started, newest first, so running the
   // same one again is two clicks in the composer.
   recent_polls?: RecentPollEntry[];

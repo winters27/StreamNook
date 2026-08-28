@@ -7,6 +7,7 @@
 // so what a streamer sees while editing is exactly what viewers get.
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { KNOWN_BOTS, isChatBotBadge } from '../../utils/knownBots';
 import type { CSSProperties, HTMLAttributeReferrerPolicy, ReactNode } from 'react';
 import { Gift, Star, Users, Megaphone, DollarSign, Flame, Heart } from 'lucide-react';
 import { computePaintStyle } from '../../services/paintStyle';
@@ -403,32 +404,8 @@ const SourceTag = ({ provider, mode }: { provider: ProviderId; mode: OverlayStyl
   );
 };
 
-// Known chat bots (lowercased logins), hidden when "Hide bots" is on. The bot
-// BADGE below catches the rest — this list only needs the well-known bots that
-// don't carry one.
-const KNOWN_BOTS = new Set([
-  'nightbot', 'streamelements', 'streamlabs', 'moobot', 'fossabot', 'wizebot',
-  'sery_bot', 'commanderroot', 'soundtrackbot', 'streamlootsbot', 'pretzelrocks',
-  'tangiabot', 'blerp', 'kofistreambot', 'own3d', 'botrixoficial', 'coebot',
-  'phantombot', 'thepositivebot', 'streamstickers', 'lattemotte',
-  'restreambot', 'supibot', 'anotherttvviewer', 'streamdatabase', 'streamdbbot',
-  // Command/utility bots that carry NO bot badge in the chat data (their "Chat Bot"
-  // badge is Twitch web-client chrome, not sent over IRC), so only a name catches them.
-  'potatbotat', 'pajbot', 'titlechange_bot', 'buttsbot', 'snusbot', 'deepbot',
-  'ankhbot', 'vivbot', 'revlobot', 'dixperbro', 'botisimo', 'mikuia', 'wzbot',
-  'own3dpro_bot', 'playwithviewersbot', 'thepixelbot', 'cloudbot', '9gag',
-]);
-
-// A bot badge. FrankerFaceZ (badge id 2), Chatterino, and Homies all label bot
-// accounts with a badge titled exactly "Bot"; some Twitch/other sets say "Chat
-// Bot". Match either, exact (not substring) so cosmetics like "Robot" or "Botany"
-// don't trip it. This is the signal that catches channel-specific custom bots that
-// aren't in KNOWN_BOTS above — the same badge the app resolves, so the hosted
-// overlay and the in-app preview filter identically.
-const isChatBotBadge = (s?: string): boolean => {
-  const v = (s || '').trim().toLowerCase();
-  return v === 'bot' || v === 'chat bot';
-};
+// Known-bot list and the bot-badge check are shared with the chat widget's
+// chat filters (utils/knownBots.ts) so both surfaces agree on what a bot is.
 
 const isBotMessage = (m: OverlayMessage): boolean => {
   if (KNOWN_BOTS.has((m.username || '').toLowerCase())) return true;

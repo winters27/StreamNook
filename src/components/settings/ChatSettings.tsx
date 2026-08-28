@@ -23,7 +23,11 @@ import type {
   RepeatDisplayMode,
   RepeatMatchMode,
   YouTubeChatView,
+  ChatFilterSettings,
 } from '../../types';
+import { withHiddenUser } from '../../utils/chatFilters';
+import { parseKey } from '../../utils/providerKey';
+import type { ProviderId } from '../../types/providers';
 
 // Muted grey, so the counter reads as chrome rather than competing with the
 // message. Matches --color-text-secondary in the default theme.
@@ -265,6 +269,56 @@ const TrustedSourcesEditor = ({
 // `hidePlacement` drops the Chat Placement section — it positions the MAIN app's
 // chat (left/right/bottom/hidden), which is meaningless in the MultiChat window's
 // own settings.
+// Small add/remove name list for the chat filters. Mirrors the overlay's
+// blocklist editor: type a name, Enter or Add commits it; chips remove.
+const HiddenNameEditor = ({
+  names,
+  onAdd,
+  onRemove,
+}: {
+  names: string[];
+  onAdd: (name: string) => void;
+  onRemove: (name: string) => void;
+}) => {
+  const [val, setVal] = useState('');
+  const add = () => {
+    const n = val.trim();
+    if (n) {
+      onAdd(n);
+      setVal('');
+    }
+  };
+  return (
+    <div className="flex flex-col gap-2 w-full max-w-sm">
+      <div className="flex gap-2">
+        <input
+          value={val}
+          onChange={(e) => setVal(e.target.value)}
+          onKeyDown={(e) => { if (e.key === 'Enter') add(); }}
+          placeholder="Add a username"
+          className="flex-1 bg-surface border border-borderSubtle rounded px-2.5 py-1.5 text-sm text-textPrimary placeholder:text-textMuted focus:outline-none focus:border-accent"
+        />
+        <button
+          onClick={add}
+          className="px-3 py-1.5 text-sm rounded bg-surface hover:bg-surface-hover text-textPrimary border border-borderSubtle"
+        >
+          Add
+        </button>
+      </div>
+      {names.length > 0 && (
+        <div className="flex flex-wrap gap-1.5">
+          {names.map((n) => (
+            <span key={n} className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-surface text-xs text-textPrimary">
+              {n}
+              <button aria-label={`Unhide ${n}`} className="text-textSecondary hover:text-error" onClick={() => onRemove(n)}>×</button>
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+};
+
 const ChatSettings = ({ hidePlacement = false }: { hidePlacement?: boolean } = {}) => {
   const { settings, updateSettings } = useAppStore();
 
@@ -323,6 +377,27 @@ const ChatSettings = ({ hidePlacement = false }: { hidePlacement?: boolean } = {
       ...settings,
       message_repeat: { ...settings.message_repeat, ...patch },
     });
+
+  const cfs = settings.chat_filters;
+  const setChatFilters = (patch: Partial<ChatFilterSettings>) =>
+    updateSettings({
+      ...settings,
+      chat_filters: { ...settings.chat_filters, ...patch },
+    });
+  const setHidden = (name: string, scope: { provider: ProviderId; channel: string } | 'global', hidden: boolean) =>
+    updateSettings({
+      ...settings,
+      chat_filters: withHiddenUser(settings.chat_filters, name, scope, hidden),
+    });
+  // Per-channel entries flattened for display: [channelKey, label, names].
+  const perChannelHidden = Object.entries(cfs?.per_channel ?? {})
+    .map(([key, names]) => {
+      const pk = parseKey(key);
+      const label = pk.provider === 'twitch' ? pk.channel : `${pk.channel} (${pk.provider})`;
+      return { key, pk, label, names: names ?? [] };
+    })
+    .filter((e) => e.names.length > 0)
+    .sort((a, b) => a.label.localeCompare(b.label));
 
   const setUserCard = (patch: Partial<UserCardSettings>) =>
     updateSettings({
@@ -1299,6 +1374,58 @@ const ChatSettings = ({ hidePlacement = false }: { hidePlacement?: boolean } = {
               }
             />
           </>
+        )}
+      </SettingsSection>
+
+      <SettingsSection
+        id="settings-section-chat-filters"
+        label="Hidden Users & Bots"
+        description="Stop chosen users' messages from reaching your chat, in one channel or everywhere. Only affects what you see; nothing is sent to the platform, and your own messages are never hidden."
+      >
+        <SettingsRow
+          title="Hide known bots"
+          description="StreamElements, Nightbot, Moobot and the other well-known chat bots, in every channel."
+        >
+          <Toggle
+            enabled={cfs?.hide_bots ?? false}
+            onChange={() => setChatFilters({ hide_bots: !(cfs?.hide_bots ?? false) })}
+          />
+        </SettingsRow>
+        <SettingsRow
+          title="Hidden everywhere"
+          description="Messages from these names never appear, on any platform. Add someone here, or from their user card in chat."
+        >
+          <HiddenNameEditor
+            names={cfs?.hidden_users ?? []}
+            onAdd={(n) => setHidden(n, 'global', true)}
+            onRemove={(n) => setHidden(n, 'global', false)}
+          />
+        </SettingsRow>
+        {perChannelHidden.length > 0 && (
+          <SettingsRow
+            title="Hidden in one channel"
+            description="Added from user cards while watching. Removing a name shows their messages again in that channel."
+          >
+            <div className="flex flex-col gap-2 w-full">
+              {perChannelHidden.map((entry) => (
+                <div key={entry.key} className="flex flex-wrap items-center gap-1.5">
+                  <span className="text-xs font-semibold text-textSecondary min-w-24">{entry.label}</span>
+                  {entry.names.map((n) => (
+                    <span key={n} className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-surface text-xs text-textPrimary">
+                      {n}
+                      <button
+                        aria-label={`Unhide ${n} in ${entry.label}`}
+                        className="text-textSecondary hover:text-error"
+                        onClick={() => setHidden(n, { provider: entry.pk.provider, channel: entry.pk.channel }, false)}
+                      >
+                        ×
+                      </button>
+                    </span>
+                  ))}
+                </div>
+              ))}
+            </div>
+          </SettingsRow>
         )}
       </SettingsSection>
 
