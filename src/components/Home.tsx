@@ -3570,7 +3570,7 @@ const Home = () => {
                                                                 {isUnifiedView && (
                                                                     <Tooltip content={providerLabel(streamProvider(stream))} side="top">
                                                                         <span className="flex flex-shrink-0 items-center pb-1 pl-1 opacity-80">
-                                                                            <ProviderLogo provider={streamProvider(stream)} size={13} />
+                                                                            <ProviderLogo provider={streamProvider(stream)} size={13} opticalAlign="ink-bottom" />
                                                                         </span>
                                                                     </Tooltip>
                                                                 )}
