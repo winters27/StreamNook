@@ -42,6 +42,10 @@ import type { SongMatch } from '../utils/songId';
 const CHAT_HISTORY_MAX = 100;
 const CHAT_BUFFER_SIZE = 150; // extra slack while a channel is paused (scrolled up)
 const CHAT_MAX_WITH_BUFFER = CHAT_HISTORY_MAX + CHAT_BUFFER_SIZE;
+/** How many rows of paused-overflow scrollback each flush retires after a
+ *  resume. Gentle on purpose: rows leave from the top while the user sits at
+ *  the bottom, so the drain is invisible; one hard trim on resume was not. */
+const RESUME_DECAY_PER_FLUSH = 5;
 
 // Reconnection is UNBOUNDED by design: a capped ladder ended in a permanent
 // dead state for anyone with a flaky connection. This only controls wording —
@@ -733,7 +737,15 @@ function flushPending(): void {
     const slice = state.channels.get(key);
     if (!slice) continue;
     const historyMax = getActiveHistoryMax();
-    const limit = slice.isPausedForBuffer ? historyMax + CHAT_BUFFER_SIZE : historyMax;
+    // After a resume the buffer can still hold up to CHAT_BUFFER_SIZE rows of
+    // paused overflow. Never cut it to historyMax in one step (that deletes
+    // scrollback the user just read mid-glide, a visible jump); instead let the
+    // overflow decay a few rows per flush from the top, invisible from the
+    // bottom the user resumed to. setChannelPaused leaves the trim entirely to
+    // this path.
+    const limit = slice.isPausedForBuffer
+      ? historyMax + CHAT_BUFFER_SIZE
+      : Math.max(historyMax, slice.messages.length - RESUME_DECAY_PER_FLUSH);
     // Push everything received this frame, then trim event-aware so a burst can't
     // evict recent subs/redemptions/raids from the shared buffer. liveMessageCount
     // still counts every message (drives the accurate "N new since paused" badge).
@@ -3049,10 +3061,10 @@ export function injectRedemptionMessage(
 export function setChannelPaused(channel: string, paused: boolean): void {
   withSlice(channel, (slice) => {
     slice.isPausedForBuffer = paused;
-    const historyMax = getActiveHistoryMax();
-    if (!paused && slice.messages.length > historyMax) {
-      slice.messages = trimWithEventRetention(slice.messages, historyMax);
-    }
+    // No trim here: cutting the paused overflow to historyMax in one step
+    // deleted up to CHAT_BUFFER_SIZE rows the user had scrolled up to read,
+    // the moment they resumed. flushPending decays the overflow gradually
+    // (RESUME_DECAY_PER_FLUSH rows per flush, from the top) instead.
   });
 }
 
