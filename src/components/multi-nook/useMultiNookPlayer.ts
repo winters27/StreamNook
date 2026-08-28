@@ -1,7 +1,12 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import Hls from 'hls.js';
 import Plyr from 'plyr';
-import 'plyr/dist/plyr.css';
+// Plyr's stylesheet ships ONCE, from globals.css, and its position there is
+// load-bearing: the app's `.video-player-container` overrides beat Plyr's own
+// selectors on equal specificity by SOURCE ORDER. A second copy here rode the
+// lazy MultiNook chunk, which loads after globals, so vendor styling won on
+// every tile (the control bar reverted to Plyr's gradient plus a 35px top pad,
+// and the range tracks brightened). See the note at the top of globals.css.
 import { usemultiNookStore } from '../../stores/multiNookStore';
 import { useAppStore } from '../../stores/AppStore';
 import { Logger } from '../../utils/logger';
