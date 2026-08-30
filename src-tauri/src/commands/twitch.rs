@@ -1275,6 +1275,24 @@ pub async fn get_all_followed_channels(
         .map_err(|e| e.to_string())
 }
 
+/// Live status for channels you don't necessarily follow, which is what
+/// favourites need. See `TwitchService::get_streams_by_user_ids`.
+#[tauri::command]
+pub async fn get_streams_by_user_ids(user_ids: Vec<String>) -> Result<Vec<TwitchStream>, String> {
+    TwitchService::get_streams_by_user_ids(&user_ids)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// `user_id -> [login, display_name, avatar]` for a batch of users. Backs the
+/// one-time identity back-fill for favourites saved as bare ids.
+#[tauri::command]
+pub async fn get_users_by_ids(
+    user_ids: Vec<String>,
+) -> Result<std::collections::HashMap<String, (String, String, Option<String>)>, String> {
+    Ok(TwitchService::users_by_ids(&user_ids).await)
+}
+
 #[tauri::command]
 pub async fn get_offline_last_broadcasts(
     user_ids: Vec<String>,

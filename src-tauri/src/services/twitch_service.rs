@@ -2312,73 +2312,81 @@ impl TwitchService {
 
                 // Fetch actual stream data to get viewer counts and accurate info
                 if !user_ids.is_empty() {
-                    let user_ids_param = user_ids
-                        .iter()
-                        .map(|id| format!("user_id={}", id))
-                        .collect::<Vec<_>>()
-                        .join("&");
+                    // Map of user_id -> live stream data, filled across chunks.
+                    let mut stream_data_map: std::collections::HashMap<String, serde_json::Value> =
+                        std::collections::HashMap::new();
 
-                    let streams_url =
-                        format!("https://api.twitch.tv/helix/streams?{}", user_ids_param);
+                    // Helix takes at most 100 `user_id` params per call, and defaults
+                    // `first` to 20. Without it a fully-live page of search results
+                    // would only enrich its first 20 rows.
+                    for chunk in user_ids.chunks(100) {
+                        let user_ids_param = chunk
+                            .iter()
+                            .map(|id| format!("user_id={}", id))
+                            .collect::<Vec<_>>()
+                            .join("&");
 
-                    let mut streams_request =
-                        client.get(&streams_url).header("Client-Id", CLIENT_ID);
+                        let streams_url = format!(
+                            "https://api.twitch.tv/helix/streams?{}&first=100",
+                            user_ids_param
+                        );
 
-                    if let Some(token) = &token {
-                        streams_request =
-                            streams_request.header(AUTHORIZATION, format!("Bearer {}", token));
+                        let mut streams_request =
+                            client.get(&streams_url).header("Client-Id", CLIENT_ID);
+
+                        if let Some(token) = &token {
+                            streams_request =
+                                streams_request.header(AUTHORIZATION, format!("Bearer {}", token));
+                        }
+
+                        if let Ok(streams_response) = streams_request.send().await {
+                            if let Ok(streams_json) =
+                                streams_response.json::<serde_json::Value>().await
+                            {
+                                if let Some(streams_data) =
+                                    streams_json.get("data").and_then(|d| d.as_array())
+                                {
+                                    for stream_data in streams_data {
+                                        if let Some(uid) =
+                                            stream_data.get("user_id").and_then(|v| v.as_str())
+                                        {
+                                            stream_data_map
+                                                .insert(uid.to_string(), stream_data.clone());
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
 
-                    if let Ok(streams_response) = streams_request.send().await {
-                        if let Ok(streams_json) = streams_response.json::<serde_json::Value>().await
-                        {
-                            if let Some(streams_data) =
-                                streams_json.get("data").and_then(|d| d.as_array())
+                    // Update our streams with actual stream data
+                    for stream in &mut streams {
+                        if let Some(stream_data) = stream_data_map.get(&stream.user_id) {
+                            // Update viewer count
+                            if let Some(viewer_count) =
+                                stream_data.get("viewer_count").and_then(|v| v.as_u64())
                             {
-                                // Create a map of user_id -> stream data
-                                let mut stream_data_map = std::collections::HashMap::new();
-                                for stream_data in streams_data {
-                                    if let Some(uid) =
-                                        stream_data.get("user_id").and_then(|v| v.as_str())
-                                    {
-                                        stream_data_map.insert(uid.to_string(), stream_data);
-                                    }
-                                }
+                                stream.viewer_count = viewer_count as u32;
+                            }
 
-                                // Update our streams with actual stream data
-                                for stream in &mut streams {
-                                    if let Some(stream_data) = stream_data_map.get(&stream.user_id)
-                                    {
-                                        // Update viewer count
-                                        if let Some(viewer_count) =
-                                            stream_data.get("viewer_count").and_then(|v| v.as_u64())
-                                        {
-                                            stream.viewer_count = viewer_count as u32;
-                                        }
+                            // Update stream ID (actual stream_id, not user_id)
+                            if let Some(stream_id) = stream_data.get("id").and_then(|v| v.as_str())
+                            {
+                                stream.id = stream_id.to_string();
+                            }
 
-                                        // Update stream ID (actual stream_id, not user_id)
-                                        if let Some(stream_id) =
-                                            stream_data.get("id").and_then(|v| v.as_str())
-                                        {
-                                            stream.id = stream_id.to_string();
-                                        }
+                            // Update thumbnail URL with actual stream thumbnail
+                            if let Some(thumbnail) =
+                                stream_data.get("thumbnail_url").and_then(|v| v.as_str())
+                            {
+                                stream.thumbnail_url = thumbnail.to_string();
+                            }
 
-                                        // Update thumbnail URL with actual stream thumbnail
-                                        if let Some(thumbnail) = stream_data
-                                            .get("thumbnail_url")
-                                            .and_then(|v| v.as_str())
-                                        {
-                                            stream.thumbnail_url = thumbnail.to_string();
-                                        }
-
-                                        // Update started_at if available
-                                        if let Some(started_at) =
-                                            stream_data.get("started_at").and_then(|v| v.as_str())
-                                        {
-                                            stream.started_at = started_at.to_string();
-                                        }
-                                    }
-                                }
+                            // Update started_at if available
+                            if let Some(started_at) =
+                                stream_data.get("started_at").and_then(|v| v.as_str())
+                            {
+                                stream.started_at = started_at.to_string();
                             }
                         }
                     }
@@ -4548,6 +4556,171 @@ impl TwitchService {
         }
 
         Ok(())
+    }
+
+    /// Live status for an arbitrary set of channels, by numeric user id.
+    ///
+    /// This is what makes a FAVOURITE work when you don't follow the channel:
+    /// `get_followed_streams` only ever answers for your follow list, so a
+    /// favourite outside it is invisible without this.
+    ///
+    /// Helix facts this depends on (dev.twitch.tv, verified 2026-08-27):
+    ///   - up to 100 `user_id` values per request, hence the chunking;
+    ///   - **`first` defaults to 20**, so a 100-id request WITHOUT `first=100`
+    ///     answers for only 20 of them and the rest read as offline;
+    ///   - offline channels are simply absent from the response, so every row
+    ///     that comes back is live;
+    ///   - an app OR user token is required. There is no client-credentials
+    ///     path here (see `get_token`), so signed out this returns an error
+    ///     rather than pretending nobody is live.
+    ///
+    /// A failing chunk warns and is skipped rather than failing the whole call:
+    /// partial liveness beats none, and the next sweep retries anyway.
+    pub async fn get_streams_by_user_ids(user_ids: &[String]) -> Result<Vec<TwitchStream>> {
+        if user_ids.is_empty() {
+            return Ok(vec![]);
+        }
+
+        let token = Self::get_token().await?;
+        let client = crate::services::http::client().clone();
+        let mut out: Vec<TwitchStream> = Vec::new();
+
+        for chunk in user_ids.chunks(100) {
+            let query = chunk
+                .iter()
+                .map(|id| format!("user_id={}", id))
+                .collect::<Vec<_>>()
+                .join("&");
+            // `first=100` is load-bearing, not decoration. See the note above.
+            let url = format!("https://api.twitch.tv/helix/streams?{}&first=100", query);
+
+            let response = match client
+                .get(&url)
+                .header("Client-Id", CLIENT_ID)
+                .header(AUTHORIZATION, format!("Bearer {}", token))
+                .send()
+                .await
+            {
+                Ok(r) => r,
+                Err(e) => {
+                    warn!("[TwitchService] get_streams_by_user_ids request failed: {}", e);
+                    continue;
+                }
+            };
+
+            if !response.status().is_success() {
+                let status = response.status();
+                let body = response.text().await.unwrap_or_default();
+                warn!(
+                    "[TwitchService] get_streams_by_user_ids non-success {}: {}",
+                    status, body
+                );
+                continue;
+            }
+
+            let json = match response.json::<serde_json::Value>().await {
+                Ok(j) => j,
+                Err(e) => {
+                    warn!("[TwitchService] get_streams_by_user_ids bad JSON: {}", e);
+                    continue;
+                }
+            };
+
+            let Some(arr) = json.get("data").and_then(|d| d.as_array()) else {
+                continue;
+            };
+
+            match serde_json::from_value::<Vec<TwitchStream>>(serde_json::Value::Array(
+                arr.clone(),
+            )) {
+                Ok(mut streams) => {
+                    // Helix omits offline channels entirely, so everything here
+                    // is live. Stamp it: the frontend lists filter on `is_live`,
+                    // and Helix doesn't ship the field.
+                    for s in &mut streams {
+                        s.is_live = Some(true);
+                    }
+                    out.append(&mut streams);
+                }
+                Err(e) => warn!(
+                    "[TwitchService] get_streams_by_user_ids failed to parse rows: {}",
+                    e
+                ),
+            }
+        }
+
+        Ok(out)
+    }
+
+    /// `user_id -> (login, display name, avatar)` for a batch of Twitch users.
+    ///
+    /// Used to back-fill identity for favourites saved before the identity
+    /// sidecar existed: those are bare ids, and without a name and a face they
+    /// can't be drawn in the offline roster at all.
+    pub async fn users_by_ids(
+        ids: &[String],
+    ) -> std::collections::HashMap<String, (String, String, Option<String>)> {
+        let mut out = std::collections::HashMap::new();
+        if ids.is_empty() {
+            return out;
+        }
+
+        let Ok(token) = Self::get_token().await else {
+            return out;
+        };
+        let client = crate::services::http::client().clone();
+
+        for chunk in ids.chunks(100) {
+            let query = chunk
+                .iter()
+                .map(|id| format!("id={}", id))
+                .collect::<Vec<_>>()
+                .join("&");
+            let url = format!("https://api.twitch.tv/helix/users?{}", query);
+
+            let Ok(response) = client
+                .get(&url)
+                .header("Client-Id", CLIENT_ID)
+                .header(AUTHORIZATION, format!("Bearer {}", token))
+                .send()
+                .await
+            else {
+                continue;
+            };
+            if !response.status().is_success() {
+                continue;
+            }
+            let Ok(json) = response.json::<serde_json::Value>().await else {
+                continue;
+            };
+            let Some(arr) = json.get("data").and_then(|d| d.as_array()) else {
+                continue;
+            };
+            for user in arr {
+                let Some(id) = user.get("id").and_then(|v| v.as_str()) else {
+                    continue;
+                };
+                let login = user
+                    .get("login")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string();
+                let display = user
+                    .get("display_name")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or(&login)
+                    .to_string();
+                let avatar = user
+                    .get("profile_image_url")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.to_string());
+                out.insert(id.to_string(), (login, display, avatar));
+            }
+        }
+
+        out
     }
 
     /// Get User Chat Color for a batch of users, returning `user_id -> hex color`.
