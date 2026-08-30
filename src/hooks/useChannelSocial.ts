@@ -6,11 +6,18 @@ import { streamProvider, followIdentifier } from '../utils/streamProvider';
 import { useFollowsStore } from '../stores/followsStore';
 import { useChatConnectionStore } from '../stores/chatConnectionStore';
 import { makeKey } from '../utils/providerKey';
+import type { ProviderId } from '../types/providers';
 
 interface ChannelSocialTarget {
-  /** Twitch broadcaster id of the channel. */
+  /** Which platform this channel is on. Pass it whenever the channel is NOT the
+   *  app's current solo stream, which is any MultiNook tile: without it the hook
+   *  falls back to `currentStream`'s platform and a Twitch tile can show, and
+   *  write, a Kick channel's follow state. Absent means "use currentStream",
+   *  preserving the solo player's behaviour exactly. */
+  provider?: ProviderId;
+  /** Broadcaster id of the channel on `provider`. */
   userId?: string | null;
-  /** Twitch login (lowercase handle) of the channel. */
+  /** Login / slug / handle of the channel on `provider`. */
   userLogin?: string | null;
   /** Display name of the channel (for window titles / tooltips). */
   userName?: string | null;
@@ -24,20 +31,26 @@ interface ChannelSocialTarget {
  *  Extracted from the single-stream player so the same controls can back both
  *  the main VideoPlayer overlay and the focused MultiNook tile without
  *  duplicating the follow-status / subscription / subscribe-window logic. */
-export function useChannelSocial({ userId, userLogin, userName, enabled = true }: ChannelSocialTarget) {
+export function useChannelSocial({ provider: providerProp, userId, userLogin, userName, enabled = true }: ChannelSocialTarget) {
   const currentUser = useAppStore((s) => s.currentUser);
 
   // Which platform this channel is on, and (for the non-Twitch ones) the app's own
   // follow list, which is what a provider follow reads and writes.
   const currentStream = useAppStore((s) => s.currentStream);
-  const provider = streamProvider(currentStream);
+  // An explicit provider always wins: the caller knows which channel this is,
+  // where currentStream only describes the solo player.
+  const provider = providerProp ?? streamProvider(currentStream);
   const isTwitch = provider === 'twitch';
   const providerFollows = useFollowsStore((s) => s.follows);
   // Keyed by CHANNEL, not broadcast — see `followIdentifier`. Shared with the
   // Home grid's heart so the two surfaces cannot disagree about what "follow
   // this" means; they previously did, and the heart was wrong as a result.
+  // With an explicit provider the caller's own login is the identifier; only the
+  // currentStream-derived path needs followIdentifier to unpick a broadcast.
   const providerChannel: string =
-    !isTwitch && currentStream ? followIdentifier(currentStream) : (userLogin ?? '');
+    !isTwitch && !providerProp && currentStream
+      ? followIdentifier(currentStream)
+      : (userLogin ?? '');
 
   // Follow state
   const [isFollowing, setIsFollowing] = useState<boolean | null>(null);

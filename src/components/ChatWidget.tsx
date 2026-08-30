@@ -850,7 +850,13 @@ const ChatWidget = ({ channelOverride, hypeTrainOverride }: ChatWidgetProps = {}
       } as TwitchStream;
     }
     if (isMultiNookActive && activeChatChannelId) {
-      const activeSlot = slots.find(s => s.channelId === activeChatChannelId || s.channelLogin === activeChatChannelId);
+      // activeChatChannelId is a composite provider key (makeKey convention;
+      // absent slot provider means Twitch). A login-only match is ambiguous
+      // once a grid can hold two platforms: a Kick and a Twitch tile can share
+      // a login, and first-match would synthesize the wrong tile's identity.
+      const activeSlot = slots.find(
+        (s) => makeKey(s.provider ?? 'twitch', s.channelLogin) === activeChatChannelId,
+      );
       if (activeSlot) {
         return {
           id: activeSlot.channelId || activeSlot.id,
