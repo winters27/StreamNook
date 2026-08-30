@@ -5,14 +5,17 @@ import { useShallow } from 'zustand/react/shallow';
 import { useAppStore, type WhisperImportProgress, type SettingsTab } from './stores/AppStore';
 import { listenForSettingsUpdates } from './utils/settingsBroadcast';
 import { trackPresence, isSupabaseConfigured, incrementStat, incrementChannelWatch, subscribeToStreamNookRegistry, subscribeToCosmeticsRegistry, subscribeToAtmospheresRegistry, refreshEntitlementRegistries } from './services/supabaseService';
+import { primeClientConfig } from './services/clientConfig';
 import { maybeClaimWatchRewards } from './services/watchRewards';
 import TitleBar from './components/TitleBar';
 import DynamicIsland from './components/DynamicIsland';
 import ChannelAboutReveal from './components/ChannelAboutReveal';
 import ChatWidget from './components/ChatWidget';
 import MainProviderChat from './components/MainProviderChat';
+import { activeChatSlot } from './stores/multiNookStore';
 import { streamProvider } from './utils/streamProvider';
 import { useFollowsStore, type ProviderStreamRow } from './stores/followsStore';
+import { useFavoritesStore, type FavoriteStreamRow } from './stores/favoritesStore';
 import type { ProviderId } from './types/providers';
 import { ModLogsWidget } from './components/chat/ModLogsWidget';
 import Home from './components/Home';
@@ -149,6 +152,7 @@ function App() {
     void follows.hydrate();
     void follows.refreshLive();
     let unlistenLive: (() => void) | undefined;
+    let unlistenFavorites: (() => void) | undefined;
     let cancelled = false;
     // The stream we are WATCHING ended, reported the moment the backend learns
     // it rather than on the liveness poll's schedule. That poll needs two 60s
@@ -179,9 +183,26 @@ function App() {
       if (cancelled) u();
       else unlistenLive = u;
     });
+
+    // The same arrangement for FAVORITES, which are a separate watchlist: a
+    // favorite need not be followed anywhere, so neither the Twitch follow
+    // poller nor the provider one above can see it. The event carries the whole
+    // snapshot across every platform, so the store replaces its map wholesale.
+    void useFavoritesStore.getState().hydrate();
+    void listen<{ source: string; streams: FavoriteStreamRow[] }>(
+      'favorites-live-update',
+      (event) => {
+        useFavoritesStore.getState().setLive(event.payload.streams ?? []);
+      },
+    ).then((u) => {
+      if (cancelled) u();
+      else unlistenFavorites = u;
+    });
+
     return () => {
       cancelled = true;
       unlistenLive?.();
+      unlistenFavorites?.();
     };
   }, []);
   useEffect(() => {
@@ -279,6 +300,10 @@ function App() {
     return () => { if (chatRevealTimer.current) window.clearTimeout(chatRevealTimer.current); };
   }, [autoHideActive]);
   const isMultiNookActive = usemultiNookStore((s) => s.isMultiNookActive);
+  // Which tile the grid's chat pane is showing. Only read to decide WHICH chat
+  // surface renders; ChatWidget still synthesizes the Twitch case itself.
+  const multiNookSlots = usemultiNookStore((s) => s.slots);
+  const activeChatChannelId = usemultiNookStore((s) => s.activeChatChannelId);
   const isChatHidden = usemultiNookStore((s) => s.isChatHidden);
   const slots = usemultiNookStore((s) => s.slots);
   const visibleSlotsLength = slots.filter((s) => !s.isMinimized).length;
@@ -669,6 +694,11 @@ function App() {
     let onFocus: (() => void) | null = null;
 
     const cancel = afterBoot(5000, () => {
+      // Warm the server-controlled switches before the first privileged write, so
+      // a login-time write does not pay the manifest fetch (and does not fall
+      // back to the legacy path just because the config had not landed yet).
+      primeClientConfig();
+
       cleanupRegistry = subscribeToStreamNookRegistry();
       cleanupCosmetics = subscribeToCosmeticsRegistry();
       cleanupAtmospheres = subscribeToAtmospheresRegistry();
@@ -1770,8 +1800,31 @@ function App() {
   // The chat pane, rendered identically at both docked layouts below. A
   // non-Twitch stream routes through MainProviderChat, which feeds ChatWidget
   // the same `channelOverride` seam MultiChat panes already use.
+  //
+  // MultiNook is the second caller: its active chat can be ANY tile, so the
+  // provider comes from that slot rather than from `currentStream` (which still
+  // describes whatever the solo player last had). Routing here, rather than
+  // teaching ChatWidget about providers, is deliberate: a channelOverride inside
+  // ChatWidget's MultiNook branch would also flip its hype-train source, its
+  // VOD-replay gate and its popout header bits, none of which a grid tile wants.
+  const activeTile = isMultiNookActive
+    ? activeChatSlot(multiNookSlots, activeChatChannelId)
+    : null;
+  const activeTileProvider = activeTile?.provider ?? 'twitch';
   const chatPane =
-    currentStream && streamProvider(currentStream) !== 'twitch' ? (
+    activeTile && activeTileProvider !== 'twitch' ? (
+      <MainProviderChat
+        provider={activeTileProvider}
+        channel={activeTile.channelLogin}
+        details={{
+          user_id: activeTile.channelId,
+          user_name: activeTile.channelName,
+          title: activeTile.title,
+          profile_image_url: activeTile.profileImageUrl,
+          game_name: activeTile.gameName,
+        }}
+      />
+    ) : currentStream && streamProvider(currentStream) !== 'twitch' ? (
       <MainProviderChat
         provider={streamProvider(currentStream)}
         channel={currentStream.user_login}
