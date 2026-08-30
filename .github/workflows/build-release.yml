@@ -401,10 +401,23 @@ jobs:
           # must not happen until releases here are reliably signed.
           $signature = $null
           if ($env:UPDATE_SIGNING_KEY) {
-            npm install -g minisign-cli 2>$null | Out-Null
+            # The official binary, pinned. `npm i -g minisign-cli` was a 404 (that
+            # package does not exist) and the `minisign` npm package exits 1 with
+            # no output, so both were silently doing nothing: the moment a signing
+            # key existed, the `throw` below would have failed every release build.
+            # Verified end to end locally against 0.12 before this was enabled.
+            $msVer = '0.12'
+            $msZip = "minisign-$msVer-win64.zip"
+            Invoke-WebRequest "https://github.com/jedisct1/minisign/releases/download/$msVer/$msZip" -OutFile $msZip -UseBasicParsing
+            Expand-Archive $msZip -DestinationPath ./minisign-bin -Force
+            # The archive carries both architectures; runners are x86_64.
+            $ms = (Get-ChildItem ./minisign-bin -Recurse -Filter minisign.exe |
+                   Where-Object { $_.FullName -match 'x86_64' } |
+                   Select-Object -First 1).FullName
+            if (-not $ms) { throw "minisign.exe (x86_64) not found in $msZip" }
             $env:UPDATE_SIGNING_KEY | Out-File -FilePath ./update.key -Encoding ascii -NoNewline
             try {
-              npx --yes minisign -S -s ./update.key -m "$bundleName" -x "$bundleName.minisig"
+              & $ms -S -s ./update.key -m "$bundleName" -x "$bundleName.minisig"
               if ($LASTEXITCODE -ne 0) { throw "minisign failed (exit $LASTEXITCODE)" }
               $signature = (Get-Content "$bundleName.minisig" -Raw).TrimEnd()
               Write-Host "Signed $bundleName"

@@ -179,12 +179,16 @@ struct UpdateManifest {
 /// plugin operator key in `plugin_host::install::OFFICIAL_INDEX`: compiled in,
 /// never fetched, so trust does not depend on the server being honest.
 ///
-/// `None` until the release key is generated. To enable:
-///   1. `minisign -G -p streamnook-update.pub -s streamnook-update.key`
-///   2. paste the SECOND line of the .pub file here
-///   3. add the secret key as the `UPDATE_SIGNING_KEY` CI secret; it must never
-///      be committed, and never live on the machine serving updates
-const UPDATE_PUBKEY: Option<&str> = None;
+/// Key `3C746A225DA1775E`, generated 2026-08-30. Its secret half exists only as
+/// the `UPDATE_SIGNING_KEY` CI secret and in Brandon's own backup; it has never
+/// been committed and must never reach the host serving updates.
+///
+/// Rotating means shipping a new value here, so every installed client keeps
+/// trusting the old key until it updates. That is survivable only while
+/// `ENFORCE_UPDATE_SIGNATURE` is false, which is the other reason not to flip
+/// that until signing has been proven across a release or two.
+const UPDATE_PUBKEY: Option<&str> =
+    Some("RWRed6FdImp0PGduGf4cCJdsO5sRuovojn1yv+FUgHJBJQVCT71Rv3+b");
 
 /// Whether a missing or unverifiable signature ABORTS the update.
 ///
