@@ -394,7 +394,12 @@ impl StreamSource for KickSource {
         }
     }
 
-    async fn resolve_playback(&self, channel: &str, quality: &str) -> Result<ResolvedPlayback> {
+    async fn resolve_playback(
+        &self,
+        _stream_id: &str,
+        channel: &str,
+        quality: &str,
+    ) -> Result<ResolvedPlayback> {
         let slug = channel.to_lowercase();
         let qualities = self.qualities_for(&slug, false).await?;
         let (idx, label) = hls_master::select(&qualities, quality)

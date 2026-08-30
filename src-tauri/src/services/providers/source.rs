@@ -70,7 +70,30 @@ pub trait StreamSource: Send + Sync {
     /// Resolve a channel to a playable URL at watch time. One call per watch is
     /// the budget for expensive paths (Kick's hidden-webview resolve); cache
     /// within the platform token/URL lifetime, never longer.
-    async fn resolve_playback(&self, channel: &str, quality: &str) -> Result<ResolvedPlayback>;
+    ///
+    /// `stream_id` names who this playback belongs to: the grid's cell id, or
+    /// `stream_server::SOLO_STREAM_ID` for the main player. Adapters that serve
+    /// through a per-stream local relay key their state on it; the rest ignore
+    /// it. Without it a second stream silently repoints the first one's relay.
+    async fn resolve_playback(
+        &self,
+        stream_id: &str,
+        channel: &str,
+        quality: &str,
+    ) -> Result<ResolvedPlayback>;
+
+    /// The quality menu WITHOUT starting playback.
+    ///
+    /// The default resolves and throws the url away, which is what every caller
+    /// did before this existed. YouTube overrides it because resolving there
+    /// STARTS a local relay session: enumerating the menu used to restart
+    /// playback on the tallest rendition underneath a stream that was already
+    /// running.
+    async fn qualities(&self, channel: &str) -> Result<Vec<PlaybackQuality>> {
+        self.resolve_playback("", channel, "best")
+            .await
+            .map(|r| r.qualities)
+    }
 
     /// Channel metadata WITHOUT connecting chat. Cache-first: read the caches
     /// the chat adapters keep warm; refresh lazily with a TTL.

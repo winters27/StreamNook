@@ -132,7 +132,7 @@ pub struct StreamStartResult {
 /// channel does not exist and when the request was refused. Only a row that says
 /// so explicitly counts as an answer.
 #[derive(PartialEq, Clone, Copy, Debug)]
-enum Liveness {
+pub(crate) enum Liveness {
     Live,
     Offline,
     Unknown,
@@ -178,7 +178,7 @@ async fn probe_kick_liveness(channel: &str) -> Liveness {
 /// leaving a genuinely-ended stream frozen on its last frame. Retries are cheap
 /// next to being wrong in either direction. Still Unknown after all of them hands
 /// the decision to the liveness poll rather than inventing one.
-async fn confirm_kick_liveness(channel: &str) -> Liveness {
+pub(crate) async fn confirm_kick_liveness(channel: &str) -> Liveness {
     const ATTEMPTS: u32 = 3;
     for attempt in 0..ATTEMPTS {
         if attempt > 0 {
@@ -216,7 +216,7 @@ async fn start_provider_stream(
         .ok_or_else(|| format!("{} streams aren't supported in this build yet", provider))?;
 
     let resolved = source
-        .resolve_playback(channel, quality)
+        .resolve_playback(crate::services::stream_server::SOLO_STREAM_ID, channel, quality)
         .await
         .map_err(|e| e.to_string())?;
 
@@ -541,6 +541,11 @@ pub async fn start_stream(
 
 #[tauri::command]
 pub async fn stop_stream() -> Result<(), String> {
+    // Tear down the YouTube DASH relay for this stream too. Unconditional: it is
+    // a no-op for an id it does not know, which is every non-YouTube stream.
+    // Without it a stopped stream's session stayed registered, held its init
+    // segments and cache, and counted against the relay cap.
+    crate::services::youtube_dash::stop(crate::services::stream_server::SOLO_STREAM_ID).await;
     StreamServer::stop().await.map_err(|e| e.to_string())
 }
 
@@ -624,9 +629,9 @@ pub async fn get_stream_qualities(
             .get_source(provider)
             .ok_or_else(|| format!("{} streams aren't supported in this build yet", provider))?;
         return source
-            .resolve_playback(&channel, "best")
+            .qualities(&channel)
             .await
-            .map(|r| hls_master::quality_names(&r.qualities))
+            .map(|q| hls_master::quality_names(&q))
             .map_err(|e| e.to_string());
     }
 
