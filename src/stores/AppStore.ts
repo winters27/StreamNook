@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import { invoke } from '@tauri-apps/api/core';
 import { listen, emit } from '@tauri-apps/api/event';
-import type { Settings, TwitchUser, TwitchStream, UserInfo, TwitchCategory, HypeTrainData, TwitchVideo, ModLogEvent, DropProgressStatus } from '../types';
+import type { Settings, TwitchUser, TwitchStream, UserInfo, TwitchCategory, HypeTrainData, TwitchVideo, ModLogEvent, DropProgressStatus, FavoriteChannel } from '../types';
 import { trackActivity } from '../services/logService';
 import { Logger, setDiagnosticsEnabled } from '../utils/logger';
 // Direct import (not via the keybindings index) to avoid a storecommands cycle.
@@ -11,6 +11,7 @@ import { reportCodecPreference } from '../utils/codecPreference';
 import { upsertUser, claimLoginAccolades, grantAtmosphereOwnership } from '../services/supabaseService';
 import { emitSettingsUpdated } from '../utils/settingsBroadcast';
 import { makeKey, parseKey } from '../utils/providerKey';
+import { isStrayYouTubeFavoriteId } from '../utils/favorites';
 import { buildProviderUrl, streamProvider } from '../utils/streamProvider';
 import { providerLabel, WATCHABLE_PROVIDERS, type ProviderId } from '../types/providers';
 import { takePreloadedSettings } from '../bootPreload';
@@ -475,8 +476,15 @@ interface AppState {
   /** Internal: refresh watched identity + follows + accounts + chat after the primary slot changes. */
   reestablishIdentityAfterSwitch: () => Promise<void>;
   checkAuthStatus: () => Promise<void>;
-  toggleFavoriteStreamer: (userId: string) => Promise<void>;
-  isFavoriteStreamer: (userId: string) => boolean;
+  /** Add or remove a favorite. `id` comes from `favoriteIdOf` (utils/favorites),
+   *  never from a raw `user_id`: platform ids collide across services. `meta` is
+   *  the identity sidecar, captured from the row so the channel can still be
+   *  drawn once it is offline. */
+  toggleFavoriteStreamer: (id: string, meta?: FavoriteChannel) => Promise<void>;
+  isFavoriteStreamer: (id: string) => boolean;
+  /** Fill in identity for favorites saved as bare ids, before the sidecar
+   *  existed. Resolves nothing and writes nothing when they all already have it. */
+  backfillFavoriteIdentities: () => Promise<void>;
   toggleHome: () => void;
   exitStream: (options?: { preserveBackend?: boolean }) => Promise<void>;
   // Navigation actions for deep linking
@@ -786,6 +794,10 @@ let lastWatchStreaksFetchAt = 0;
 // share one promise) plus a short TTL (back-to-back callers skip) collapse it.
 let followedInFlight: Promise<void> | null = null;
 let followedFetchedAt = 0;
+/** Serializes every write to the favorites lists. See `toggleFavoriteStreamer`:
+ *  settings are persisted before the in-memory copy is updated, so concurrent
+ *  writers would read stale state and drop each other's changes. */
+let favoriteWriteChain: Promise<void> = Promise.resolve();
 let recommendedInFlight: Promise<void> | null = null;
 let recommendedFetchedAt = 0;
 const STREAMS_GUARD_TTL_MS = 10_000;
@@ -1357,6 +1369,29 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (!settings.favorite_streamers) {
       settings.favorite_streamers = [];
     }
+    if (!settings.favorite_channels) {
+      settings.favorite_channels = [];
+    }
+    // Repair favorites the OLD sidebar wrote as a raw `stream.user_id`.
+    //
+    // On a YouTube row that id is the channel's `UC…`, stored with no provider
+    // prefix, so `parseKey` reads it back as a TWITCH login: the heart never
+    // fills again, the channel appears in no list, and the backend sweep hands
+    // the UC id to Helix as a Twitch user id. Found in real settings data, not
+    // theorised. A 24-character `UC` id is YouTube's own shape (the same test
+    // `first_channel_id` uses in youtube_media.rs), so this can't catch a
+    // Twitch id, which is always numeric.
+    const strayYouTubeIds = (settings.favorite_streamers || []).filter(isStrayYouTubeFavoriteId);
+    if (strayYouTubeIds.length > 0) {
+      const stray = new Set(strayYouTubeIds);
+      settings.favorite_streamers = (settings.favorite_streamers || []).map((id) =>
+        stray.has(id) ? makeKey('youtube', id) : id,
+      );
+      settings.favorite_channels = (settings.favorite_channels || []).map((f) =>
+        stray.has(f.id) ? { ...f, id: makeKey('youtube', f.id), provider: 'youtube' as const } : f,
+      );
+      Logger.info(`[favorites] re-keyed ${strayYouTubeIds.length} YouTube favorite(s) written without a provider prefix`);
+    }
     // Restore the platform the app was last scoped to, ignoring a platform whose
     // watch support isn't in this build (so removing one can't strand the user
     // in an empty context).
@@ -1379,6 +1414,17 @@ export const useAppStore = create<AppState>((set, get) => ({
       set({ settings, originalChatPlacement: settings.chat_placement });
     } else {
       set({ settings, chatPlacement: settings.chat_placement });
+    }
+
+    // The favorites re-key above has to reach DISK, not just this store: the
+    // backend's who's-live sweep reads `favorite_streamers` from its own copy of
+    // settings, so an in-memory-only repair would leave it handing a YouTube UC
+    // id to Helix as a Twitch user id forever. `save_settings` writes through to
+    // that copy. One-time and idempotent: it stops matching once repaired.
+    if (strayYouTubeIds.length > 0) {
+      invoke('save_settings', { settings }).catch((e) => {
+        Logger.warn('[favorites] could not persist the YouTube favorite re-key:', e);
+      });
     }
 
     // Sync diagnostic logging state to both frontend and backend
@@ -3263,30 +3309,99 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
   },
 
-  toggleFavoriteStreamer: async (userId: string) => {
-    const currentSettings = get().settings;
-    const favorites = currentSettings.favorite_streamers || [];
+  toggleFavoriteStreamer: (id: string, meta?: FavoriteChannel) => {
+    // SERIALIZED, and that is the whole point of the chain. `updateSettings`
+    // awaits `save_settings` BEFORE it calls `set`, so two toggles in flight
+    // both read the pre-write settings and the second one silently drops the
+    // first. That was survivable when the heart lived on one tab; now that it
+    // is on every card, favoriting several in a row is the expected use.
+    // Each link re-reads `get().settings` only once the previous write landed.
+    favoriteWriteChain = favoriteWriteChain.then(async () => {
+      const currentSettings = get().settings;
+      const favorites = currentSettings.favorite_streamers || [];
+      const identities = currentSettings.favorite_channels || [];
+      const isFavorite = favorites.includes(id);
 
-    let newFavorites: string[];
-    if (favorites.includes(userId)) {
-      // Remove from favorites
-      newFavorites = favorites.filter(id => id !== userId);
-    } else {
-      // Add to favorites
-      newFavorites = [...favorites, userId];
-    }
+      const newSettings = {
+        ...currentSettings,
+        favorite_streamers: isFavorite
+          ? favorites.filter(f => f !== id)
+          : [...favorites, id],
+        // Membership and identity move together, in ONE write. Two writes would
+        // reopen the same lost-update race this chain exists to close.
+        favorite_channels: isFavorite
+          ? identities.filter(f => f.id !== id)
+          : meta
+            ? [...identities.filter(f => f.id !== id), meta]
+            : identities,
+      };
 
-    const newSettings = {
-      ...currentSettings,
-      favorite_streamers: newFavorites
-    };
+      await get().updateSettings(newSettings);
 
-    await get().updateSettings(newSettings);
+      // Sweep now rather than at the next cadence tick, so a channel that is
+      // live right now appears in the sidebar immediately. Fire and forget:
+      // failing to refresh early costs a minute, never correctness.
+      if (!isFavorite) {
+        invoke('refresh_favorites').catch(() => {});
+      }
+    }).catch(err => {
+      // One failed write must not poison every later toggle: an unhandled
+      // rejection here would leave the chain permanently rejected.
+      Logger.error('Failed to update favorites:', err);
+    });
+
+    return favoriteWriteChain;
   },
 
-  isFavoriteStreamer: (userId: string) => {
+  isFavoriteStreamer: (id: string) => {
     const favorites = get().settings.favorite_streamers || [];
-    return favorites.includes(userId);
+    return favorites.includes(id);
+  },
+
+  backfillFavoriteIdentities: async () => {
+    const settings = get().settings;
+    const favorites = settings.favorite_streamers || [];
+    const identities = settings.favorite_channels || [];
+    const known = new Set(identities.map(f => f.id));
+    // Only bare Twitch ids: a composite key already carries its channel, and a
+    // provider identity would need that platform's own lookup.
+    const missing = favorites.filter(id => !known.has(id) && !id.includes(':'));
+    if (missing.length === 0) return;
+
+    let resolved: Record<string, [string, string, string | null]>;
+    try {
+      resolved = await invoke('get_users_by_ids', { userIds: missing });
+    } catch (e) {
+      Logger.warn('[favorites] identity backfill failed:', e);
+      return;
+    }
+
+    const rows: FavoriteChannel[] = Object.entries(resolved).map(([id, [login, displayName, avatar]]) => ({
+      id,
+      provider: 'twitch' as const,
+      channel: login,
+      display_name: displayName || login,
+      avatar: avatar || undefined,
+      added_at: '',
+    }));
+    if (rows.length === 0) return;
+
+    // Through the same chain as a toggle, so a backfill landing mid-click can't
+    // clobber the favorite the user just added.
+    favoriteWriteChain = favoriteWriteChain.then(async () => {
+      const current = get().settings;
+      const existing = current.favorite_channels || [];
+      const have = new Set(existing.map(f => f.id));
+      const added = rows.filter(r => !have.has(r.id));
+      if (added.length === 0) return;
+      await get().updateSettings({
+        ...current,
+        favorite_channels: [...existing, ...added],
+      });
+      Logger.info(`[favorites] filled in identity for ${added.length} channel(s)`);
+    }).catch(err => Logger.error('[favorites] identity backfill write failed:', err));
+
+    return favoriteWriteChain;
   },
 
   toggleHome: () => {
