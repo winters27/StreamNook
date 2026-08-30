@@ -8,6 +8,82 @@ use uuid::Uuid;
 const WEB_CLIENT_ID: &str = env!("TWITCH_WEB_CLIENT_ID");
 const GQL_URL: &str = "https://gql.twitch.tv/gql";
 
+/// Sanitizer for panel descriptions.
+///
+/// A panel description is HTML the STREAMER wrote, and the About drawer renders
+/// it with `dangerouslySetInnerHTML`. Anything that survives here executes in the
+/// main webview, which can invoke `get_twitch_credentials`, so an unsanitized
+/// `<img src=x onerror=...>` in any channel's panel would hand that channel the
+/// viewer's Twitch token. Sanitizing HERE rather than in the component keeps one
+/// choke point: every consumer of this command gets the cleaned string.
+///
+/// The allowlist is deliberately narrower than ammonia's default (no images, no
+/// tables, no class/style) because a panel only ever needs text plus links.
+fn panel_sanitizer() -> &'static ammonia::Builder<'static> {
+    static SANITIZER: once_cell::sync::Lazy<ammonia::Builder<'static>> =
+        once_cell::sync::Lazy::new(|| {
+            let mut b = ammonia::Builder::empty();
+            b.tags(std::collections::HashSet::from([
+                "a", "b", "strong", "i", "em", "u", "s", "br", "p", "span", "ul", "ol", "li",
+            ]))
+            .link_rel(Some("noopener noreferrer"))
+            // href only, and url_schemes below restricts it to http/https, so
+            // javascript: and data: URLs cannot survive.
+            .tag_attributes(std::collections::HashMap::from([(
+                "a",
+                std::collections::HashSet::from(["href"]),
+            )]))
+            .url_schemes(std::collections::HashSet::from(["http", "https"]));
+            b
+        });
+    &SANITIZER
+}
+
+fn sanitize_panel_html(raw: Option<String>) -> Option<String> {
+    raw.map(|html| panel_sanitizer().clean(&html).to_string())
+}
+
+#[cfg(test)]
+mod panel_sanitizer_tests {
+    use super::sanitize_panel_html;
+
+    fn clean(s: &str) -> String {
+        sanitize_panel_html(Some(s.to_string())).unwrap()
+    }
+
+    #[test]
+    fn strips_script_and_event_handlers() {
+        let out = clean(r#"<img src=x onerror="alert(1)"><script>alert(2)</script>hi"#);
+        assert!(!out.contains("onerror"), "event handler survived: {out}");
+        assert!(!out.contains("script"), "script tag survived: {out}");
+        assert!(!out.contains("alert"), "script body survived: {out}");
+        assert!(out.contains("hi"), "text was dropped: {out}");
+    }
+
+    #[test]
+    fn rejects_non_http_url_schemes() {
+        let out = clean(r#"<a href="javascript:alert(1)">x</a>"#);
+        assert!(!out.contains("javascript"), "javascript: survived: {out}");
+        let out = clean(r#"<a href="data:text/html;base64,PHNjcmlwdD4=">x</a>"#);
+        assert!(!out.contains("data:"), "data: URL survived: {out}");
+    }
+
+    #[test]
+    fn keeps_ordinary_formatting_and_links() {
+        let out = clean(r#"<p><b>Bold</b> and <a href="https://example.com">a link</a></p>"#);
+        assert!(out.contains("<b>Bold</b>"), "lost bold: {out}");
+        assert!(out.contains(r#"href="https://example.com""#), "lost href: {out}");
+        assert!(out.contains("noopener"), "missing rel hardening: {out}");
+    }
+
+    #[test]
+    fn escapes_rather_than_drops_unknown_markup() {
+        // A stray angle bracket must not be able to open a tag downstream.
+        let out = clean("5 < 6 and 7 > 2");
+        assert!(!out.contains("< 6"), "raw angle bracket survived: {out}");
+    }
+}
+
 /// Create headers for GQL requests (no auth required for read operations)
 fn create_gql_headers() -> HeaderMap {
     // Stable per-install device id: Twitch keys anonymous recommendation
@@ -242,7 +318,7 @@ pub async fn get_channel_about_data(channel_login: String) -> Result<ChannelAbou
                 id,
                 panel_type,
                 title: p.title,
-                description: p.description,
+                description: sanitize_panel_html(p.description),
                 image_url: p.image_url,
                 link_url: p.link_url,
             })

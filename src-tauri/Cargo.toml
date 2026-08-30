@@ -61,6 +61,10 @@ urlencoding = "2.1.3"
 chrono = { version = "0.4.42", features = ["serde"] }
 flate2 = "1.0"
 scraper = "0.25.0"
+# Allowlist HTML sanitizer for streamer-authored panel descriptions, which are
+# rendered with dangerouslySetInnerHTML and would otherwise execute in a webview
+# that holds the user's Twitch token.
+ammonia = "4.1"
 once_cell = "1.21.3"
 sevenz-rust = "0.6"
 cosmic-text = "0.15.0"
