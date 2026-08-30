@@ -846,6 +846,64 @@ pub(crate) async fn fetch_youtube_html(
     Ok(html)
 }
 
+/// Fetch the live page for `identifier`, PARSE it, and cache the metadata.
+///
+/// This exists because `channel_meta` used to fetch the page and throw the HTML
+/// away, then read a cache that only the CHAT connect path ever writes. So it
+/// answered only for channels whose chat had already been opened this session
+/// and returned "no metadata" for every other one - which is not a cosmetic
+/// gap: `live_check` is built on `channel_meta`, so the who's-live poller and
+/// the favourites sweep were BLIND to any YouTube channel you had not chatted
+/// in, and a MultiNook tile fell back to titling itself with its raw video id.
+///
+/// Accepts any identifier `live_page_url` does: a video id, an `@handle`, or a
+/// `UC` id.
+pub(crate) async fn refresh_channel_meta(
+    http: &reqwest::Client,
+    identifier: &str,
+) -> Result<YouTubeChannelMeta> {
+    let html = fetch_youtube_html(http, &live_page_url(identifier), identifier).await?;
+    let player = extract_json(&html, "ytInitialPlayerResponse");
+    let initial = extract_json(&html, "ytInitialData");
+
+    // Only a real WATCH page carries `videoDetails`. A channel with no live
+    // broadcast serves its browse shell instead, and `extract_meta` defaults
+    // `is_live` to TRUE when the details are missing - so parsing a shell would
+    // invent a live channel, and this feeds the who's-live poller. Refusing here
+    // keeps "we could not tell" distinct from "it is live".
+    if player
+        .as_ref()
+        .and_then(|p| p.get("videoDetails"))
+        .is_none()
+    {
+        return Err(anyhow!("'{}' isn't live right now", identifier));
+    }
+
+    let mut meta = extract_meta(player.as_ref(), initial.as_ref(), &html);
+
+    // The innertube identity fields, read the same way `parse_watch_page` reads
+    // them. Without these the refreshed entry would be POORER than a chat-stored
+    // one, and overwriting the cache with it would break moderation context for
+    // a channel whose chat is open.
+    meta.api_key = json_str_after(&html, "\"INNERTUBE_API_KEY\":\"");
+    meta.client_version = json_str_after(&html, "\"INNERTUBE_CONTEXT_CLIENT_VERSION\":\"")
+        .or_else(|| json_str_after(&html, "\"clientVersion\":\""));
+    meta.visitor_data = json_str_after(&html, "\"visitorData\":\"").map(|v| decode_json_escapes(&v));
+
+    // Belt and braces: anything this page did not carry keeps whatever the cache
+    // already knew, so a refresh can only ever add detail, never remove it.
+    if let Some(prev) = channel_meta(identifier) {
+        meta.api_key = meta.api_key.or(prev.api_key);
+        meta.client_version = meta.client_version.or(prev.client_version);
+        meta.visitor_data = meta.visitor_data.or(prev.visitor_data);
+        meta.profile_pic = meta.profile_pic.or(prev.profile_pic);
+        meta.user_id = meta.user_id.or(prev.user_id);
+    }
+
+    store_meta(&identifier.to_lowercase(), meta.clone());
+    Ok(meta)
+}
+
 /// Parse a fetched page as a live watch page. Returns `Resolved` on success,
 /// `BrowseShell` when YouTube served the channel browse page instead of a watch
 /// page (so the caller can re-resolve via /watch?v=), or an error for a real watch

@@ -474,6 +474,69 @@ fn cached_highs(video_id: &str) -> Option<Vec<HighRendition>> {
     (at.elapsed() < ttl).then(|| v.clone())
 }
 
+/// One resolve per video at a time, so concurrent callers share it.
+///
+/// Two callers race on EVERY tile start: the playback resolve (`try_high`) and
+/// the quality menu (`qualities`). Both check the cache, both miss it on a cold
+/// open, and both then drive the resolver webview, serialised behind the resolver
+/// lock. Measured on one Lofi Girl tile: three callers inside 158ms, three full
+/// BotGuard resolves, ~2.8s of hidden-webview work before first frame.
+///
+/// A cache alone cannot fix that, because nothing is in it yet when they race.
+/// It is the same shape as the segment single-flight in youtube_dash, and it is
+/// the reason a broadcast with NO rungs above 1080p was the expensive case: the
+/// answer is "nothing", and every racing caller paid full price to learn it.
+type Gate = std::sync::Arc<tokio::sync::Mutex<()>>;
+static HIGHS_INFLIGHT: Lazy<std::sync::Mutex<std::collections::HashMap<String, Gate>>> =
+    Lazy::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
+/// `high_renditions`, coalesced and cached.
+///
+/// Prefer this everywhere except the post-refusal retry, which deliberately wants
+/// a FRESH resolve after rebuilding the session and must not be served a cached
+/// answer.
+///
+/// Note there is no negative TTL to choose here, which was the open question when
+/// this was found. An empty result is already cached by `store_highs` like any
+/// other, for MASTER_TTL, so the SEQUENTIAL "nothing above 1080p" case was always
+/// handled; only the concurrent one was not. Adding a separate negative cache
+/// would have meant picking a number that could lock a broadcast out of a rung it
+/// gained mid-stream. This needs no such number.
+pub async fn high_renditions_cached(video_id: &str, above: u32) -> Vec<HighRendition> {
+    if let Some(h) = cached_highs(video_id) {
+        return h;
+    }
+    let gate = {
+        let Ok(mut m) = HIGHS_INFLIGHT.lock() else {
+            // Poisoned: resolve unguarded rather than refusing to play.
+            let h = high_renditions(video_id, above).await;
+            store_highs(video_id, &h);
+            return h;
+        };
+        Gate::clone(
+            m.entry(video_id.to_string())
+                .or_insert_with(|| Gate::new(tokio::sync::Mutex::new(()))),
+        )
+    };
+    let _held = gate.lock().await;
+
+    // Whoever went first has stored the answer, including when the answer is
+    // "nothing above the floor".
+    if let Some(h) = cached_highs(video_id) {
+        if let Ok(mut m) = HIGHS_INFLIGHT.lock() {
+            m.remove(video_id);
+        }
+        return h;
+    }
+
+    let h = high_renditions(video_id, above).await;
+    store_highs(video_id, &h);
+    if let Ok(mut m) = HIGHS_INFLIGHT.lock() {
+        m.remove(video_id);
+    }
+    h
+}
+
 fn store_highs(video_id: &str, v: &[HighRendition]) {
     if let Ok(mut map) = HIGHS.lock() {
         map.retain(|_, (_, at)| at.elapsed() < MASTER_TTL);
@@ -538,15 +601,19 @@ impl YouTubeSource {
     /// If `quality` names a rendition above the HLS ceiling, serve it through the
     /// DASH-to-HLS relay. Returns `None` for everything else so the caller falls
     /// through to the ordinary HLS path.
-    async fn try_high(&self, video_id: &str, quality: &str) -> Option<ResolvedPlayback> {
+    async fn try_high(
+        &self,
+        stream_id: &str,
+        video_id: &str,
+        quality: &str,
+    ) -> Option<ResolvedPlayback> {
         let highs = match cached_highs(video_id) {
             Some(h) => h,
             None => {
                 // 1080 is the HLS ceiling on every live broadcast measured, and
                 // it is fixed by the muxed itag family rather than by the client.
-                let h = high_renditions(video_id, 1080).await;
-                store_highs(video_id, &h);
-                h
+                // Coalesced: the quality menu races this on every tile start.
+                high_renditions_cached(video_id, 1080).await
             }
         };
         if highs.is_empty() {
@@ -561,7 +628,7 @@ impl YouTubeSource {
 
         let menu = with_highs(video_id, hls_ladder(video_id).await);
         let wanted_name = want.name.clone();
-        let first = crate::services::youtube_dash::start(video_id, 1080, want).await;
+        let first = crate::services::youtube_dash::start(stream_id, video_id, 1080, want).await;
 
         let started = match first {
             Ok(url) => Ok(url),
@@ -585,7 +652,7 @@ impl YouTubeSource {
                     .or_else(|| fresh.first())
                 {
                     Some(retry_want) => {
-                        crate::services::youtube_dash::start(video_id, 1080, retry_want).await
+                        crate::services::youtube_dash::start(stream_id, video_id, 1080, retry_want).await
                     }
                     None => Err(anyhow!("no renditions after re-resolving")),
                 }
@@ -789,7 +856,26 @@ impl StreamSource for YouTubeSource {
         }
     }
 
-    async fn resolve_playback(&self, channel: &str, quality: &str) -> Result<ResolvedPlayback> {
+    /// Session-free, unlike the default. Resolving here starts a relay, so the
+    /// menu is built from the same two sources `try_high` reads and never goes
+    /// near `youtube_dash`. The returned list is byte-identical to what
+    /// resolving produced, so the UI sees no change.
+    async fn qualities(&self, channel: &str) -> Result<Vec<PlaybackQuality>> {
+        let video_id = live_video_id(channel).await?;
+        // Warm the highs cache the way try_high does, so a cold open still lists
+        // the 1440p/2160p rungs that live outside the HLS ladder. Coalesced,
+        // because this races the playback resolve on every tile start and the two
+        // used to drive the resolver webview separately for the same answer.
+        high_renditions_cached(&video_id, 1080).await;
+        Ok(with_highs(&video_id, hls_ladder(&video_id).await))
+    }
+
+    async fn resolve_playback(
+        &self,
+        stream_id: &str,
+        channel: &str,
+        quality: &str,
+    ) -> Result<ResolvedPlayback> {
         let video_id = live_video_id(channel).await?;
 
         // A quality change re-enters here (change_stream_quality just calls
@@ -803,11 +889,11 @@ impl StreamSource for YouTubeSource {
         // they are in the menu whether or not the master came from cache, and so
         // a request for one is answered before the HLS selector, which cannot
         // represent them, ever sees it.
-        if let Some(resolved) = self.try_high(&video_id, quality).await {
+        if let Some(resolved) = self.try_high(stream_id, &video_id, quality).await {
             return Ok(resolved);
         }
         // Anything at or below the HLS ceiling is the original path, untouched.
-        crate::services::youtube_dash::stop();
+        crate::services::youtube_dash::stop(stream_id).await;
 
         if let Some(qualities) = cached_master(&video_id) {
             if let Some((idx, label)) = hls_master::select(&qualities, quality) {
@@ -893,10 +979,17 @@ impl StreamSource for YouTubeSource {
         if let Some(meta) = youtube::channel_meta_fresh(channel, META_TTL) {
             return Ok(row_from_meta(channel, &meta));
         }
-        // Stale or absent: resolve the live page, which repopulates the cache.
-        let url = youtube::live_page_url(channel);
-        match youtube::fetch_youtube_html(&HTTP, &url, channel).await {
-            Ok(_) => {}
+        // Stale or absent: fetch the live page AND PARSE IT.
+        //
+        // This used to call `fetch_youtube_html` and discard the result, on the
+        // belief that fetching "repopulates the cache". It does not - only the
+        // chat connect path writes that cache - so this answered ONLY for
+        // channels whose chat had already been opened this session and returned
+        // "no metadata" for every other one. Since `live_check` is built on this
+        // method, that made the who's-live poller and the favourites sweep blind
+        // to any YouTube channel you had not chatted in.
+        match youtube::refresh_channel_meta(&HTTP, channel).await {
+            Ok(meta) => Ok(row_from_meta(channel, &meta)),
             Err(e) => {
                 // A failed fetch is not evidence the channel went offline. Prefer
                 // the last known answer over reporting "not live", which is what
@@ -905,12 +998,9 @@ impl StreamSource for YouTubeSource {
                     log::debug!("[YouTube] meta refresh for '{}' failed ({}); using last known", channel, e);
                     return Ok(row_from_meta(channel, &stale));
                 }
-                return Err(e);
+                Err(e)
             }
         }
-        youtube::channel_meta(channel)
-            .map(|m| row_from_meta(channel, &m))
-            .ok_or_else(|| anyhow!("no metadata for YouTube channel '{}'", channel))
     }
 
     async fn live_check(&self, channels: &[String]) -> Result<Vec<ProviderStream>> {
@@ -2400,7 +2490,7 @@ mod menu_tests {
         let id = std::env::var("STREAMNOOK_YT_LIVE_ID").expect("STREAMNOOK_YT_LIVE_ID");
         let src = YouTubeSource;
         let r = src
-            .resolve_playback(&id, "1080p60")
+            .resolve_playback("test", &id, "1080p60")
             .await
             .expect("resolve");
         println!("kind={:?} served={}", r.kind, r.quality);
