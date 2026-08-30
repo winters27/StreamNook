@@ -649,9 +649,18 @@ fn handle_entitlement(d: &Value, dispatch_type: &str, app_handle: &AppHandle) {
 // Entitlement fetch lane. A reconnect / presence rebootstrap re-delivers the
 // same EMOTE_SET entitlement for every personal-emote user in the channel at
 // once; spawning a task per dispatch meant hundreds of concurrent tasks all
-// contending the personal-emote store and racing HTTP fetches. One worker
+// contending the personal-emote store and racing HTTP fetches. A bounded POOL
 // drains a bounded queue; the inflight set dedupes before anything is queued,
 // and a dropped entry self-heals on the next reconnect's re-delivery.
+//
+// The pool used to be a single worker, which fixed the stampede by going all the
+// way to serial. That is invisible while 7TV answers in ~100ms and awful when it
+// does not: measured 2026-08-29 at 2.4-4.2s per call, one entitlement landed
+// every ~3s in delivery order, which reads as cosmetics popping in one user at a
+// time long after their message. Concurrency here is per-user and independent,
+// NOT a batch: each fetch resolves and applies on its own, so widening the pool
+// costs no user any extra wait.
+const ENTITLEMENT_CONCURRENCY: usize = 6;
 static ENTITLEMENT_TX: OnceLock<tokio::sync::mpsc::Sender<(String, String)>> = OnceLock::new();
 static ENTITLEMENT_INFLIGHT: OnceLock<std::sync::Mutex<std::collections::HashSet<(String, String)>>> =
     OnceLock::new();
@@ -659,6 +668,21 @@ static ENTITLEMENT_INFLIGHT: OnceLock<std::sync::Mutex<std::collections::HashSet
 fn entitlement_inflight() -> &'static std::sync::Mutex<std::collections::HashSet<(String, String)>>
 {
     ENTITLEMENT_INFLIGHT.get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()))
+}
+
+/// Rate gate for the slow-fetch line above: true at most once every 5s.
+fn slow_entitlement_log_due() -> bool {
+    static LAST: OnceLock<std::sync::Mutex<Option<std::time::Instant>>> = OnceLock::new();
+    let Ok(mut last) = LAST.get_or_init(|| std::sync::Mutex::new(None)).lock() else {
+        return false;
+    };
+    let due = last
+        .map(|t| t.elapsed() >= std::time::Duration::from_secs(5))
+        .unwrap_or(true);
+    if due {
+        *last = Some(std::time::Instant::now());
+    }
+    due
 }
 
 fn enqueue_entitlement_fetch(twitch_id: String, set_id: String) {
@@ -674,14 +698,40 @@ fn enqueue_entitlement_fetch(twitch_id: String, set_id: String) {
     let tx = ENTITLEMENT_TX.get_or_init(|| {
         let (tx, mut rx) = tokio::sync::mpsc::channel::<(String, String)>(512);
         tokio::spawn(async move {
+            // The semaphore is what keeps this a POOL rather than the stampede
+            // the queue replaced: the receiver runs ahead freely, but only
+            // ENTITLEMENT_CONCURRENCY fetches are ever in flight. Acquiring
+            // before the spawn is deliberate, so a slow provider applies
+            // backpressure to the queue instead of piling up detached tasks.
+            let permits = std::sync::Arc::new(tokio::sync::Semaphore::new(ENTITLEMENT_CONCURRENCY));
             while let Some((tid, set_id)) = rx.recv().await {
-                if !IrcService::has_personal_set(&tid, &set_id).await {
-                    let emotes = emote_service::fetch_personal_emote_set(&set_id).await;
-                    IrcService::set_personal_emotes(tid.clone(), set_id.clone(), emotes).await;
-                }
-                if let Ok(mut inflight) = entitlement_inflight().lock() {
-                    inflight.remove(&(tid, set_id));
-                }
+                let Ok(permit) = permits.clone().acquire_owned().await else {
+                    break; // semaphore closed; the lane is shutting down
+                };
+                tokio::spawn(async move {
+                    let _permit = permit;
+                    if !IrcService::has_personal_set(&tid, &set_id).await {
+                        // This lane spends seconds in HTTP and said nothing about
+                        // it, which is why a pool of one hid here for a whole
+                        // release. Reported only when slow, and at most once every
+                        // 5s, so a busy channel cannot turn it into a firehose.
+                        let started = std::time::Instant::now();
+                        let emotes = emote_service::fetch_personal_emote_set(&set_id).await;
+                        let took = started.elapsed();
+                        if took >= std::time::Duration::from_secs(1) && slow_entitlement_log_due() {
+                            log::info!(
+                                "[7TV] personal set {} took {}ms (lane holds {} in flight)",
+                                set_id,
+                                took.as_millis(),
+                                ENTITLEMENT_CONCURRENCY
+                            );
+                        }
+                        IrcService::set_personal_emotes(tid.clone(), set_id.clone(), emotes).await;
+                    }
+                    if let Ok(mut inflight) = entitlement_inflight().lock() {
+                        inflight.remove(&(tid, set_id));
+                    }
+                });
             }
         });
         tx
