@@ -22,6 +22,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { useAppStore, clipSourceOf, type SettingsTab } from '../stores/AppStore';
 import { useChatUserStore } from '../stores/chatUserStore';
 import { useFollowsStore } from '../stores/followsStore';
+import { favoriteIdOf, favoriteMetaOf } from './favorites';
 import { useSnippetStore } from '../stores/snippetStore';
 import { WATCHABLE_PROVIDERS, providerLabel, type ProviderId } from '../types/providers';
 import { usePluginUiRegistry } from '../plugins-ui/registry';
@@ -419,12 +420,15 @@ function buildQuickActions(): PaletteItem[] {
       id: 'cs.toggleFavorite',
       section: 'Current Stream',
       title: 'Toggle favorite streamer',
-      subtitle: 'Pin / unpin the current streamer at the top of your sidebar',
-      keywords: 'favorite fav pin star current',
+      subtitle: 'Keep this channel in your Favorites, followed or not',
+      keywords: 'favorite fav pin star current watchlist',
       run: async () => {
         const stream = requireStream();
-        if (!stream?.user_id) return;
-        await useAppStore.getState().toggleFavoriteStreamer(stream.user_id);
+        if (!stream) return;
+        // `favoriteIdOf`, not `user_id`: platform ids collide across services.
+        const id = favoriteIdOf(stream);
+        if (!id) return;
+        await useAppStore.getState().toggleFavoriteStreamer(id, favoriteMetaOf(stream, id));
       },
     },
     {
@@ -927,7 +931,7 @@ const SETTINGS_CATALOG: SettingsEntry[] = [
   // Notifications
   { tab: 'Notifications', keywords: 'notifications toast dynamic island sound alerts live whisper drops update channel points badge' },
   { tab: 'Notifications', section: 'Notification Methods', keywords: 'notification methods dynamic island toast position edge spacing corner' },
-  { tab: 'Notifications', section: 'Notification Types', keywords: 'notification types live going live whisper dm update available drops channel points badge favorite category' },
+  { tab: 'Notifications', section: 'Notification Types', keywords: 'notification types live going live whisper dm update available drops channel points badge favorite favorites favorite channel watchlist category' },
   { tab: 'Notifications', section: 'Sound', keywords: 'sound notification sound style test ping audio' },
 
   // Cache
