@@ -986,10 +986,12 @@ impl IrcService {
                     if let Err(e) = join_result {
                         log::warn!("[IRC Chat] idempotent JOIN failed for {}: {}", key, e);
                     }
-                    // Fetch emotes for this channel so segment parsing
-                    // matches what the user sees in chat. Cheap when already
-                    // cached on the Rust side from an earlier consumer.
-                    Self::fetch_and_store_emotes(&key, emote_service.clone()).await;
+                    // Make this channel parseable so segment parsing matches
+                    // what the user sees. Seeds from the disk dictionary and
+                    // returns; the provider refresh runs after, because the
+                    // caller is a UI blocked on the chat socket and 7TV has
+                    // been measured at 2.4-3.1s.
+                    Self::seed_emotes_deferring_refresh(&key, emote_service.clone()).await;
                     return Ok(port);
                 }
             }
@@ -2797,9 +2799,47 @@ impl IrcService {
     /// Fetch and store channel emotes for the current channel. Returns the
     /// resolved Twitch channel id (broadcaster user id) on success so callers
     /// can drive the 7TV EventAPI subscription off the same lookup.
+    /// Fetch this channel's emotes, WAITING for the providers to answer.
+    ///
+    /// Only for callers that must have the live set in hand before they parse
+    /// anything (VOD replay). The chat start path must use
+    /// [`Self::seed_emotes_deferring_refresh`] instead.
     pub async fn fetch_and_store_emotes(
         channel_name: &str,
         emote_service: Arc<tokio::sync::RwLock<EmoteService>>,
+    ) -> Option<String> {
+        Self::resolve_emotes(channel_name, emote_service, false).await
+    }
+
+    /// Make the channel parseable and return, refreshing from the network AFTER.
+    ///
+    /// The chat socket must never wait on emote providers. 7TV alone measured
+    /// 2.4-3.1s (TTFB 1.0-1.5s, so it is their server, not the connection) on
+    /// 2026-08-29 while BTTV was 87ms and FFZ 188ms, and awaiting it held
+    /// `start_chat` open for that whole time: bridge connect went from a
+    /// recorded 366ms baseline to 1065-3705ms, and first chat frame from 678ms
+    /// to 4013ms. One slow third party made chat look broken.
+    ///
+    /// What still happens BEFORE returning is the part that costs ~150ms and
+    /// decides correctness: the broadcaster lookup and the disk-dictionary seed.
+    /// That dictionary is what the visible backlog and the first live messages
+    /// tokenize against, so emotes in them still render as emotes. The network
+    /// refresh only has to beat the user reading, not the socket opening.
+    ///
+    /// Cost when there is no disk dictionary yet (a channel opened for the first
+    /// time): messages arriving in the second or so before the refresh lands
+    /// show emote names as text. They are re-seeded for every later join.
+    pub async fn seed_emotes_deferring_refresh(
+        channel_name: &str,
+        emote_service: Arc<tokio::sync::RwLock<EmoteService>>,
+    ) -> Option<String> {
+        Self::resolve_emotes(channel_name, emote_service, true).await
+    }
+
+    async fn resolve_emotes(
+        channel_name: &str,
+        emote_service: Arc<tokio::sync::RwLock<EmoteService>>,
+        defer_refresh: bool,
     ) -> Option<String> {
         debug!("[IRC Chat] Fetching emotes for channel: {}", channel_name);
 
@@ -2848,55 +2888,32 @@ impl IrcService {
                     }
                 }
 
-                // Live refresh. Replace the parse map only when 7TV's channel
-                // fetch definitively succeeded (seven_tv_ok); a deficient fetch
-                // (globals-only from a tripped circuit breaker, or a timed-out
-                // channel set) keeps the disk-seeded set instead of poisoning
-                // chat. An authoritative result is written through to disk too, so
-                // the next join is disk-first and legit removals persist.
-                {
-                    // Snapshot the service out of the RwLock (guard drops at
-                    // end of statement) so the lock is never held across the
-                    // network fetch; a future writer would otherwise convoy
-                    // every reader behind an in-flight HTTP call.
-                    let emote_svc = emote_service.read().await.clone();
-                    match emote_svc
-                        .fetch_channel_emotes_checked(
-                            Some(channel_name.to_string()),
-                            Some(user.id.clone()),
-                            access_token,
-                            // This path is Twitch's own IRC service.
-                            None,
-                        )
-                        .await
-                    {
-                        Ok((emote_set, seven_tv_ok)) => {
-                            debug!(
-                                "[IRC Chat] Fetched {} total emotes for {} (Twitch: {}, BTTV: {}, 7TV: {}, FFZ: {}); 7TV channel ok: {}",
-                                emote_set.total_count(),
-                                channel_name,
-                                emote_set.twitch.len(),
-                                emote_set.bttv.len(),
-                                emote_set.seven_tv.len(),
-                                emote_set.ffz.len(),
-                                seven_tv_ok
-                            );
-                            if seven_tv_ok {
-                                crate::services::emote_set_cache::save_force(&user.id, &emote_set);
-                                rebuild_parse_lookup(&key, &emote_set);
-                                get_channel_emotes().lock().await.insert(key, emote_set);
-                            } else {
-                                debug!(
-                                    "[IRC Chat] Keeping disk-seeded set for {}; 7TV channel fetch was deficient (7TV {})",
-                                    channel_name,
-                                    emote_set.seven_tv.len()
-                                );
-                            }
-                        }
-                        Err(e) => {
-                            error!("[IRC Chat] Failed to fetch channel emotes: {}", e);
-                        }
+                if defer_refresh {
+                    // The chat socket does NOT wait for emote providers. See
+                    // `refresh_channel_emotes` for why, and for the measurement.
+                    //
+                    // Gated, because deferring removed the start lock that used to
+                    // serialize this. See `try_begin_emote_refresh`.
+                    if let Some(gate) = try_begin_emote_refresh(&key) {
+                        let name = channel_name.to_string();
+                        let k = key.clone();
+                        let uid = user.id.clone();
+                        let svc = emote_service.clone();
+                        tokio::spawn(async move {
+                            let _gate = gate;
+                            let _permit = emote_refresh_permits().acquire_owned().await.ok();
+                            Self::refresh_channel_emotes(name, k, uid, access_token, svc).await;
+                        });
                     }
+                } else {
+                    Self::refresh_channel_emotes(
+                        channel_name.to_string(),
+                        key.clone(),
+                        user.id.clone(),
+                        access_token,
+                        emote_service.clone(),
+                    )
+                    .await;
                 }
                 Some(user.id)
             }
@@ -2906,6 +2923,66 @@ impl IrcService {
                     channel_name, e
                 );
                 None
+            }
+        }
+    }
+
+    /// Pull the live third-party set and install it as the channel's parse map.
+    ///
+    /// Split out of the seed path so the start path can spawn it instead of
+    /// awaiting it. Replaces the parse map only when 7TV's channel fetch
+    /// definitively succeeded (`seven_tv_ok`): a deficient fetch (globals-only
+    /// from a tripped circuit breaker, or a timed-out channel set) keeps the
+    /// disk-seeded set rather than poisoning chat with a worse one. An
+    /// authoritative result is written through to disk, so the next join is
+    /// disk-first and legit removals persist.
+    async fn refresh_channel_emotes(
+        channel_name: String,
+        key: String,
+        user_id: String,
+        access_token: Option<String>,
+        emote_service: Arc<tokio::sync::RwLock<EmoteService>>,
+    ) {
+        // Snapshot the service out of the RwLock (guard drops at end of
+        // statement) so the lock is never held across the network fetch; a
+        // future writer would otherwise convoy every reader behind an
+        // in-flight HTTP call.
+        let emote_svc = emote_service.read().await.clone();
+        match emote_svc
+            .fetch_channel_emotes_checked(
+                Some(channel_name.clone()),
+                Some(user_id.clone()),
+                access_token,
+                // This path is Twitch's own IRC service.
+                None,
+            )
+            .await
+        {
+            Ok((emote_set, seven_tv_ok)) => {
+                debug!(
+                    "[IRC Chat] Fetched {} total emotes for {} (Twitch: {}, BTTV: {}, 7TV: {}, FFZ: {}); 7TV channel ok: {}",
+                    emote_set.total_count(),
+                    channel_name,
+                    emote_set.twitch.len(),
+                    emote_set.bttv.len(),
+                    emote_set.seven_tv.len(),
+                    emote_set.ffz.len(),
+                    seven_tv_ok
+                );
+                if seven_tv_ok {
+                    crate::services::emote_set_cache::save_force(&user_id, &emote_set);
+                    rebuild_parse_lookup(&key, &emote_set);
+                    get_channel_emotes().lock().await.insert(key, emote_set);
+                } else {
+                    debug!(
+                        "[IRC Chat] Keeping disk-seeded set for {}; 7TV channel fetch was deficient (7TV {})",
+                        channel_name,
+                        emote_set.seven_tv.len()
+                    );
+                }
+            }
+            Err(e) => {
+                error!("[IRC Chat] Failed to fetch channel emotes: {}", e);
             }
         }
     }
@@ -4704,5 +4781,59 @@ mod tests {
             set.len(),
             words
         );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Deferred emote-refresh gate.
+//
+// Handing the chat socket back before the provider refresh finishes is what made
+// chat open in ~150ms instead of seconds. It also removed the thing that had been
+// bounding those fetches: the refresh used to run INSIDE `start`'s global start
+// lock, so exactly one could ever be in flight. Spawned and ungated, a burst of
+// channel switches (or one MultiChat window opening several tabs, or a reconnect
+// re-joining every channel) starts an unbounded number of concurrent
+// BTTV+FFZ+7TV fetches, each building and holding a multi-megabyte EmoteSet, and
+// with no dedupe the SAME channel can have several running at once.
+//
+// That is the identical stampede the 7TV entitlement lane already had to fix.
+// Two bounds, for the two different ways it grows: the in-flight set collapses
+// duplicates per channel, and the semaphore caps how many distinct channels can
+// be fetching at all. Four is well clear of any real grid or MultiChat layout
+// while keeping the worst case a handful of buffers rather than dozens.
+const EMOTE_REFRESH_CONCURRENCY: usize = 4;
+
+static EMOTE_REFRESH_INFLIGHT: OnceLock<
+    std::sync::Mutex<std::collections::HashSet<String>>,
+> = OnceLock::new();
+static EMOTE_REFRESH_PERMITS: OnceLock<std::sync::Arc<tokio::sync::Semaphore>> = OnceLock::new();
+
+fn emote_refresh_permits() -> std::sync::Arc<tokio::sync::Semaphore> {
+    EMOTE_REFRESH_PERMITS
+        .get_or_init(|| std::sync::Arc::new(tokio::sync::Semaphore::new(EMOTE_REFRESH_CONCURRENCY)))
+        .clone()
+}
+
+/// Claims the refresh slot for `channel`, or returns None if one is already
+/// running. The returned guard releases the slot on drop, including on panic.
+fn try_begin_emote_refresh(channel: &str) -> Option<EmoteRefreshGuard> {
+    let set = EMOTE_REFRESH_INFLIGHT
+        .get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()));
+    let mut guard = set.lock().ok()?;
+    if !guard.insert(channel.to_string()) {
+        return None;
+    }
+    Some(EmoteRefreshGuard(channel.to_string()))
+}
+
+struct EmoteRefreshGuard(String);
+
+impl Drop for EmoteRefreshGuard {
+    fn drop(&mut self) {
+        if let Some(set) = EMOTE_REFRESH_INFLIGHT.get() {
+            if let Ok(mut guard) = set.lock() {
+                guard.remove(&self.0);
+            }
+        }
     }
 }

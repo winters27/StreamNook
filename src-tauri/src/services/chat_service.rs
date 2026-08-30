@@ -182,7 +182,10 @@ impl ChatService {
         // tear-down + re-fetch which masked the gap; with idempotent `start`,
         // additional-channel JOINs (channel switching, MultiChat tabs, etc.)
         // now route through this path.
-        IrcService::fetch_and_store_emotes(channel, state.emote_service.clone()).await;
+        // Deferred: this runs on channel switches and MultiChat tab opens, where
+        // a user is waiting on the pane. The disk seed lands before we return;
+        // the provider refresh follows.
+        IrcService::seed_emotes_deferring_refresh(channel, state.emote_service.clone()).await;
         Ok(())
     }
 
