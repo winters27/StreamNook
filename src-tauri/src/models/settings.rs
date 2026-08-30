@@ -330,6 +330,11 @@ pub struct LiveNotificationSettings {
     // Notification type toggles
     #[serde(default = "default_true")]
     pub show_live_notifications: bool,
+    /// Go-live notifications for FAVOURITED channels, which may not be followed.
+    /// Separate from `show_live_notifications` so a large favourites list can be
+    /// silenced without losing notifications for the channels you follow.
+    #[serde(default = "default_true")]
+    pub show_favorite_live_notifications: bool,
     #[serde(default = "default_true")]
     pub show_whisper_notifications: bool,
     #[serde(default = "default_true")]
@@ -383,6 +388,7 @@ impl Default for LiveNotificationSettings {
             play_sound: true,
             sound_type: None,
             show_live_notifications: true,
+            show_favorite_live_notifications: true,
             show_whisper_notifications: true,
             show_update_notifications: true,
             show_drops_notifications: true,
@@ -476,6 +482,16 @@ pub struct MultiNookSlot {
     /// save round-trip, so per-tile quality reset to 'best' after every restart.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub quality: Option<String>,
+    /// Which platform this tile is on ("kick", "youtube", ...). Absent means
+    /// Twitch, matching the bare-key convention in utils/providerKey.ts, so
+    /// every grid saved before this field keeps working untouched.
+    ///
+    /// This struct is TYPED on `Settings` (`multi_nook_slots`), so it never
+    /// reaches the flattened `extra` catch-all: a field the frontend sends but
+    /// this struct does not name is silently dropped on save. See `quality`
+    /// directly above, which is here for exactly that reason.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -494,6 +510,11 @@ pub struct Settings {
     pub drops: DropsSettings,
     #[serde(default)]
     pub favorite_streamers: Vec<String>,
+    /// Display identity for the entries in `favorite_streamers`. Kept beside it
+    /// rather than replacing it so every existing reader keeps working and no
+    /// settings file in the field needs migrating.
+    #[serde(default)]
+    pub favorite_channels: Vec<FavoriteChannel>,
     #[serde(default)]
     pub chat_design: ChatDesignSettings,
     #[serde(default)]
@@ -598,6 +619,32 @@ pub struct ProviderFollow {
     pub imported: bool,
 }
 
+/// Identity for a favourited channel, so an unfollowed favourite can still be
+/// drawn while it is offline (a name and a face; `favorite_streamers` is only
+/// ids). Membership stays in `favorite_streamers` — this is a best-effort
+/// display cache keyed by the SAME string, never a second answer to "is this
+/// favourited".
+///
+/// Rows whose id has left `favorite_streamers` are ignored where they're read
+/// rather than pruned, so nothing has to write settings during startup.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct FavoriteChannel {
+    /// The key used in `favorite_streamers`: a Twitch numeric user id, or a
+    /// composite `provider:channel`.
+    pub id: String,
+    /// "twitch" | "kick" | "youtube" | "tiktok".
+    pub provider: String,
+    /// Login / slug / @handle / UC id — what chat and playback address, and
+    /// what the platform's live check accepts.
+    pub channel: String,
+    #[serde(default)]
+    pub display_name: Option<String>,
+    #[serde(default)]
+    pub avatar: Option<String>,
+    #[serde(default)]
+    pub added_at: String,
+}
+
 fn default_theme() -> String {
     "winters-glass".to_string()
 }
@@ -616,6 +663,7 @@ impl Default for Settings {
             streamlink: StreamlinkSettings::default(),
             drops: DropsSettings::default(),
             favorite_streamers: vec![],
+            favorite_channels: vec![],
             provider_follows: vec![],
             youtube_chat_view: YouTubeChatView::default(),
             chat_design: ChatDesignSettings::default(),
@@ -864,5 +912,74 @@ mod backup_persistence_tests {
         assert!(first.get("icon").is_some());
         let chan = first["channels"][0].as_object().expect("channel object");
         assert_eq!(chan.get("quality").and_then(|v| v.as_str()), Some("720p60"));
+    }
+
+    /// A slot's `provider` must survive the save round trip. `multi_nook_slots`
+    /// is a TYPED field, so unlike presets it does NOT ride the flattened
+    /// `extra` catch-all: any key this struct does not name is dropped on save.
+    /// That already happened once with `quality`, and a provider lost here would
+    /// look fine in testing and silently turn every non-Twitch tile back into a
+    /// Twitch one after a restart.
+    #[test]
+    fn multi_nook_slot_provider_round_trips() {
+        let mut value = serde_json::to_value(Settings::default()).expect("serialize defaults");
+        let obj = value.as_object_mut().expect("settings is an object");
+        obj.insert(
+            "multi_nook_slots".into(),
+            serde_json::json!([
+                {
+                    "id": "cell-1",
+                    "channelLogin": "xqc",
+                    "volume": 1.0,
+                    "muted": false,
+                    "isFocused": true,
+                    "provider": "kick"
+                }
+            ]),
+        );
+
+        let parsed: Settings = serde_json::from_value(value).expect("deserialize with slots");
+        assert_eq!(
+            parsed.multi_nook_slots[0].provider.as_deref(),
+            Some("kick"),
+            "provider must deserialize onto the typed slot"
+        );
+
+        let reserialized = serde_json::to_value(&parsed).expect("serialize back");
+        let slots = reserialized
+            .get("multi_nook_slots")
+            .and_then(|v| v.as_array())
+            .expect("slots array survived");
+        let slot = slots[0].as_object().expect("slot object");
+        assert_eq!(
+            slot.get("provider").and_then(|v| v.as_str()),
+            Some("kick"),
+            "provider must survive serialization back to disk"
+        );
+    }
+
+    /// A grid saved before the provider field existed must keep loading, with
+    /// the absent provider meaning Twitch (the bare-key convention).
+    #[test]
+    fn multi_nook_slot_without_provider_still_loads() {
+        let mut value = serde_json::to_value(Settings::default()).expect("serialize defaults");
+        let obj = value.as_object_mut().expect("settings is an object");
+        obj.insert(
+            "multi_nook_slots".into(),
+            serde_json::json!([
+                { "id": "cell-1", "channelLogin": "xqc", "volume": 1.0, "muted": false, "isFocused": true }
+            ]),
+        );
+
+        let parsed: Settings = serde_json::from_value(value).expect("legacy slot must deserialize");
+        assert_eq!(parsed.multi_nook_slots[0].provider, None);
+        let reserialized = serde_json::to_value(&parsed).expect("serialize back");
+        let slot = reserialized["multi_nook_slots"][0]
+            .as_object()
+            .expect("slot object");
+        assert!(
+            !slot.contains_key("provider"),
+            "an absent provider must not be written back as null"
+        );
     }
 }
