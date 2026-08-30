@@ -25,3 +25,28 @@ describe('providerKey', () => {
     expect(makeKey('kick', 'shared')).not.toBe(makeKey('twitch', 'shared'));
   });
 });
+
+// Edge cases around the bare-key rule. Every persisted grid, preset, favorite
+// and chat slice written before providers existed holds a bare login, so these
+// paths stay live indefinitely, not just through one migration.
+describe('providerKey edges', () => {
+  it('reads text that merely contains a colon as a Twitch login, not a provider', () => {
+    expect(parseKey('notaprovider:thing').provider).toBe('twitch');
+    expect(parseKey('12:34')).toEqual({ provider: 'twitch', channel: '12:34' });
+  });
+
+  it('folds case on a bare login so legacy keys of any casing converge', () => {
+    expect(parseKey('NickMercs')).toEqual({ provider: 'twitch', channel: 'nickmercs' });
+  });
+
+  it('round-trips a composite YouTube key without touching its casing', () => {
+    const key = makeKey('youtube', 'AGr94tpNVkw');
+    const back = parseKey(key);
+    expect(back.channel).toBe('AGr94tpNVkw');
+    expect(makeKey(back.provider, back.channel)).toBe(key);
+  });
+
+  it('keeps two YouTube ids that differ only by case as different channels', () => {
+    expect(makeKey('youtube', 'AGr94tpNVkw')).not.toBe(makeKey('youtube', 'agr94tpnvkw'));
+  });
+});

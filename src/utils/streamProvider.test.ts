@@ -47,6 +47,23 @@ test('watch URLs match what the backend classifier accepts', () => {
   assert.equal(buildProviderUrl('youtube', 'jfKfPfyJRdk'), 'https://www.youtube.com/watch?v=jfKfPfyJRdk');
 });
 
+test('a channel cannot break out of the URL it is interpolated into', () => {
+  // Slugs reach this from search results and from raw text the user typed.
+  assert.equal(buildProviderUrl('kick', 'a b'), 'https://kick.com/a%20b');
+  assert.equal(buildProviderUrl('kick', 'a/b'), 'https://kick.com/a%2Fb');
+  assert.equal(buildProviderUrl('twitch', 'a?b'), 'https://twitch.tv/a%3Fb');
+  assert.equal(
+    buildProviderUrl('youtube', 'a&b'),
+    'https://www.youtube.com/watch?v=a%26b',
+  );
+});
+
+test('no provider is ever addressed at twitch.tv', () => {
+  for (const p of ['kick', 'youtube', 'tiktok'] as const) {
+    assert.ok(!buildProviderUrl(p, 'somebody').includes('twitch.tv'), `${p} leaked to twitch.tv`);
+  }
+});
+
 describe('followIdentifier', () => {
   it('keys Kick follows by the slug, never the numeric user id', () => {
     expect(
