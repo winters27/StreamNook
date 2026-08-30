@@ -5,7 +5,8 @@ import {
   isUserCosmeticsHardFailed,
   subscribeToCosmetics,
 } from '../services/cosmeticsCache';
-import { isStreamNookUser, getProfilePrefs, whenAtmospheresReady, subscribeAtmospheresVersion, subscribeStreamNookRegistryVersion, subscribeToProfileThemeChanges } from '../services/supabaseService';
+import { isStreamNookUser, getProfilePrefs, whenAtmospheresReady, subscribeAtmospheresVersion, subscribeStreamNookRegistryVersion, subscribeToProfileThemeChanges, getOwnedCosmeticSlugs, isCosmeticsRegistryLoaded } from '../services/supabaseService';
+import { resolveEntitlement } from '../services/cosmetics/ownership';
 import { getAtmosphere } from '../services/atmospheres';
 import { parseCologneTheme, type CologneCosmetics } from '../services/cologneEvent';
 import {
@@ -354,9 +355,52 @@ function scheduleAtmosphereFlush() {
   });
 }
 
+/**
+ * Whether this member may actually WEAR the atmosphere they have selected.
+ *
+ * `user_profile_prefs` is world-writable under the anon key that ships in the
+ * bundle, and nothing on the render path re-checked ownership, so anyone could
+ * set their theme to a paid atmosphere and have it paint in every StreamNook
+ * user's chat. Rendering is the last place that can refuse, so it refuses here.
+ *
+ * Deliberately per-CLASS, not per-item, for subscriber atmospheres: a viewer has
+ * no way to see whether someone else is currently subscribed, and a strict
+ * owned-only check would blank a real subscriber whose per-item ownership row
+ * has not been granted yet (that RPC runs on their login, not ours).
+ *
+ * Accolade-gated atmospheres pass through unchecked ON PURPOSE. A viewer cannot
+ * verify another member's accolades (they are not loaded cross-user, and adding
+ * a fetch here would put a network round trip on the chat render path). Those
+ * close when `user_accolades` stops being anon-writable, which makes the
+ * accolade itself trustworthy. Do not "fix" this asymmetry by granting accolade
+ * atmospheres into `user_cosmetics`: that converts a forgeable accolade into a
+ * permanent ownership row and defeats this gate entirely.
+ */
+export function mayWearAtmosphere(userId: string, id: string | null): boolean {
+  if (!id) return true; // clearing is always allowed
+  // Our own accounts paint immediately. The server already gated the write, and
+  // gating here would make a member's own pick stop previewing.
+  if (ownAtmosphereAccounts.has(userId)) return true;
+  // Missing data must never read as "not owned", or a paying member is blanked
+  // during the registry load window or a Supabase outage.
+  if (!isCosmeticsRegistryLoaded()) return true;
+
+  const atm = getAtmosphere(id);
+  if (!atm) return true; // unknown to the catalog; nothing will paint anyway
+  if (atm.unlock?.kind === 'accolade') return true;
+
+  // Cologne carries '+coin' / '+border' modifiers on the id; ownership is
+  // recorded against the base atmosphere.
+  const baseId = id.split('+')[0];
+  const owned = getOwnedCosmeticSlugs(userId);
+  const { everSubscribed } = resolveEntitlement({ ownedSlugs: owned, activeSubscription: false });
+  return owned.has(baseId) || everSubscribed;
+}
+
 function pushAtmosphere(userId: string, id: string | null) {
-  atmosphereCache.set(userId, id);
-  pendingAtmosphereUpdates.set(userId, id);
+  const effective = mayWearAtmosphere(userId, id) ? id : null;
+  atmosphereCache.set(userId, effective);
+  pendingAtmosphereUpdates.set(userId, effective);
   scheduleAtmosphereFlush();
   if (ownAtmosphereAccounts.has(userId)) persistOwnAtmosphere(userId);
 }
