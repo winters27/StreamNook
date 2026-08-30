@@ -1,4 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { streamProvider } from '../utils/streamProvider';
+import { favoriteIdOf, favoriteMetaOf } from '../utils/favorites';
 import { useContextMenuStore } from '../stores/contextMenuStore';
 import { useAppStore } from '../stores/AppStore';
 import { usemultiNookStore } from '../stores/multiNookStore';
@@ -8,6 +10,8 @@ import { invoke } from '@tauri-apps/api/core';
 import { buildShareUrl } from '../utils/shareLink';
 import { replaceInputRange } from '../utils/chatInputWord';
 import { addToCustomDictionary } from '../utils/spellcheck';
+import { Tooltip } from './ui/Tooltip';
+import { gridRefusal } from '../types/providers';
 
 export const StreamContextMenu: React.FC = () => {
     const { isOpen, x, y, stream, inputElement, selectionText, menuType, spellStatus, spell, isFollowing, isCheckingFollow, closeMenu, toggleFollow } = useContextMenuStore();
@@ -254,22 +258,33 @@ export const StreamContextMenu: React.FC = () => {
 
     if (!stream || menuType !== 'stream') return null;
 
-    const isFavorite = isFavoriteStreamer(stream.user_id);
+    // `favoriteIdOf`, never the raw `user_id`: Kick and Twitch both use numeric
+    // ids, so right-clicking a Kick row used to write a key that could collide
+    // with a Twitch favourite (and never resolve as live either way).
+    const favoriteId = favoriteIdOf(stream);
+    const isFavorite = !!favoriteId && isFavoriteStreamer(favoriteId);
     const hasRoomForMultiNook = slots.length < 25;
+    // Two separate reasons the item can be unavailable, and they read
+    // differently: the grid is full, or this platform cannot be a tile at all.
+    const gridProvider = streamProvider(stream);
+    const providerRefusal = gridRefusal(gridProvider);
+    const canAddToGrid = hasRoomForMultiNook && !providerRefusal;
 
     const handleFavorite = (e: React.MouseEvent) => {
         e.stopPropagation();
-        toggleFavoriteStreamer(stream.user_id);
+        if (!favoriteId) return;
+        // Identity rides along so the channel can still be drawn once offline.
+        void toggleFavoriteStreamer(favoriteId, favoriteMetaOf(stream, favoriteId));
         closeMenu();
     };
 
     const handleMultiNook = (e: React.MouseEvent) => {
         e.stopPropagation();
-        if (!hasRoomForMultiNook) return;
+        if (!canAddToGrid) return;
 
         // Trigger flying animation from context menu click position
-        usemultiNookStore.getState().triggerAddAnimation(x, y, stream.user_login);
-        addSlot(stream.user_login);
+        usemultiNookStore.getState().triggerAddAnimation(x, y, stream.user_login, gridProvider);
+        addSlot(stream.user_login, gridProvider);
 
         closeMenu();
     };
@@ -374,11 +389,16 @@ export const StreamContextMenu: React.FC = () => {
                 </button>
 
                 {/* Add to MultiNook */}
+                <Tooltip
+                    content={providerRefusal ?? (hasRoomForMultiNook ? '' : 'The grid is full')}
+                    side="right"
+                    disabled={canAddToGrid}
+                >
                 <button
                     onClick={handleMultiNook}
-                    disabled={!hasRoomForMultiNook}
-                    className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium transition-all ${
-                        hasRoomForMultiNook
+                    disabled={!canAddToGrid}
+                    className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium transition-all w-full ${
+                        canAddToGrid
                             ? 'text-textSecondary hover:text-white hover:bg-glass-hover'
                             : 'text-textMuted opacity-50 cursor-not-allowed'
                     }`}
@@ -386,6 +406,7 @@ export const StreamContextMenu: React.FC = () => {
                     <LayoutGrid size={16} />
                     <span>Add to MultiNook</span>
                 </button>
+                </Tooltip>
 
                 {/* Open chat in MultiChat — spawns a popout window pre-loaded
                     with this channel. Doesn't start the stream; chat only. */}
@@ -414,6 +435,7 @@ export const StreamContextMenu: React.FC = () => {
                 </button>
 
                 {/* Favorite */}
+                {favoriteId && (
                 <button
                     onClick={handleFavorite}
                     className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium text-textSecondary hover:text-pink-400 hover:bg-glass-hover transition-all"
@@ -427,6 +449,7 @@ export const StreamContextMenu: React.FC = () => {
                     />
                     <span>{isFavorite ? 'Unfavorite' : 'Favorite'}</span>
                 </button>
+                )}
 
                 {/* Follow / Unfollow */}
                 <button
