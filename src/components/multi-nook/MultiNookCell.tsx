@@ -6,6 +6,7 @@ import { MultiNookSlot } from '../../types';
 import { useMultiNookPlayer } from './useMultiNookPlayer';
 import { usemultiNookStore } from '../../stores/multiNookStore';
 import { useAppStore } from '../../stores/AppStore';
+import { buildProviderUrl } from '../../utils/streamProvider';
 import { useChannelSocial } from '../../hooks/useChannelSocial';
 import {
   ignoresPlayerMouse,
@@ -21,9 +22,11 @@ import { useVolumeOsd } from '../../hooks/useVolumeOsd';
 import StreamTitleWithEmojis from '../StreamTitleWithEmojis';
 import { Tooltip } from '../ui/Tooltip';
 import { TwitchVerifiedMark } from '../ui/TwitchGlyph';
+import { ProviderLogo } from '../ProviderLogo';
 import { GripHorizontal, Undo2, Loader2, RefreshCcw, EyeOff, WifiOff, Maximize2, Minimize2 } from 'lucide-react';
 import { Heart, HeartBreak, X as XIcon } from 'phosphor-react';
 import { Logger } from '../../utils/logger';
+import { canGridProvider } from '../../types/providers';
 
 interface MultiNookCellProps {
   slot: MultiNookSlot;
@@ -47,7 +50,7 @@ const clearPendingFocusToggle = () => {
 };
 
 const MultiNookCellInner: React.FC<MultiNookCellProps> = ({ slot, cssOrder, gridSpanClass = '', customStyle = {}, isMaximized = false }) => {
-  const { id, channelLogin, channelName, channelId, volume, muted, isFocused, streamUrl, isMinimized = false, loadError, profileImageUrl, title, broadcasterType } = slot;
+  const { id, provider, channelLogin, channelName, channelId, volume, muted, isFocused, streamUrl, isMinimized = false, loadError, profileImageUrl, title, broadcasterType } = slot;
   // Actions only, so read them without subscribing. A bare `usemultiNookStore()`
   // here subscribed this tile to the WHOLE store, which meant any mutation
   // (including a volume drag on a sibling tile) re-rendered every tile in the
@@ -78,6 +81,8 @@ const MultiNookCellInner: React.FC<MultiNookCellProps> = ({ slot, cssOrder, grid
   // hook so we make one follow/subscription lookup at a time instead of one per
   // tile across the whole grid. Visibility additionally honors the same
   // Player Overlay Buttons setting as the single-stream player.
+  // The tile passes its OWN provider to useChannelSocial below, so the overlay is
+  // correct for this channel regardless of what the solo player last had.
   const socialEnabled = isFocused && !isMinimized;
   const playerOverlayButtons = useAppStore((s) => s.settings.player_overlay_buttons);
   const {
@@ -93,6 +98,7 @@ const MultiNookCellInner: React.FC<MultiNookCellProps> = ({ slot, cssOrder, grid
     handleSubscribeClick,
     offersMembership,
   } = useChannelSocial({
+    provider: provider ?? 'twitch',
     userId: channelId,
     userLogin: channelLogin,
     userName: channelName,
@@ -106,8 +112,19 @@ const MultiNookCellInner: React.FC<MultiNookCellProps> = ({ slot, cssOrder, grid
   const [availableQualities, setAvailableQualities] = useState<string[]>([]);
   useEffect(() => {
     if (!socialEnabled) return;
+    // A tile the grid refuses should never exist, so this is belt and braces
+    // for any provider added to GRID_BLOCKED later: get_stream_qualities
+    // resolves playback, and resolving is the expensive, side-effectful half of
+    // an adapter. Cheap to keep, and it means a refused provider can never reach
+    // the backend from here.
+    //
+    // Note this is a FRONTEND guard on purpose. The solo player calls the very
+    // same command (AppStore.getStreamQualities), where resolving is correct and
+    // expected, so refusing inside the Rust command would break the solo quality
+    // menu to protect the grid.
+    if (!canGridProvider(provider ?? 'twitch')) return;
     let cancelled = false;
-    invoke<string[]>('get_stream_qualities', { url: `https://twitch.tv/${channelLogin}` })
+    invoke<string[]>('get_stream_qualities', { url: buildProviderUrl(provider ?? 'twitch', channelLogin) })
       .then((qs) => {
         if (!cancelled && qs?.length) setAvailableQualities(qs);
       })
@@ -115,7 +132,7 @@ const MultiNookCellInner: React.FC<MultiNookCellProps> = ({ slot, cssOrder, grid
     return () => {
       cancelled = true;
     };
-  }, [socialEnabled, channelLogin]);
+  }, [socialEnabled, channelLogin, provider]);
 
   // Inject a Quality submenu into this tile's Plyr settings gear — mirrors the
   // single player. Selecting a quality restarts only this tile's proxy via
@@ -501,8 +518,15 @@ const MultiNookCellInner: React.FC<MultiNookCellProps> = ({ slot, cssOrder, grid
                   {channelName || channelLogin}
                 </h3>
               </Tooltip>
-              {broadcasterType === 'partner' && (
+              {/* Twitch's partner mark, on Twitch tiles only: broadcasterType is a
+                  Helix field and means nothing on another platform. */}
+              {(provider ?? 'twitch') === 'twitch' && broadcasterType === 'partner' && (
                 <TwitchVerifiedMark size={14} className="text-[#9146FF] shrink-0" />
+              )}
+              {/* Which platform this tile is. Only shown when it is NOT the
+                  default, so an all-Twitch grid looks exactly as it always has. */}
+              {provider && provider !== 'twitch' && (
+                <ProviderLogo provider={provider} size={13} className="shrink-0" />
               )}
               {isFocused && (
                 <Tooltip content="Focused Stream" delay={200} side="right">
