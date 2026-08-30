@@ -34,7 +34,8 @@ use commands::{
     link_preview::*, logs::*, mod_log_storage::*, modroom::*, multi_nook::*, plugins::*,
     profile_cache::*, provider_browse::*,
     resub::*, screen_capture::*, session::*, settings::*, seventv::*, seventv_cosmetics::*,
-    seventv_cosmetics_fetch::*, song_id::*, streaming::*, subscriptions::*, twitch::*,
+    seventv_cosmetics_fetch::*, song_id::*, streamnook_api::*, streaming::*, subscriptions::*,
+    twitch::*,
     universal_cache::*,
     user_profile::*, watch_streak::*, whisper_storage::*,
 };
@@ -691,6 +692,7 @@ fn main() {
             // Clone the app_state before managing it
             let app_state_for_live_notif = app_state.clone();
             let app_state_for_provider_live = app_state.clone();
+            let app_state_for_favorite_live = app_state.clone();
 
             // Manage AppState directly, not wrapped in Arc
             app.manage(app_state);
@@ -702,6 +704,17 @@ fn main() {
             // shared. Started here (not earlier in setup) because it needs the
             // AppState, which only exists at this point.
             services::provider_live_service::start(app_handle.clone(), app_state_for_provider_live);
+
+            // Who's-live polling for FAVOURITED channels, which may not be
+            // followed on any platform and so are invisible to both the Twitch
+            // follow poller and the provider one above. Emits its own
+            // `favorites-live-update` for the lists, and `streamer-went-live`
+            // tagged `source: "favorite"` so the notification UI can gate it
+            // on its own setting.
+            services::favorite_live_service::start(
+                app_handle.clone(),
+                app_state_for_favorite_live,
+            );
 
             // Keep the Kick OAuth pair perpetually fresh (single-flight refresh
             // on a clock), and the YouTube cookie harvest young. Both are what
@@ -928,6 +941,8 @@ fn main() {
             check_following_status,
             get_all_followed_channels,
             get_offline_last_broadcasts,
+            get_streams_by_user_ids,
+            get_users_by_ids,
             verify_token_health,
             force_refresh_token,
             get_twitch_token,
@@ -998,6 +1013,8 @@ fn main() {
             provider_channel_meta,
             provider_live_check,
             get_provider_followed_live,
+            get_favorite_live,
+            refresh_favorites,
             kick_account_sync,
             youtube_account_sync,
             provider_channel_avatars,
@@ -1309,6 +1326,8 @@ fn main() {
             get_streamnook_identities,
             get_streamnook_identity_resolved,
             set_streamnook_identity,
+            // Authenticated writes to StreamNook's own API. One command, path-allowlisted.
+            streamnook_api_post,
             // Hype Train commands
             get_hype_train_status,
             get_bulk_hype_train_status,

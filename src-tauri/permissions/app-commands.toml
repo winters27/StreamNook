@@ -430,6 +430,7 @@ allow = [
   "get_streamnook_identity",
   "get_streamnook_identities",
   "get_streamnook_identity_resolved",
+  "streamnook_api_post",
   "set_streamnook_identity",
   "get_hype_train_status",
   "get_bulk_hype_train_status",
