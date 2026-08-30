@@ -35,6 +35,7 @@ import { useGiftBombStore, type GiftRecipient } from './giftBombStore';
 import { giftBombOriginOf, isGiftBombAnnouncement, isGiftBombChild } from '../utils/giftBombCollapse';
 import { useMessageRepeatStore, type RepeatParticipant } from './messageRepeatStore';
 import { normalizeForRepeat, isPrivilegedChatter } from '../utils/messageRepeat';
+import { tokenizeLocalBody } from '../utils/localMessageTokens';
 import type { SongMatch } from '../utils/songId';
 
 // Hard caps borrowed from the prior single-channel hook. Keeping them as
@@ -867,6 +868,38 @@ function emptySlice(
     userBadgesFromIrc: null,
     userColorFromIrc: lastOwnChatColor(),
   };
+}
+
+/** This lowercases, so every key in `channels` is lowercase regardless of what
+ *  the caller computed. That makes storage the authority on key shape: an
+ *  acquireChannel key of `youtube:HVtwmO9RLNw` is STORED as
+ *  `youtube:hvtwmo9rlnw`.
+ *
+ *  Every lookup must therefore fold to this form. Use `sliceLookupKey` below
+ *  when starting from (provider, channel); the message router lowercases its
+ *  whole composite string for the same reason. Making either side
+ *  case-preserving was tried on 2026-08-29 and killed YouTube chat outright:
+ *  74 drops in 90s and a dead pane, zero after reverting. */
+/** The key a slice is actually STORED under.
+ *
+ *  `setSlice` lowercases unconditionally, so this is the only form that can ever
+ *  be found in `channels`. `makeKey` preserves case for YouTube, so a caller that
+ *  computes a composite key and looks it up directly MISSES ITS OWN SLICE.
+ *
+ *  Measured before this existed: a mixed-case YouTube key resolved 0 times out of
+ *  40 across a full session log. The consequence was not cosmetic. `acquireChannel`
+ *  never found the existing slice so its ref count never rose, and
+ *  `releaseChannel` returned early without PARTing the channel or freeing the
+ *  slice's emote metadata (1-3 MB per channel, per its own comment), so a YouTube
+ *  chat connection outlived every tile that opened it.
+ *
+ *  NOT the same as the message-routing key. Routing lowercases a whole composite
+ *  string; this takes (provider, channel) and folds the result. Both land on
+ *  lowercase because STORAGE is lowercase. Do not "unify" them by making either
+ *  side case-preserving: that was tried on 2026-08-29 and killed YouTube chat
+ *  outright, because storage does not care what the caller intended. */
+function sliceLookupKey(provider: ProviderId, channel: string): string {
+  return (provider === 'twitch' ? channel : makeKey(provider, channel)).toLowerCase();
 }
 
 function setSlice(channel: string, slice: ChannelSlice) {
@@ -2075,6 +2108,14 @@ function handleWsMessage(raw: string) {
         const channels = useChatConnectionStore.getState().channels;
         let targetChannel: string | null = null;
         if (parsed.channel) {
+          // Lowercased on purpose. This is NOT the case-preserving key space
+          // makeKey builds: `setSlice` lowercases at the storage boundary, so
+          // EVERY key in `channels` is lowercase no matter what the caller
+          // computed. acquireChannel builds youtube:HVtwmO9RLNw and setSlice
+          // stores it as youtube:hvtwmo9rlnw. Routing with the case-preserving
+          // key therefore matches nothing and silently drops every YouTube row:
+          // measured 74 drops in 90s with a dead chat pane, versus zero after
+          // restoring this line. Verified on device 2026-08-29.
           targetChannel = (parsed.channel as string).toLowerCase();
         } else if (channels.size === 1) {
           targetChannel = channels.keys().next().value as string;
@@ -2087,8 +2128,11 @@ function handleWsMessage(raw: string) {
         }
         const slice = channels.get(targetChannel);
         if (!slice) {
+          // List the keys that DO exist. Without them this warning says what it
+          // wanted and not what it had, which is the whole reason a key mismatch
+          // here reads as "chat is patchy" rather than as a routing fault.
           Logger.warn(
-            `[ChatStore] Dropping structured message: no slice for "${targetChannel}" (id=${messageId}, slices=${channels.size})`,
+            `[ChatStore] Dropping structured message: no slice for "${targetChannel}" (id=${messageId}, slices=${channels.size}, have=[${Array.from(channels.keys()).join(', ')}])`,
           );
           return;
         }
@@ -2692,7 +2736,10 @@ export async function acquireChannel(
 ): Promise<void> {
   // Twitch keeps bare-login keys (byte-identical to before); non-Twitch sources
   // get a "provider:channel" composite key. MultiChat only.
-  const key = provider === 'twitch' ? channel.toLowerCase() : makeKey(provider, channel);
+  // Folded to the STORED form. This used to build the case-preserving composite
+  // and then miss its own slice for every mixed-case YouTube id, so the ref count
+  // never rose and each acquire silently replaced the previous slice.
+  const key = sliceLookupKey(provider, channel);
   const state = useChatConnectionStore.getState();
   const existing = state.channels.get(key);
 
@@ -2783,7 +2830,11 @@ export async function releaseChannel(
   channel: string,
   provider: ProviderId = 'twitch',
 ): Promise<void> {
-  const key = provider === 'twitch' ? channel.toLowerCase() : makeKey(provider, channel);
+  // Same fold as acquire. Before this, a mixed-case YouTube id missed here and hit
+  // the early return below, so the channel was never PARTed and its slice never
+  // freed: the connection outlived the tile and kept delivering into a grid that
+  // no longer had a slice for it.
+  const key = sliceLookupKey(provider, channel);
   const slice = useChatConnectionStore.getState().channels.get(key);
   if (!slice) return;
   slice.refCount -= 1;
@@ -3106,7 +3157,7 @@ export function injectRedemptionMessage(
       color: r.color || '#9147ff',
       badges: [],
       content: body,
-      segments: [{ type: 'text', content: body }],
+      segments: tokenizeLocalBody(body, getChannelEmotes(channel)),
       is_action: false,
       is_first_message: false,
       is_mentioned: false,
