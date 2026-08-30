@@ -10,6 +10,8 @@ import { Loader2, RefreshCcw, Home, LayoutGrid, Shield, ShieldCheck, ShieldAlert
 import { Heart, HeartBreak, ArrowLeft, X as XIcon } from 'phosphor-react';
 import { useAppStore } from '../stores/AppStore';
 import { streamProvider } from '../utils/streamProvider';
+import { makeKey } from '../utils/providerKey';
+import { canGridProvider, gridRefusal } from '../types/providers';
 import { platformTerms } from '../utils/platformTerms';
 import { useContextMenuStore } from '../stores/contextMenuStore';
 import { buildShareUrl } from '../utils/shareLink';
@@ -1028,7 +1030,13 @@ const VideoPlayer = () => {
               playbackProvider,
               PROVIDER_LIVE_SYNC_HEADROOM,
             ),
-        liveMaxLatencyDuration: 60, // Capped to 60s to allow GC. Prevents holding massive 10min TS buffers in RAM. Must stay > liveSyncDuration.
+        // NOT a memory knob (backBufferLength / maxBufferLength own that). Per hls.js's
+        // latency-controller.ts this is the distance from the edge at which hls.js SEEKS
+        // FORWARD to liveSyncPosition by itself. Deliberately left far out of reach on the
+        // LL path: liveSyncPosition is clamped to `edge - partTarget`, which on this relay
+        // is content the origin has promoted but not published, and seeking there
+        // mid-playback is the documented freeze. Must stay > liveSyncDuration.
+        liveMaxLatencyDuration: 60,
         // 1 = hls.js's latency controller is fully inert on EVERY path (its rate is
         // quantized to 0.05 steps — dist ~32618 — and each abrupt step is audible
         // through the pitch corrector as a pop/warble, obvious on music, and reads
@@ -1127,6 +1135,14 @@ const VideoPlayer = () => {
             // Full ceiling only with floor+1.5s of real consumable buffer; a
             // behind-live signal the buffer cannot back (relay at its own edge)
             // resolves to 1.0 instead of overspeed-drain-stall cycles.
+            //
+            // Do not lower this without a capture in hand. It was cut to 0.75 on
+            // the theory that the ramp was throttling normal operation. The next
+            // session logged 291 buffer stalls in 4h10m against 6 in a 4h11m
+            // session on the same path the day before, and the forward buffer at
+            // those stalls measured 0.11s median. Overspeed can only convert
+            // buffer that already exists into reduced latency; on this path there
+            // is very little of it to spend.
             engageSpan: 1.5,
             slowRate: 0.97,
             tickMs: 500,
@@ -1277,6 +1293,15 @@ const VideoPlayer = () => {
               }
             }
           } else {
+            // No third "drifted far behind while advancing" branch here on purpose.
+            // One existed and was removed: it triggered off `hls.latency`, which
+            // hls.js computes as `levelDetails.edge + levelDetails.age -
+            // currentTime` (latency-controller.ts). The `age` term means a playlist
+            // that stops updating inflates the reading by one second per second
+            // while playback is completely unaffected, so the branch fired on a
+            // measurement artifact and its remedy was a full restartStream().
+            // Any future drift handling has to measure the SERVABLE distance (what
+            // is downloaded ahead of the playhead), not the advertised edge.
             over = 0;
             frozen = 0;
           }
@@ -2370,8 +2395,10 @@ const VideoPlayer = () => {
 
     const login = stream.user_login;
     const mn = usemultiNookStore.getState();
+    const provider = streamProvider(stream);
+    const addKey = makeKey(provider, login);
     const alreadyPresent = mn.slots.some(
-      (s) => s.channelLogin.toLowerCase() === login.toLowerCase()
+      (s) => makeKey(s.provider ?? 'twitch', s.channelLogin) === addKey
     );
 
     // MultiNook holds at most 25 tiles. addSlot enforces this too (with its own
@@ -2385,14 +2412,13 @@ const VideoPlayer = () => {
     // Await the add so slots is non-empty before we toggle. Otherwise
     // toggleMultiNook treats this as an empty entry and reloads the stored
     // lineup, dropping the channel we just added.
-    await mn.addSlot(login);
+    await mn.addSlot(login, provider);
 
-    // Focus MultiNook chat on the channel we came from. The chat hook keys on
-    // the active channel's login, so keeping it on this same channel means the
-    // chat connection carries straight over instead of churning to another tile.
-    if (stream.user_id) {
-      usemultiNookStore.getState().setActiveChatChannelId(stream.user_id);
-    }
+    // Focus MultiNook chat on the channel we came from, keyed the way every
+    // consumer compares it (provider:login). Keeping the selection on this same
+    // channel means the chat connection carries straight over instead of
+    // churning to another tile.
+    usemultiNookStore.getState().setActiveChatChannelId(addKey);
 
     // Enter the grid BEFORE tearing down the solo stream so the chat hook never
     // sees the channel disappear (MultiNook's active slot is this same channel).
@@ -2899,11 +2925,18 @@ const VideoPlayer = () => {
               also exits the current stream, so an ungated click on a Kick or
               YouTube stream tore down what you were watching and handed back a
               dead tile. */}
-          {overlayButtonOn('multinook') && currentMediaType === 'live' && isTwitchStream && (
-            <Tooltip content="Add to MultiNook" side="bottom">
+          {/* Shown for every platform, disabled with the reason on the ones the
+              grid cannot run. Hiding it instead reads as a missing feature, which
+              is what this looked like while the grid was Twitch-only. */}
+          {overlayButtonOn('multinook') && currentMediaType === 'live' && (
+            <Tooltip
+              content={gridRefusal(streamProvider(currentStream)) ?? 'Add to MultiNook'}
+              side="bottom"
+            >
             <button
               onClick={handleAddToMultiNook}
-              className="flex items-center justify-center p-2 glass-button rounded-lg"
+              disabled={!canGridProvider(streamProvider(currentStream))}
+              className="flex items-center justify-center p-2 glass-button rounded-lg disabled:opacity-40 disabled:cursor-default"
               style={{ backdropFilter: 'blur(16px)' }}
             >
               <LayoutGrid className="w-4 h-4 text-white hover:text-accent transition-colors duration-200" />
