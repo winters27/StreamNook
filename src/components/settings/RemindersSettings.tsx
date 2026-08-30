@@ -23,6 +23,7 @@ import type {
   ReminderKeywordFrom,
   ReminderChannelScope,
 } from '../../types';
+import type { ProviderId } from '../../types/providers';
 
 const MAX_REPEAT = 10;
 
@@ -152,6 +153,9 @@ const RepeatStepper: React.FC<{ value: number; onChange: (v: number) => void }> 
   );
 };
 
+/** Pinned at module scope so the array identity is stable across renders. */
+const TWITCH_ONLY: ProviderId[] = ['twitch'];
+
 // Inline channel search, reusing the same finder + row that back the MultiChat
 // pickers (live follows first, then Twitch search, with avatars and live dots).
 const ChannelPicker: React.FC<{
@@ -160,6 +164,9 @@ const ChannelPicker: React.FC<{
 }> = ({ login, onPick }) => {
   const [open, setOpen] = useState(false);
   const exclude = useMemo(() => new Set<string>(), []);
+  // Twitch ONLY, deliberately. A reminder is stored as a bare channel_login and
+  // fired through Twitch IRC, so a Kick row picked here would set a reminder that
+  // silently never fires, or fires at a same-named Twitch channel instead.
   const {
     searchInput,
     setSearchInput,
@@ -169,7 +176,7 @@ const ChannelPicker: React.FC<{
     listRef,
     refreshFollowing,
     reset,
-  } = useChannelSearch(exclude);
+  } = useChannelSearch({ excludeKeys: exclude, providers: TWITCH_ONLY });
 
   useEffect(() => {
     if (open) void refreshFollowing();
