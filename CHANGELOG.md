@@ -42,7 +42,7 @@
 - **The download is smaller** and the app uses less memory for chat badges and emotes.
 
 ### 🔧 Maintenance
-- **Updates are verified before they install.** Packages ship with a signature and are checked against a pinned key, so a corrupted or tampered download is refused rather than installed, including copies downloaded by hand.
+- **Update signing is now in place end to end.** Release packages can be signed and the app knows how to verify them against a pinned key, so a corrupted or tampered download can be refused rather than installed. Verification is not being enforced yet: this release lays the groundwork so it can be switched on without another update.
 - **Content loaded into the app cannot run code of its own.** Chat, emotes and embedded pages are confined, and channel About panels are cleaned before display, so a channel cannot hide anything harmful in its own panel text.
 - **Profile and cosmetic changes are saved over a signed-in connection**, so only you can change yours, and a failed profile save no longer stops your presence from updating.
 - **Chat atmospheres only paint for members who genuinely unlocked them.**
