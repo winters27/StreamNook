@@ -18,8 +18,11 @@ import { usePlatformAccountStore } from '../stores/platformAccountStore';
 import { PlatformLoginButton } from './PlatformLoginButton';
 import { WATCHABLE_PROVIDERS, PROVIDER_WATCH, providerLabel, type ProviderId, type ProviderCategory } from '../types/providers';
 import { useFollowsStore } from '../stores/followsStore';
+import { useFavoritesStore } from '../stores/favoritesStore';
+import { favoriteIdOf, favoriteMetaOf, dedupeByFavoriteId } from '../utils/favorites';
 import { streamProvider, streamKey, followIdentifier } from '../utils/streamProvider';
 import { makeKey } from '../utils/providerKey';
+
 import { GlassSelect } from './ui/GlassSelect';
 import { CategorySearchBox } from './ui/CategorySearchBox';
 import {
@@ -43,6 +46,29 @@ interface DropCampaign {
     game_id: string;
     game_name: string;
 }
+
+/**
+ * Vertical falloff for the Favorites shelf's film grain.
+ *
+ * VERTICAL only, and that is the point. A pink wash used to share this shape and
+ * it went through three attempts as a centred radial, all of which failed for
+ * one structural reason: the shelf is a full-bleed row whose cards are
+ * LEFT-ALIGNED, so a dome centred at 50% puts its peak in empty space and its
+ * tail over the cards - the more screen you give it, the less it reads. Every
+ * fix then oscillated between "bright enough to see in the middle" (still
+ * non-zero where its box ends, so it clipped square into a hard line) and
+ * "terminates inside the box" (invisible on a maximized window). Those were not
+ * two bugs; they were one wrong shape. The wash was cut entirely afterwards
+ * (Brandon: "not a fan of the pink wash, lets just keep the grain"), but the
+ * band survives it and the reasoning is worth keeping for the next decoration.
+ *
+ * A band has no horizontal falloff, so nothing can clip it and it can be
+ * extended sideways freely; it is uniform at any monitor width; and it is zero
+ * at both ends BY CONSTRUCTION, so it cannot grow an edge from a change in the
+ * section's height or from the scroll container clipping the bleed above it.
+ */
+const FAVORITES_GRAIN_MASK =
+  'linear-gradient(to bottom, transparent 0%, white 38%, white 62%, transparent 100%)';
 
 const FlyingDot = ({ startX, startY, targetX, targetY }: { startX: number, startY: number, targetX: number, targetY: number }) => {
     const [isFlying, setIsFlying] = useState(false);
@@ -277,7 +303,10 @@ const QuickAddButton = ({ stream }: { stream: TwitchStream }) => {
         return () => window.removeEventListener('resize', resizeListener);
     }, []);
 
-    if (slots.some(s => s.channelLogin.toLowerCase() === stream.user_login.toLowerCase())) return null;
+    // Composite compare: a Twitch tile of this name must not hide the add button
+    // on the Kick row of the same name, and vice versa.
+    const rowKey = makeKey(streamProvider(stream), stream.user_login);
+    if (slots.some((s) => makeKey(s.provider ?? 'twitch', s.channelLogin) === rowKey)) return null;
 
     return (
         <div 
@@ -289,8 +318,8 @@ const QuickAddButton = ({ stream }: { stream: TwitchStream }) => {
                     ref={buttonRef}
                     onClick={(e) => {
                         e.stopPropagation();
-                        triggerAddAnimation(e.clientX, e.clientY, stream.user_login);
-                        addSlot(stream.user_login);
+                        triggerAddAnimation(e.clientX, e.clientY, stream.user_login, streamProvider(stream));
+                        addSlot(stream.user_login, streamProvider(stream));
                     }}
                     className="flex items-center justify-center glass-button !rounded-full aspect-square !p-1.5 text-white shadow-[0_4px_10px_rgba(0,0,0,0.5)]"
                 >
@@ -362,6 +391,10 @@ const Home = () => {
         videosSort,
         videosPeriod,
         mediaSearchQuery,
+        // Destructured now (it used to be tracked only for re-render): the live
+        // favourites list derives from it, so the memo needs it as a dependency.
+        favoriteStreamers,
+        favoriteChannels,
     } = useAppStore(
         useShallow((s) => ({
             followedStreams: s.followedStreams,
@@ -386,10 +419,13 @@ const Home = () => {
             videosSort: s.videosSort,
             videosPeriod: s.videosPeriod,
             mediaSearchQuery: s.mediaSearchQuery,
-            // Not destructured: isFavoriteStreamer is called during render (the
-            // favorite sort and star icons) and reads settings.favorite_streamers,
-            // so track that slice here purely to re-render when a favorite toggles.
+            // `isFavoriteStreamer` is called during render (the favourite sort
+            // and the hearts) and reads settings.favorite_streamers, which isn't
+            // itself reactive, so this slice is what re-renders on a toggle.
             favoriteStreamers: s.settings.favorite_streamers,
+            // Identity for favourites, so the offline roster can draw a channel
+            // you don't follow anywhere.
+            favoriteChannels: s.settings.favorite_channels,
         })),
     );
     const externalDropsProvider = useAppStore((s) => s.externalDropsProvider);
@@ -397,6 +433,14 @@ const Home = () => {
     const [isLoadingOfflineChannels, setIsLoadingOfflineChannels] = useState(false);
     const [offlineChannelsFetched, setOfflineChannelsFetched] = useState(false);
     const [offlineLastBroadcasts, setOfflineLastBroadcasts] = useState<Record<string, string | null>>({});
+
+    // Fill in identity for favourites saved as bare ids, before the sidecar
+    // existed. Without a name and a face those can't be drawn in the offline
+    // roster at all. One batched lookup, and it stops matching once filled.
+    useEffect(() => {
+        if (homeActiveTab !== 'following' || !isAuthenticated) return;
+        void useAppStore.getState().backfillFavoriteIdentities();
+    }, [homeActiveTab, isAuthenticated]);
 
     // Fetch offline followed channels when viewing the following tab
     useEffect(() => {
@@ -440,16 +484,19 @@ const Home = () => {
     // MultiNook ghost card state
     const multiNookSlots = usemultiNookStore(s => s.slots);
     const isMultiNookActive = usemultiNookStore(s => s.isMultiNookActive);
-    const suckUpLogin = usemultiNookStore(s => s.suckUpLogin);
-    const materializingLogin = usemultiNookStore(s => s.materializingLogin);
+    const suckUpKey = usemultiNookStore(s => s.suckUpKey);
+    const materializingKey = usemultiNookStore(s => s.materializingKey);
     const triggerRecallAnimation = usemultiNookStore(s => s.triggerRecallAnimation);
     
     // Determine if Home is acting as an overlay over a playing stream/multinook
     const isOverlayMode = !!streamUrl || isMultiNookActive;
-    const isInMultiNook = useCallback((login: string) => 
-        multiNookSlots.some(s => s.channelLogin.toLowerCase() === login.toLowerCase()), 
-        [multiNookSlots]
-    );
+    // Compared on the composite key, so a Kick channel and a Twitch channel of
+    // the same name are never mistaken for each other. Callers pass the row's
+    // provider; absent means Twitch, as everywhere else.
+    const isInMultiNook = useCallback((login: string, provider: ProviderId = 'twitch') => {
+        const key = makeKey(provider, login);
+        return multiNookSlots.some((s) => makeKey(s.provider ?? 'twitch', s.channelLogin) === key);
+    }, [multiNookSlots]);
 
     // Use store state directly
     const activeTab = homeActiveTab;
@@ -532,6 +579,9 @@ const Home = () => {
     const [isLoadingProvider, setIsLoadingProvider] = useState(false);
     const [providerError, setProviderError] = useState<string | null>(null);
     const providerFollowsLive = useFollowsStore((s) => s.liveByKey);
+    // Live rows for favourites the backend sweeps because they're followed
+    // nowhere. Merged with the two follow sources below, not used on its own.
+    const favoritesLive = useFavoritesStore((s) => s.liveByKey);
     const providerFollows = useFollowsStore((s) => s.follows);
     // Scoped to one non-Twitch platform: the grid is entirely that platform's.
     const isProviderView = providerFilter !== 'all' && providerFilter !== 'twitch';
@@ -1524,13 +1574,10 @@ const Home = () => {
         // matches the right-click context-menu "Add to MultiNook" action.
         if (e.ctrlKey || e.metaKey) {
             e.preventDefault();
-            // The grid is Twitch-only for now (its tiles resolve twitch.tv URLs).
-            if (provider !== 'twitch') {
-                useAppStore.getState().addToast(`MultiNook supports Twitch channels for now`, 'info');
-                return;
-            }
-            usemultiNookStore.getState().triggerAddAnimation(e.clientX, e.clientY, stream.user_login);
-            usemultiNookStore.getState().addSlot(stream.user_login);
+            // No refusal here: addSlot owns the grid gate and reports its own
+            // reason, so a second copy of the rule would only drift from it.
+            usemultiNookStore.getState().triggerAddAnimation(e.clientX, e.clientY, stream.user_login, provider);
+            usemultiNookStore.getState().addSlot(stream.user_login, provider);
             return;
         }
         // Track which category this stream was started from (if any)
@@ -1541,12 +1588,6 @@ const Home = () => {
         // platform without the caller having to know which one it is.
         startStream(stream.user_login, stream);
     };
-
-    // What identifies a channel in the favourites list. Twitch rows keep their
-    // numeric user id (every existing favourite is stored that way); provider
-    // rows use the composite key, which is stable and can't collide with one.
-    const favoriteIdOf = (stream: TwitchStream) =>
-        streamProvider(stream) === 'twitch' ? stream.user_id : streamKey(stream);
 
     // Follows for platforms that expose no follow list to us: the channel goes
     // into StreamNook's own list, and the backend poller starts reporting it.
@@ -1592,31 +1633,86 @@ const Home = () => {
         }
     };
 
-    const handleFavoriteClick = (e: React.MouseEvent, userId: string) => {
+    // Pending heart-break timers, keyed by favourite id.
+    //
+    // Un-favouriting is deferred a second so the break animation can play, and
+    // without this a re-favourite inside that window left the old timer to fire
+    // and toggle the channel straight back off. Reachable before; now that the
+    // heart is on every card it is easy to hit.
+    const heartBreakTimers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
+    useEffect(() => {
+        const timers = heartBreakTimers.current;
+        return () => {
+            for (const t of timers.values()) clearTimeout(t);
+            timers.clear();
+        };
+    }, []);
+
+    const handleFavoriteClick = async (e: React.MouseEvent, stream: TwitchStream) => {
         e.stopPropagation();
 
-        const isFavorite = isFavoriteStreamer(userId);
-
-        if (isFavorite) {
-            setAnimatingHearts(prev => new Set(prev).add(userId));
-
-            setTimeout(() => {
-                setAnimatingHearts(prev => {
-                    const newSet = new Set(prev);
-                    newSet.delete(userId);
-                    return newSet;
+        let id = favoriteIdOf(stream);
+        if (!id) {
+            // Only a YouTube row with no channel identity gets here: it is
+            // addressed by video id, which names one broadcast and would sit in
+            // the list resolving a finished stream forever. Resolve the channel
+            // rather than persisting something that can never match.
+            try {
+                const meta = await invoke<{ user_id?: string }>('provider_channel_meta', {
+                    provider: 'youtube',
+                    channel: stream.user_login,
                 });
-                toggleFavoriteStreamer(userId);
+                if (meta?.user_id) id = makeKey('youtube', meta.user_id);
+            } catch (err) {
+                Logger.warn('[favorites] could not resolve a channel for this row:', err);
+            }
+            if (!id) {
+                useAppStore.getState().addToast("Couldn't work out which channel this is", 'error');
+                return;
+            }
+        }
+
+        const favoriteId = id;
+        const pending = heartBreakTimers.current.get(favoriteId);
+        if (pending) {
+            // A break was already queued for this channel and the user has
+            // clicked again, so cancel it: the toggle below is the live intent.
+            clearTimeout(pending);
+            heartBreakTimers.current.delete(favoriteId);
+            setAnimatingHearts(prev => {
+                const next = new Set(prev);
+                next.delete(favoriteId);
+                return next;
+            });
+        }
+
+        if (isFavoriteStreamer(favoriteId)) {
+            setAnimatingHearts(prev => new Set(prev).add(favoriteId));
+            const timer = setTimeout(() => {
+                heartBreakTimers.current.delete(favoriteId);
+                setAnimatingHearts(prev => {
+                    const next = new Set(prev);
+                    next.delete(favoriteId);
+                    return next;
+                });
+                void toggleFavoriteStreamer(favoriteId);
             }, 1000);
+            heartBreakTimers.current.set(favoriteId, timer);
         } else {
-            toggleFavoriteStreamer(userId);
+            // The identity rides along so the channel can still be drawn once it
+            // goes offline: `favorite_streamers` is only ids.
+            void toggleFavoriteStreamer(favoriteId, favoriteMetaOf(stream, favoriteId));
         }
     };
 
     const sortStreamsByFavorites = (streams: TwitchStream[]) => {
         return [...streams].sort((a, b) => {
-            const aIsFavorite = isFavoriteStreamer(a.user_id);
-            const bIsFavorite = isFavoriteStreamer(b.user_id);
+            // `favoriteIdOf`, not `user_id`: platform ids collide across
+            // services, so a Kick row could sort as a Twitch favourite.
+            const aId = favoriteIdOf(a);
+            const bId = favoriteIdOf(b);
+            const aIsFavorite = !!aId && isFavoriteStreamer(aId);
+            const bIsFavorite = !!bId && isFavoriteStreamer(bId);
 
             if (aIsFavorite && !bIsFavorite) return -1;
             if (!aIsFavorite && bIsFavorite) return 1;
@@ -1890,6 +1986,35 @@ const Home = () => {
         [providerFollowedLive],
     );
 
+    // Live FAVOURITES, merged from all three places a live row can come from:
+    // your Twitch follows, the provider follow poller, and the favourites sweep
+    // (which covers channels you follow nowhere). Deduped on the FAVOURITE id
+    // rather than `streamKey`, because on YouTube the same channel arrives keyed
+    // by video id from a browse row and by UC id from a live check, and a
+    // streamKey dedupe lets both through.
+    const liveFavorites = useMemo(() => {
+        const merged = dedupeByFavoriteId([
+            ...followedStreams,
+            ...providerFollowedLive,
+            ...Object.values(favoritesLive),
+        ]);
+        return merged
+            .filter((s) => {
+                const id = favoriteIdOf(s);
+                return !!id && isFavoriteStreamer(id);
+            })
+            .filter((s) => providerFilter === 'all' || streamProvider(s) === providerFilter)
+            .sort((a, b) => (b.viewer_count ?? 0) - (a.viewer_count ?? 0));
+        // `favoriteStreamers` is tracked so the list re-derives when a heart is
+        // toggled; `isFavoriteStreamer` reads it but isn't itself reactive.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [followedStreams, providerFollowedLive, favoritesLive, favoriteStreamers, providerFilter]);
+
+    const favoriteKeys = useMemo(
+        () => new Set(liveFavorites.map((s) => streamKey(s))),
+        [liveFavorites],
+    );
+
     const rawDisplayStreams = isProviderView
         ? (activeTab === 'following'
             ? providerFollowedLive
@@ -1934,15 +2059,409 @@ const Home = () => {
             // mixed view (which is exactly where the duplicate-key warning fired).
             const key = streamKey(s);
             if (seen.has(key)) return false;
+            // Favourites are pulled out into their own section above on the tabs
+            // that show one; leaving them here too would render each one twice.
+            if ((activeTab === 'following' || activeTab === 'recommended') && favoriteKeys.has(key)) {
+                return false;
+            }
             seen.add(key);
             return true;
         });
-    }, [rawDisplayStreams]);
+    }, [rawDisplayStreams, activeTab, favoriteKeys]);
 
     // Channel avatars for the cards on screen. A stream row does not reliably carry
     // one: Twitch needs a Helix users lookup, and YouTube category rows need a
     // per-channel resolve (search and the subscriptions feed already ship theirs).
 
+
+    // ONE card renderer, used by both the main grid and the Favourites
+    // section above it. Extracted rather than copied: the Categories tab
+    // already has its own duplicate of this card, and a third copy would be
+    // a third place for the two to drift apart.
+    const renderStreamCard = (stream: TwitchStream) => {
+                                        // May be null for a YouTube row with no channel identity;
+                                        // the click handler resolves one before writing.
+                                        const favoriteId = favoriteIdOf(stream);
+                                        const isFavorite = !!favoriteId && isFavoriteStreamer(favoriteId);
+                                        // Check if stream's game has active drops
+                                        const streamDropsCampaign = stream.game_name ? dropsGameNames.get(stream.game_name.toLowerCase()) : undefined;
+                                        const hasDrops = !!streamDropsCampaign;
+                                        return (() => {
+                                            const isQueued = isInMultiNook(stream.user_login, streamProvider(stream));
+                                            const isSuckingUp = suckUpKey === makeKey(streamProvider(stream), stream.user_login);
+                                            const isMaterializing = materializingKey === makeKey(streamProvider(stream), stream.user_login);
+
+                                            return (
+                                                <motion.div
+                                                    layout
+                                                    // Opacity and a short lift, never scale: a
+                                                    // scaling element fights `layout`'s own scale
+                                                    // correction and the card's text and rounded
+                                                    // corners smear while it settles.
+                                                    initial={{ opacity: 0, y: 8 }}
+                                                    animate={{ opacity: 1, y: 0 }}
+                                                    exit={{ opacity: 0, y: -4 }}
+                                                    transition={{
+                                                        type: "spring",
+                                                        stiffness: 350,
+                                                        damping: 25,
+                                                        opacity: { duration: 0.16, ease: 'easeOut' },
+                                                        y: { duration: 0.2, ease: [0.2, 0.9, 0.25, 1] },
+                                                    }}
+                                                    // Composite provider:channel key. Not `stream.id` — provider rows
+                                                    // may carry none, and where they do the numeric ids collide with
+                                                    // Twitch's in the mixed view.
+                                                    key={streamKey(stream)}
+                                                    // Shared layout identity: hearting a card re-parents it
+                                                    // between the Favorites grid and the follows grid, and the
+                                                    // shared LayoutGroup around both makes that a glide from old
+                                                    // slot to new slot instead of a fade-out/fade-in.
+                                                    layoutId={`card-${streamKey(stream)}`}
+                                                    data-avatar-key={streamKey(stream)}
+                                                    className={`p-2.5 transition-all duration-200 group relative ${
+                                                        isQueued && !isSuckingUp
+                                                            ? 'ghost-card rounded-lg cursor-default'
+                                                            : isQueued && isSuckingUp
+                                                                ? `glass-panel media-card cursor-default ${isOverlayMode ? '!bg-black/40 !border-white/5' : ''}`
+                                                                : `glass-panel media-card cursor-pointer hover:bg-glass-hover ${isOverlayMode ? '!bg-black/40 !border-white/5' : ''} ${stream.has_shared_chat === true ? 'iridescent-border' : ''}`
+                                                    }`}
+                                                    onClick={(e) => !isQueued && handleStreamClick(e, stream)}
+                                                    onContextMenu={(e) => !isQueued && useContextMenuStore.getState().openMenu(e, stream)}
+                                                >
+                                                    {isQueued && !isSuckingUp ? (
+                                                        /* Ghost state — recall button + label */
+                                                        <>
+                                                            <div className="invisible">
+                                                                <div className="relative mb-2 overflow-hidden rounded aspect-video" />
+                                                                <div className="flex items-end justify-between mt-1">
+                                                                    <div className="space-y-0.5 flex-1 min-w-0 pr-2 pb-1">
+                                                                        <div className="h-4" />
+                                                                        <div className="h-3" />
+                                                                        <div className="h-3" />
+                                                                    </div>
+                                                                </div>
+                                                            </div>
+                                                            <div className="absolute inset-0 flex flex-col items-center justify-center gap-1.5 animate-ghost-label">
+                                                                <LayoutGrid size={18} className="text-accent/50" />
+                                                                <span className="text-accent text-xs font-semibold truncate max-w-[80%]">{stream.user_name}</span>
+                                                                <span className="text-textSecondary text-[10px]">Queued in MultiNook</span>
+                                                                <Tooltip content="Recall from MultiNook" side="bottom">
+                                                                    <button
+                                                                        onClick={(e) => {
+                                                                            e.stopPropagation();
+                                                                            const card = (e.currentTarget as HTMLElement).closest('.ghost-card');
+                                                                            const rect = card?.getBoundingClientRect();
+                                                                            const cx = rect ? rect.left + rect.width / 2 : e.clientX;
+                                                                            const cy = rect ? rect.top + rect.height / 2 : e.clientY;
+                                                                            triggerRecallAnimation(stream.user_login, cx, cy, streamProvider(stream));
+                                                                        }}
+                                                                        className="glass-button !rounded-full !p-1.5 mt-1 text-textSecondary hover:text-accent transition-colors"
+                                                                    >
+                                                                        <Undo2 size={14} strokeWidth={2} />
+                                                                    </button>
+                                                                </Tooltip>
+                                                            </div>
+                                                        </>
+                                                    ) : (
+                                                        /* Normal content, suck-up, or materialize animation */
+                                                        <div className={isSuckingUp ? 'animate-multinook-suck-up' : isMaterializing ? 'animate-multinook-materialize' : undefined}>
+                                                            {!isSuckingUp && <QuickAddButton stream={stream} />}
+                                                            <div className="relative mb-2 overflow-hidden rounded">
+                                                                <img
+                                                                    loading="lazy"
+                                                                    src={getThumbnailUrl(stream.thumbnail_url)}
+                                                                    alt={stream.title}
+                                                                    className="w-full aspect-video object-cover group-hover:scale-105 transition-transform duration-200"
+                                                                />
+                                                                <div className="absolute top-1.5 left-1.5 flex items-center gap-1">
+                                                                    <div className="live-dot text-xs px-1.5 py-0.5">LIVE</div>
+                                                                    {hasDrops && (
+                                                                        <div className="drops-badge-glass">
+                                                                            <Gift size={10} />
+                                                                            <span>DROPS</span>
+                                                                        </div>
+                                                                    )}
+                                                                    {activeHypeTrainChannels.get(stream.user_id) && (
+                                                                        <div className={activeHypeTrainChannels.get(stream.user_id)?.isGolden ? 'hype-train-badge-glass-golden' : 'hype-train-badge-glass'}>
+                                                                            <svg className="w-2.5 h-2.5" viewBox="0 0 15 13" fill="none">
+                                                                                <path fillRule="evenodd" clipRule="evenodd" d="M4.10001 0.549988H2.40001V4.79999H0.700012V10.75H1.55001C1.55001 11.6889 2.31113 12.45 3.25001 12.45C4.1889 12.45 4.95001 11.6889 4.95001 10.75H5.80001C5.80001 11.6889 6.56113 12.45 7.50001 12.45C8.4389 12.45 9.20001 11.6889 9.20001 10.75H10.05C10.05 11.6889 10.8111 12.45 11.75 12.45C12.6889 12.45 13.45 11.6889 13.45 10.75H14.3V0.549988H6.65001V2.24999H7.50001V4.79999H4.10001V0.549988ZM12.6 9.04999V6.49999H2.40001V9.04999H12.6ZM9.20001 4.79999H12.6V2.24999H9.20001V4.79999Z" fill="currentColor" />
+                                                                            </svg>
+                                                                            <span>LVL {activeHypeTrainChannels.get(stream.user_id)?.level}</span>
+                                                                        </div>
+                                                                    )}
+                                                                </div>
+                                                                <div className="absolute bottom-1.5 left-1.5 flex items-center gap-1">
+                                                                    <div className="px-2 py-0.5 glass-badge text-white text-xs font-medium rounded">
+                                                                        {stream.viewer_count.toLocaleString()} viewers
+                                                                    </div>
+                                                                </div>
+                                                                {/* Bottom-right corner: watch streak and platform mark share
+                                                                    one row so they can never overlap. */}
+                                                                <div className="absolute bottom-1.5 right-1.5 flex items-center gap-1">
+                                                                    {watchStreaks[stream.user_id] > 0 && (
+                                                                        <Tooltip content={`${watchStreaks[stream.user_id]} Stream Watch Streak`} side="top">
+                                                                        <div className="flex items-center gap-1 font-bold text-[10px] leading-tight px-1.5 py-0.5 rounded shadow-[0_0_10px_color-mix(in_srgb,var(--color-warning)_25%,transparent)] bg-amber-500/10 text-amber-400 border border-amber-500/30 backdrop-blur-md">
+                                                                            <Flame size={10} className="stroke-[2.5]" />
+                                                                            <span>{watchStreaks[stream.user_id]}</span>
+                                                                        </div>
+                                                                        </Tooltip>
+                                                                    )}
+                                                                </div>
+                                                            </div>
+                                                            <div className="flex items-end justify-between mt-1">
+                                                                <div className="space-y-0.5 flex-1 min-w-0 pr-2 pb-1">
+                                                                    <h3 className="text-textPrimary font-medium text-sm line-clamp-1 group-hover:text-accent transition-colors">
+                                                                        <StreamTitleWithEmojis title={stream.title} />
+                                                                    </h3>
+                                                                    <button 
+                                                                        onClick={(e) => { 
+                                                                            e.stopPropagation(); 
+                                                                            useAppStore.getState().setProfileModalUser(stream); 
+                                                                        }}
+                                                                        className="flex items-center gap-1 text-textSecondary text-xs hover:text-textPrimary hover:bg-glass-hover px-1.5 py-0.5 -mx-1.5 -my-0.5 rounded transition-all cursor-pointer text-left focus:outline-none w-max max-w-full"
+                                                                    >
+                                                                        {/* Channel avatar. Resolved per platform; falls back to a
+                                                                            monogram rather than a broken image or a foreign
+                                                                            platform's default picture. */}
+                                                                        {/* No placeholder when a platform ships no avatar: a row of
+                                                                            identical grey monograms is noise, not information. */}
+                                                                        {(stream.profile_image_url || cardAvatars[streamKey(stream)]) && (
+                                                                            <img
+                                                                                loading="lazy"
+                                                                                src={stream.profile_image_url || cardAvatars[streamKey(stream)]}
+                                                                                alt=""
+                                                                                className="w-4 h-4 rounded-full object-cover flex-shrink-0 ring-1 ring-borderSubtle"
+                                                                            />
+                                                                        )}
+                                                                        <span className="truncate">{stream.user_name}</span>
+                                                                        {stream.broadcaster_type === 'partner' && (
+                                                                            <svg className="w-3 h-3 flex-shrink-0" viewBox="0 0 16 16" fill="#9146FF">
+                                                                                <path fillRule="evenodd" d="M12.5 3.5 8 2 3.5 3.5 2 8l1.5 4.5L8 14l4.5-1.5L14 8l-1.5-4.5ZM7 11l4.5-4.5L10 5 7 8 5.5 6.5 4 8l3 3Z" clipRule="evenodd"></path>
+                                                                            </svg>
+                                                                        )}
+                                                                    </button>
+                                                                    {/* min-h reserves this line even when a platform sends no
+                                                                        category (YouTube), so the bottom-anchored platform mark
+                                                                        sits on the same baseline on every card in the row
+                                                                        instead of riding up on shorter info blocks. */}
+                                                                    <div className="flex items-center w-full min-h-4">
+                                                                        {stream.game_name && (
+                                                                        <Tooltip content={stream.game_name} side="bottom">
+                                                                            <button 
+                                                                                onClick={(e) => {
+                                                                                    e.stopPropagation();
+                                                                                    if (stream.game_id && stream.game_name) {
+                                                                                        handleCategoryClick({ 
+                                                                                            id: stream.game_id, 
+                                                                                            name: stream.game_name, 
+                                                                                            box_art_url: '' 
+                                                                                        });
+                                                                                    }
+                                                                                }}
+                                                                                className="flex items-center gap-1 text-textMuted text-xs hover:text-textPrimary hover:bg-glass-hover px-1.5 py-0.5 -mx-1.5 -my-0.5 rounded transition-all text-left cursor-pointer focus:outline-none overflow-hidden"
+                                                                            >
+                                                                                <span className="line-clamp-1">{stream.game_name}</span>
+                                                                                {hasDrops && (
+                                                                                    <Gift size={10} className="text-accent flex-shrink-0" />
+                                                                                )}
+                                                                            </button>
+                                                                        </Tooltip>
+                                                                        )}
+                                                                    </div>
+                                                                </div>
+
+                                                                {/* Follow toggle for platforms with no follow API of
+                                                                    their own — StreamNook keeps the list. Shown on every
+                                                                    tab, since the platform's directory is where you find
+                                                                    channels to follow in the first place. */}
+                                                                {/* FOLLOW, and only where following is the question — a
+                                                                    platform's directory or search. On the Following tab every
+                                                                    row is already followed, so a filled heart on each would
+                                                                    say nothing; that tab gets the favourite toggle instead,
+                                                                    exactly like Twitch's. Plus (not a heart) so it never reads
+                                                                    as the favourite control. */}
+                                                                {isProviderView && activeTab !== 'following' && (
+                                                                    <Tooltip content={isProviderFollowed(stream) ? `Unfollow on ${providerLabel(streamProvider(stream))}` : `Follow on ${providerLabel(streamProvider(stream))}`} side="top">
+                                                                    <button
+                                                                        onClick={(e) => handleProviderFollowClick(e, stream)}
+                                                                        className="p-1 flex items-center justify-center bg-transparent transition-transform duration-300 hover:scale-110 active:scale-95"
+                                                                    >
+                                                                        {isProviderFollowed(stream) ? (
+                                                                            <Check size={16} className="text-accent" strokeWidth={2.5} />
+                                                                        ) : (
+                                                                            <Plus size={16} className="text-textSecondary hover:text-textPrimary opacity-0 group-hover:opacity-100 transition-all duration-300" strokeWidth={2.5} />
+                                                                        )}
+                                                                    </button>
+                                                                    </Tooltip>
+                                                                )}
+                                                                {/* FAVOURITE, on every tab. A favourite is a personal
+                                                                    watchlist entry, not a re-ordering of your follows:
+                                                                    the whole point is hearting something you found in
+                                                                    Discover or a category and having it turn up when it
+                                                                    goes live, without following the channel. On a
+                                                                    provider directory row this sits beside the follow
+                                                                    control above, which is correct - they are different
+                                                                    actions - and the heart is always the rightmost. */}
+                                                                <Tooltip content={isFavorite ? 'Remove from favorites' : 'Add to favorites'} side="top">
+                                                                <button
+                                                                    onClick={(e) => { void handleFavoriteClick(e, stream); }}
+                                                                    className={`p-1 flex items-center justify-center bg-transparent transition-transform duration-300 hover:scale-110 active:scale-95`}
+                                                                >
+                                                                    <Heart
+                                                                        size={16}
+                                                                        fill={isFavorite ? "url(#glass-heart-fill)" : "none"}
+                                                                        stroke={isFavorite ? "url(#glass-heart-stroke)" : "currentColor"}
+                                                                        strokeWidth={isFavorite ? 1.5 : 2}
+                                                                        className={`transition-all duration-300 ${isFavorite ? 'drop-shadow-[0_4px_8px_color-mix(in_srgb,var(--color-highlight-pink)_50%,transparent)]' : 'text-textSecondary hover:text-textPrimary opacity-0 group-hover:opacity-100'} ${favoriteId && animatingHearts.has(favoriteId) ? 'animate-heart-break' : ''}`}
+                                                                    />
+                                                                </button>
+                                                                </Tooltip>
+                                                                {/* Platform, in the card's bottom-right corner — on the card
+                                                                    itself, not over the preview, where it would compete with
+                                                                    the artwork. Bare mark, no chip or button: at this size
+                                                                    these read by colour, and a container would make a passive
+                                                                    label look clickable. Shown ONLY while the grid is mixed,
+                                                                    and then on EVERY card including Twitch, since with
+                                                                    platforms mixed an unmarked card is a guess. */}
+                                                                {isUnifiedView && (
+                                                                    <Tooltip content={providerLabel(streamProvider(stream))} side="top">
+                                                                        {/* Same 24px box the heart button uses (p-1 + 16px icon),
+                                                                            mark centered, so the two icons share one center line
+                                                                            instead of mixing padded-box and bottom-padded
+                                                                            geometries. Cross-card alignment comes from the
+                                                                            reserved category line, so center optical mode is
+                                                                            right here. */}
+                                                                        <span className="flex h-6 w-6 flex-shrink-0 items-center justify-center opacity-80">
+                                                                            <ProviderLogo provider={streamProvider(stream)} size={13} />
+                                                                        </span>
+                                                                    </Tooltip>
+                                                                )}
+                                                            </div>
+                                                        </div>
+                                                    )}
+                                                </motion.div>
+                                            );
+                                        })();
+    };
+
+    // ONE offline-channel card, shared by the Offline Channels roster and the
+    // Favourites section (a favourite is usually NOT live, and burying it in a
+    // roster of hundreds of follows is indistinguishable from doing nothing).
+    const renderOfflineCard = (user: TwitchStream) => {
+                                                const lastOnline = offlineLastBroadcasts[user.id];
+                                                let relativeTimeResult = '';
+                                                if (lastOnline) {
+                                                    const date = new Date(lastOnline);
+                                                    if (!isNaN(date.getTime())) {
+                                                        const diffInSeconds = Math.floor((new Date().getTime() - date.getTime()) / 1000);
+                                                        if (diffInSeconds < 60) relativeTimeResult = `${diffInSeconds}s ago`;
+                                                        else if (diffInSeconds < 3600) relativeTimeResult = `${Math.floor(diffInSeconds / 60)}m ago`;
+                                                        else if (diffInSeconds < 86400) relativeTimeResult = `${Math.floor(diffInSeconds / 3600)}h ago`;
+                                                        else if (diffInSeconds < 2592000) relativeTimeResult = `${Math.floor(diffInSeconds / 86400)}d ago`;
+                                                        else if (diffInSeconds < 31536000) relativeTimeResult = `${Math.floor(diffInSeconds / 2592000)}mo ago`;
+                                                        else relativeTimeResult = `${Math.floor(diffInSeconds / 31536000)}y ago`;
+                                                    }
+                                                }
+
+                                                return (
+                                                    <div
+                                                        // Composite key: this list now mixes platforms, and a bare
+                                                        // platform id can collide across them.
+                                                        key={streamKey(user)}
+                                                        // Tags this card for the visibility observer that drives
+                                                        // avatar resolution.
+                                                        data-avatar-key={streamKey(user)}
+                                                        className="relative group w-[180px] sm:w-[200px] rounded-xl overflow-hidden glass-panel border border-borderSubtle hover:border-white/20 transition-all shadow-sm"
+                                                    >
+                                                        {/* Base Card Content */}
+                                                        <div className="w-full flex items-center gap-3 px-3 py-2">
+                                                            <div className="w-10 h-10 rounded-full bg-glass flex items-center justify-center overflow-hidden ring-1 ring-borderSubtle group-hover:ring-accent/40 flex-shrink-0 relative transition-all">
+                                                                {(() => {
+                                                                    // Twitch rows carry a thumbnail; provider follows carry
+                                                                    // nothing, so their avatar comes from the resolver.
+                                                                    const offlineAvatar =
+                                                                        user.profile_image_url ||
+                                                                        cardAvatars[streamKey(user)] ||
+                                                                        user.thumbnail_url;
+                                                                    return offlineAvatar ? (
+                                                                        <img src={offlineAvatar} alt={user.user_name} className="w-full h-full object-cover" />
+                                                                    ) : (
+                                                                        <User size={14} className="text-textSecondary" />
+                                                                    );
+                                                                })()}
+                                                            </div>
+                                                            <div className="flex-1 min-w-0 transition-opacity duration-200">
+                                                                <h4 className="text-sm font-semibold text-textPrimary truncate transition-colors">
+                                                                    {user.user_name}
+                                                                </h4>
+                                                                <p className="text-[10px] text-textSecondary truncate">
+                                                                    {relativeTimeResult ? `Last live ${relativeTimeResult}` : 'Offline'}
+                                                                </p>
+                                                            </div>
+                                                        </div>
+
+                                                        {/* Favourite, on the offline card too. Unlike the actions
+                                                            below this is NOT Twitch-only: favouriting works on every
+                                                            platform, and a channel found while it is offline (a search
+                                                            result, or one already in this roster) is exactly the kind
+                                                            you want to be told about when it comes back. Sits above the
+                                                            hover overlay so it stays clickable. */}
+                                                        {(() => {
+                                                            const offlineFavoriteId = favoriteIdOf(user);
+                                                            const offlineIsFavorite = !!offlineFavoriteId && isFavoriteStreamer(offlineFavoriteId);
+                                                            return (
+                                                                <Tooltip content={offlineIsFavorite ? 'Remove from favorites' : 'Add to favorites'} side="top">
+                                                                    <button
+                                                                        onClick={(e) => { void handleFavoriteClick(e, user); }}
+                                                                        className="absolute top-1 right-1 z-20 p-1 flex items-center justify-center bg-transparent transition-transform duration-300 hover:scale-110 active:scale-95"
+                                                                    >
+                                                                        <Heart
+                                                                            size={14}
+                                                                            fill={offlineIsFavorite ? "url(#glass-heart-fill)" : "none"}
+                                                                            stroke={offlineIsFavorite ? "url(#glass-heart-stroke)" : "currentColor"}
+                                                                            strokeWidth={offlineIsFavorite ? 1.5 : 2}
+                                                                            className={`transition-all duration-300 ${offlineIsFavorite ? 'drop-shadow-[0_4px_8px_color-mix(in_srgb,var(--color-highlight-pink)_50%,transparent)]' : 'text-textSecondary hover:text-textPrimary opacity-0 group-hover:opacity-100'} ${offlineFavoriteId && animatingHearts.has(offlineFavoriteId) ? 'animate-heart-break' : ''}`}
+                                                                        />
+                                                                    </button>
+                                                                </Tooltip>
+                                                            );
+                                                        })()}
+
+                                                        {/* Action Overlay (Optimized - No blur on hidden elements).
+                                                            Twitch only: "Watch VOD" starts Twitch's offline-chat mode
+                                                            and the profile modal is Twitch-shaped, so neither works for
+                                                            a provider channel. Better no action than a broken one. */}
+                                                        {streamProvider(user) === 'twitch' && (
+                                                        <div className="absolute inset-0 bg-[#0c0c0d]/90 opacity-0 group-hover:opacity-100 transition-all duration-200 flex items-center justify-center gap-2 z-10">
+                                                            <button
+                                                                onClick={(e) => {
+                                                                    e.stopPropagation();
+                                                                    const store = useAppStore.getState();
+                                                                    if (store.isHomeActive) store.toggleHome();
+                                                                    store.startOfflineChat(user.user_login, user);
+                                                                }}
+                                                                className="px-3 py-1.5 rounded-lg glass-button text-[12px] font-bold text-white hover:bg-white/20 transition-all border border-transparent shadow-lg flex items-center gap-1.5"
+                                                            >
+                                                                <Play size={14} strokeWidth={2.5} />
+                                                                <span>Watch VOD</span>
+                                                            </button>
+                                                            
+                                                            <Tooltip content="Profile" side="top">
+                                                                <button
+                                                                    onClick={(e) => {
+                                                                        e.stopPropagation();
+                                                                        setProfileModalUser(user);
+                                                                    }}
+                                                                    className="p-[7px] rounded-lg glass-button text-textSecondary hover:text-textPrimary hover:bg-white/20 transition-all border border-transparent shadow-lg"
+                                                                >
+                                                                    <User size={14} strokeWidth={2.5} />
+                                                                </button>
+                                                            </Tooltip>
+                                                        </div>
+                                                        )}
+                                                    </div>
+                                                );
+    };
 
     // How many live channels the Following tab holds for the CURRENT platform.
     const followingCount = isProviderView
@@ -2032,20 +2551,91 @@ const Home = () => {
             } as unknown as TwitchStream));
     }, [isProviderView, isUnifiedView, providerFilter, providerFollows, providerFollowsLive]);
 
+    // Favourites that aren't live anywhere, so you can still get back to them.
+    //
+    // Built from the identity sidecar rather than a live row, because there is
+    // no live row: that's the point. Rows whose id has left `favorite_streamers`
+    // are filtered out HERE rather than pruned from settings on startup, which
+    // would mean a settings write racing every other write during launch.
+    const offlineFavorites = useMemo<TwitchStream[]>(() => {
+        const identities = favoriteChannels ?? [];
+        if (identities.length === 0) return [];
+        const favorites = new Set(favoriteStreamers ?? []);
+        // What is already live, by favourite id, across all three sources.
+        const liveIds = new Set(
+            liveFavorites.map((s) => favoriteIdOf(s)).filter((id): id is string => !!id),
+        );
+        // Prefer a REAL offline row where one exists (a Twitch follow, or a
+        // provider follow): it carries the proper id, so the "last live" lookup
+        // below resolves, and the avatar resolver keys off it. The sidecar row
+        // is the fallback for a favourite followed nowhere, which has no real
+        // row anywhere by definition.
+        const realRows = new Map<string, TwitchStream>();
+        for (const row of [...(isProviderView ? [] : offlineFollowedChannels), ...offlineProviderFollows]) {
+            const id = favoriteIdOf(row);
+            if (id && !realRows.has(id)) realRows.set(id, row);
+        }
+        return identities
+            .filter((f) => favorites.has(f.id) && !liveIds.has(f.id))
+            .filter((f) => providerFilter === 'all' || f.provider === providerFilter)
+            .map((f) => realRows.get(f.id) ?? ({
+                id: f.channel,
+                // For Twitch the sidecar id IS the user id, which is what the
+                // avatar resolver and the profile modal key off. Other platforms
+                // have no such id here, so the channel stands in, matching what
+                // `offlineProviderFollows` already does.
+                user_id: f.provider === 'twitch' ? f.id : f.channel,
+                user_login: f.channel,
+                user_name: f.display_name || f.channel,
+                provider: f.provider,
+                key: makeKey(f.provider, f.channel),
+                title: '',
+                viewer_count: 0,
+                game_id: '',
+                game_name: '',
+                thumbnail_url: '',
+                started_at: '',
+                is_live: false,
+                profile_image_url: f.avatar,
+            } as unknown as TwitchStream));
+    }, [favoriteChannels, favoriteStreamers, liveFavorites, providerFilter, isProviderView, offlineFollowedChannels, offlineProviderFollows]);
+
     // The offline roster: Twitch's own list (only meaningful when Twitch is in
-    // view) plus followed provider channels that aren't live.
+    // view), followed provider channels that aren't live, and favourites that
+    // aren't live anywhere. Deduped on channel identity, since a favourite you
+    // also follow is in two of those three lists.
     const offlineChannels = useMemo<TwitchStream[]>(
-        () => [
+        // Offline favourites belong HERE, not in the Favourites section: that
+        // shelf is live-only. This is also the only way a favourite you follow
+        // nowhere is reachable while it is offline, since no follow list carries
+        // it. Deduped, because a favourite you also follow is in two of these.
+        () => dedupeByFavoriteId([
             ...(isProviderView ? [] : offlineFollowedChannels),
             ...offlineProviderFollows,
-        ],
-        [isProviderView, offlineFollowedChannels, offlineProviderFollows],
+            ...offlineFavorites,
+        ]),
+        [isProviderView, offlineFollowedChannels, offlineProviderFollows, offlineFavorites],
     );
+
+    // Rows the Favourites section will draw. Load-bearing in the empty-state test
+    // further down, not just for rendering: favourites are SUBTRACTED from
+    // `displayStreams`, so without counting them there, favouriting every live
+    // channel emptied `displayStreams`, hit the "No Live Streams" branch, and
+    // took the whole Favourites section down with it.
+    // Scoped to the Following tab, or a live favourite would suppress the empty
+    // state on Discover, where the section does not render at all.
+    // Tabs that show the Favourites shelf. Following AND Discover: favouriting
+    // is a browsing action, and Discover is where you meet a channel in the
+    // first place. It is also the only one of the two a signed-out user can
+    // reach at all - Following is a login wall for Twitch and a "Not Connected"
+    // wall for every provider - which is exactly the case favourites exist for.
+    const favoritesTab = activeTab === 'following' || activeTab === 'recommended';
+    const favoritesSectionCount = favoritesTab ? liveFavorites.length : 0;
 
     // Both grids: the main list and the category-detail list.
     const avatarCandidates = useMemo(
-        () => [...displayStreams, ...baseLiveStreams, ...offlineProviderFollows],
-        [displayStreams, baseLiveStreams, offlineProviderFollows],
+        () => [...displayStreams, ...liveFavorites, ...baseLiveStreams, ...offlineChannels],
+        [displayStreams, liveFavorites, baseLiveStreams, offlineChannels],
     );
     // Only the cards actually on screen get resolved. A YouTube avatar costs a
     // channel lookup each, and a large subscription list would otherwise fire
@@ -2937,11 +3527,13 @@ const Home = () => {
                                             // Drops indicator is elevated to the hero banner in Category view!
                                             // We explicitly disable drops badging on individual stream cards here to reduce noise.
                                             const hasDrops = false;
+                                            const favoriteId = favoriteIdOf(stream);
+                                            const isFavorite = !!favoriteId && isFavoriteStreamer(favoriteId);
 
                                             return (() => {
-                                                const isQueued = isInMultiNook(stream.user_login);
-                                                const isSuckingUp = suckUpLogin === stream.user_login.toLowerCase();
-                                                const isMaterializing = materializingLogin === stream.user_login.toLowerCase();
+                                                const isQueued = isInMultiNook(stream.user_login, streamProvider(stream));
+                                                const isSuckingUp = suckUpKey === makeKey(streamProvider(stream), stream.user_login);
+                                                const isMaterializing = materializingKey === makeKey(streamProvider(stream), stream.user_login);
 
                                                 return (
                                                     <motion.div
@@ -2982,7 +3574,7 @@ const Home = () => {
                                                                                 const rect = card?.getBoundingClientRect();
                                                                                 const cx = rect ? rect.left + rect.width / 2 : e.clientX;
                                                                                 const cy = rect ? rect.top + rect.height / 2 : e.clientY;
-                                                                                triggerRecallAnimation(stream.user_login, cx, cy);
+                                                                                triggerRecallAnimation(stream.user_login, cx, cy, streamProvider(stream));
                                                                             }}
                                                                             className="glass-button !rounded-full !p-1.5 mt-1 text-textSecondary hover:text-accent transition-colors"
                                                                         >
@@ -3054,6 +3646,24 @@ const Home = () => {
                                                                                 </svg>
                                                                             )}
                                                                         </div>
+                                                                        {/* Browsing a category is one of the two places you
+                                                                            actually FIND someone new, so it needs the same
+                                                                            heart the main grid has. This card is a separate
+                                                                            renderer, so it gets its own copy. */}
+                                                                        <Tooltip content={isFavorite ? 'Remove from favorites' : 'Add to favorites'} side="top">
+                                                                        <button
+                                                                            onClick={(e) => { void handleFavoriteClick(e, stream); }}
+                                                                            className="p-1 flex items-center justify-center bg-transparent transition-transform duration-300 hover:scale-110 active:scale-95 flex-shrink-0"
+                                                                        >
+                                                                            <Heart
+                                                                                size={14}
+                                                                                fill={isFavorite ? "url(#glass-heart-fill)" : "none"}
+                                                                                stroke={isFavorite ? "url(#glass-heart-stroke)" : "currentColor"}
+                                                                                strokeWidth={isFavorite ? 1.5 : 2}
+                                                                                className={`transition-all duration-300 ${isFavorite ? 'drop-shadow-[0_4px_8px_color-mix(in_srgb,var(--color-highlight-pink)_50%,transparent)]' : 'text-textSecondary hover:text-textPrimary opacity-0 group-hover:opacity-100'} ${favoriteId && animatingHearts.has(favoriteId) ? 'animate-heart-break' : ''}`}
+                                                                            />
+                                                                        </button>
+                                                                        </Tooltip>
                                                                     </div>
                                                                     {stream.tags && stream.tags.length > 0 && (
                                                                         <StreamTileTags
@@ -3258,7 +3868,7 @@ const Home = () => {
                                     </div>
                                 </div>
                             </div>
-                        ) : displayStreams.length === 0 && categorySearchResults.length === 0 && (activeTab !== 'search' || offlineSearchResults.length === 0) ? (
+                        ) : displayStreams.length === 0 && favoritesSectionCount === 0 && categorySearchResults.length === 0 && (activeTab !== 'search' || offlineSearchResults.length === 0) ? (
                             <div className="flex items-center justify-center h-full">
                                 <div className="text-center glass-panel p-6 max-w-sm">
                                     <h3 className="text-base font-bold text-textPrimary mb-1">
@@ -3346,6 +3956,88 @@ const Home = () => {
                                         {categorySearchResults.map(game => renderCategoryCard(game))}
                                     </div>
                                 )}
+                                {/* FAVOURITES, pulled out above the rest.
+                                    Not a filter over your follows: a favourite may
+                                    be a channel you follow nowhere, which is exactly
+                                    why it lives on this tab rather than being lost
+                                    between Discover pages. The count sits on the
+                                    section rather than the tab badge, which still
+                                    means "live channels you follow". */}
+                                <LayoutGroup>
+                                {favoritesTab && favoritesSectionCount > 0 && (
+                                    <div className="mb-6 relative isolate rounded-2xl px-2 pt-2 -mx-2">
+                                        {/* Film grain, and nothing else: the shelf is marked by
+                                            texture rather than colour. A pink wash was tried here
+                                            and cut - see the note on FAVORITES_GRAIN_MASK.
+                                            `-left-2 -right-2` on top of the section's own `-mx-2`
+                                            reaches the scroll container's padding EDGE, so the
+                                            band runs the full width of the app instead of
+                                            stopping 8px short of it. Exactly the padding, not
+                                            more: overflowing right past it would put a horizontal
+                                            scrollbar on the list. */}
+                                        <div
+                                            aria-hidden
+                                            className="absolute -left-2 -right-2 -top-20 -bottom-24 -z-10 pointer-events-none"
+                                            style={{
+                                                backgroundImage: "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix type='matrix' values='0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0 0 0 0.5 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E\")",
+                                                opacity: 0.05,
+                                                mixBlendMode: 'overlay',
+                                                WebkitMaskImage: FAVORITES_GRAIN_MASK,
+                                                maskImage: FAVORITES_GRAIN_MASK,
+                                            }}
+                                        />
+                                        {/* Same identity as the sidebar shelf, same restraint:
+                                            the filled pink heart carries the section, the label
+                                            stays house-grey, and the count picks up a whisper of
+                                            the pink so it reads as part of the mark. */}
+                                        <div className="pb-3 px-2 flex items-center gap-2">
+                                            <Heart
+                                                size={14}
+                                                fill="url(#glass-heart-fill)"
+                                                stroke="url(#glass-heart-stroke)"
+                                                strokeWidth={1.5}
+                                                className="drop-shadow-[0_4px_8px_color-mix(in_srgb,var(--color-highlight-pink)_50%,transparent)]"
+                                            />
+                                            <h3 className="text-sm font-semibold text-textSecondary uppercase tracking-wide">
+                                                Favorites
+                                            </h3>
+                                            <span
+                                                className="text-xs font-semibold"
+                                                style={{ color: 'color-mix(in srgb, var(--color-highlight-pink) 55%, var(--color-text-secondary))' }}
+                                            >
+                                                {liveFavorites.length}
+                                            </span>
+                                        </div>
+                                        {/* LIVE only, by design. This shelf answers "who can I
+                                            watch right now"; an offline favourite is not that, and
+                                            putting one here would make the section's own count
+                                            mean two different things. Offline favourites are still
+                                            reachable in the Offline Channels roster below. */}
+                                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-3">
+                                            <AnimatePresence mode="popLayout" initial={false}>
+                                                {liveFavorites.map(renderStreamCard)}
+                                            </AnimatePresence>
+                                        </div>
+                                        {/* Feathered at both ends, not a full-bleed rule. The wash
+                                            above is a centred radial that fades out toward the
+                                            edges, so a hairline running edge to edge at flat
+                                            opacity terminated hard against nothing and read as a
+                                            cut. Masked rather than recoloured so it keeps the
+                                            house border token and stays 1px. */}
+                                        {(displayStreams.length > 0 || offlineChannels.length > 0) && (
+                                            <div
+                                                className="mt-6 h-px bg-borderSubtle/70"
+                                                style={{
+                                                    WebkitMaskImage:
+                                                        'linear-gradient(to right, transparent, black 26%, black 74%, transparent)',
+                                                    maskImage:
+                                                        'linear-gradient(to right, transparent, black 26%, black 74%, transparent)',
+                                                }}
+                                            />
+                                        )}
+
+                                    </div>
+                                )}
                                 {displayStreams.length > 0 && !(activeTab === 'search' && searchMode === 'categories') && (
                                     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-3">
                                     {/* Switching platforms replaces most of this grid, and
@@ -3360,260 +4052,11 @@ const Home = () => {
                                         instantly: the entrance is for cards arriving into a grid
                                         that is already on screen, not for the first one. */}
                                     <AnimatePresence mode="popLayout" initial={false}>
-                                        {displayStreams.map(stream => {
-                                        const isFavorite = isFavoriteStreamer(favoriteIdOf(stream));
-                                        // Check if stream's game has active drops
-                                        const streamDropsCampaign = stream.game_name ? dropsGameNames.get(stream.game_name.toLowerCase()) : undefined;
-                                        const hasDrops = !!streamDropsCampaign;
-                                        return (() => {
-                                            const isQueued = isInMultiNook(stream.user_login);
-                                            const isSuckingUp = suckUpLogin === stream.user_login.toLowerCase();
-                                            const isMaterializing = materializingLogin === stream.user_login.toLowerCase();
-
-                                            return (
-                                                <motion.div
-                                                    layout
-                                                    // Opacity and a short lift, never scale: a
-                                                    // scaling element fights `layout`'s own scale
-                                                    // correction and the card's text and rounded
-                                                    // corners smear while it settles.
-                                                    initial={{ opacity: 0, y: 8 }}
-                                                    animate={{ opacity: 1, y: 0 }}
-                                                    exit={{ opacity: 0, y: -4 }}
-                                                    transition={{
-                                                        type: "spring",
-                                                        stiffness: 350,
-                                                        damping: 25,
-                                                        opacity: { duration: 0.16, ease: 'easeOut' },
-                                                        y: { duration: 0.2, ease: [0.2, 0.9, 0.25, 1] },
-                                                    }}
-                                                    // Composite provider:channel key. Not `stream.id` — provider rows
-                                                    // may carry none, and where they do the numeric ids collide with
-                                                    // Twitch's in the mixed view.
-                                                    key={streamKey(stream)}
-                                                    data-avatar-key={streamKey(stream)}
-                                                    className={`p-2.5 transition-all duration-200 group relative ${
-                                                        isQueued && !isSuckingUp
-                                                            ? 'ghost-card rounded-lg cursor-default'
-                                                            : isQueued && isSuckingUp
-                                                                ? `glass-panel media-card cursor-default ${isOverlayMode ? '!bg-black/40 !border-white/5' : ''}`
-                                                                : `glass-panel media-card cursor-pointer hover:bg-glass-hover ${isOverlayMode ? '!bg-black/40 !border-white/5' : ''} ${stream.has_shared_chat === true ? 'iridescent-border' : ''}`
-                                                    }`}
-                                                    onClick={(e) => !isQueued && handleStreamClick(e, stream)}
-                                                    onContextMenu={(e) => !isQueued && useContextMenuStore.getState().openMenu(e, stream)}
-                                                >
-                                                    {isQueued && !isSuckingUp ? (
-                                                        /* Ghost state — recall button + label */
-                                                        <>
-                                                            <div className="invisible">
-                                                                <div className="relative mb-2 overflow-hidden rounded aspect-video" />
-                                                                <div className="flex items-end justify-between mt-1">
-                                                                    <div className="space-y-0.5 flex-1 min-w-0 pr-2 pb-1">
-                                                                        <div className="h-4" />
-                                                                        <div className="h-3" />
-                                                                        <div className="h-3" />
-                                                                    </div>
-                                                                </div>
-                                                            </div>
-                                                            <div className="absolute inset-0 flex flex-col items-center justify-center gap-1.5 animate-ghost-label">
-                                                                <LayoutGrid size={18} className="text-accent/50" />
-                                                                <span className="text-accent text-xs font-semibold truncate max-w-[80%]">{stream.user_name}</span>
-                                                                <span className="text-textSecondary text-[10px]">Queued in MultiNook</span>
-                                                                <Tooltip content="Recall from MultiNook" side="bottom">
-                                                                    <button
-                                                                        onClick={(e) => {
-                                                                            e.stopPropagation();
-                                                                            const card = (e.currentTarget as HTMLElement).closest('.ghost-card');
-                                                                            const rect = card?.getBoundingClientRect();
-                                                                            const cx = rect ? rect.left + rect.width / 2 : e.clientX;
-                                                                            const cy = rect ? rect.top + rect.height / 2 : e.clientY;
-                                                                            triggerRecallAnimation(stream.user_login, cx, cy);
-                                                                        }}
-                                                                        className="glass-button !rounded-full !p-1.5 mt-1 text-textSecondary hover:text-accent transition-colors"
-                                                                    >
-                                                                        <Undo2 size={14} strokeWidth={2} />
-                                                                    </button>
-                                                                </Tooltip>
-                                                            </div>
-                                                        </>
-                                                    ) : (
-                                                        /* Normal content, suck-up, or materialize animation */
-                                                        <div className={isSuckingUp ? 'animate-multinook-suck-up' : isMaterializing ? 'animate-multinook-materialize' : undefined}>
-                                                            {!isSuckingUp && <QuickAddButton stream={stream} />}
-                                                            <div className="relative mb-2 overflow-hidden rounded">
-                                                                <img
-                                                                    loading="lazy"
-                                                                    src={getThumbnailUrl(stream.thumbnail_url)}
-                                                                    alt={stream.title}
-                                                                    className="w-full aspect-video object-cover group-hover:scale-105 transition-transform duration-200"
-                                                                />
-                                                                <div className="absolute top-1.5 left-1.5 flex items-center gap-1">
-                                                                    <div className="live-dot text-xs px-1.5 py-0.5">LIVE</div>
-                                                                    {hasDrops && (
-                                                                        <div className="drops-badge-glass">
-                                                                            <Gift size={10} />
-                                                                            <span>DROPS</span>
-                                                                        </div>
-                                                                    )}
-                                                                    {activeHypeTrainChannels.get(stream.user_id) && (
-                                                                        <div className={activeHypeTrainChannels.get(stream.user_id)?.isGolden ? 'hype-train-badge-glass-golden' : 'hype-train-badge-glass'}>
-                                                                            <svg className="w-2.5 h-2.5" viewBox="0 0 15 13" fill="none">
-                                                                                <path fillRule="evenodd" clipRule="evenodd" d="M4.10001 0.549988H2.40001V4.79999H0.700012V10.75H1.55001C1.55001 11.6889 2.31113 12.45 3.25001 12.45C4.1889 12.45 4.95001 11.6889 4.95001 10.75H5.80001C5.80001 11.6889 6.56113 12.45 7.50001 12.45C8.4389 12.45 9.20001 11.6889 9.20001 10.75H10.05C10.05 11.6889 10.8111 12.45 11.75 12.45C12.6889 12.45 13.45 11.6889 13.45 10.75H14.3V0.549988H6.65001V2.24999H7.50001V4.79999H4.10001V0.549988ZM12.6 9.04999V6.49999H2.40001V9.04999H12.6ZM9.20001 4.79999H12.6V2.24999H9.20001V4.79999Z" fill="currentColor" />
-                                                                            </svg>
-                                                                            <span>LVL {activeHypeTrainChannels.get(stream.user_id)?.level}</span>
-                                                                        </div>
-                                                                    )}
-                                                                </div>
-                                                                <div className="absolute bottom-1.5 left-1.5 flex items-center gap-1">
-                                                                    <div className="px-2 py-0.5 glass-badge text-white text-xs font-medium rounded">
-                                                                        {stream.viewer_count.toLocaleString()} viewers
-                                                                    </div>
-                                                                </div>
-                                                                {/* Bottom-right corner: watch streak and platform mark share
-                                                                    one row so they can never overlap. */}
-                                                                <div className="absolute bottom-1.5 right-1.5 flex items-center gap-1">
-                                                                    {watchStreaks[stream.user_id] > 0 && (
-                                                                        <Tooltip content={`${watchStreaks[stream.user_id]} Stream Watch Streak`} side="top">
-                                                                        <div className="flex items-center gap-1 font-bold text-[10px] leading-tight px-1.5 py-0.5 rounded shadow-[0_0_10px_color-mix(in_srgb,var(--color-warning)_25%,transparent)] bg-amber-500/10 text-amber-400 border border-amber-500/30 backdrop-blur-md">
-                                                                            <Flame size={10} className="stroke-[2.5]" />
-                                                                            <span>{watchStreaks[stream.user_id]}</span>
-                                                                        </div>
-                                                                        </Tooltip>
-                                                                    )}
-                                                                </div>
-                                                            </div>
-                                                            <div className="flex items-end justify-between mt-1">
-                                                                <div className="space-y-0.5 flex-1 min-w-0 pr-2 pb-1">
-                                                                    <h3 className="text-textPrimary font-medium text-sm line-clamp-1 group-hover:text-accent transition-colors">
-                                                                        <StreamTitleWithEmojis title={stream.title} />
-                                                                    </h3>
-                                                                    <button 
-                                                                        onClick={(e) => { 
-                                                                            e.stopPropagation(); 
-                                                                            useAppStore.getState().setProfileModalUser(stream); 
-                                                                        }}
-                                                                        className="flex items-center gap-1 text-textSecondary text-xs hover:text-textPrimary hover:bg-glass-hover px-1.5 py-0.5 -mx-1.5 -my-0.5 rounded transition-all cursor-pointer text-left focus:outline-none w-max max-w-full"
-                                                                    >
-                                                                        {/* Channel avatar. Resolved per platform; falls back to a
-                                                                            monogram rather than a broken image or a foreign
-                                                                            platform's default picture. */}
-                                                                        {/* No placeholder when a platform ships no avatar: a row of
-                                                                            identical grey monograms is noise, not information. */}
-                                                                        {(stream.profile_image_url || cardAvatars[streamKey(stream)]) && (
-                                                                            <img
-                                                                                loading="lazy"
-                                                                                src={stream.profile_image_url || cardAvatars[streamKey(stream)]}
-                                                                                alt=""
-                                                                                className="w-4 h-4 rounded-full object-cover flex-shrink-0 ring-1 ring-borderSubtle"
-                                                                            />
-                                                                        )}
-                                                                        <span className="truncate">{stream.user_name}</span>
-                                                                        {stream.broadcaster_type === 'partner' && (
-                                                                            <svg className="w-3 h-3 flex-shrink-0" viewBox="0 0 16 16" fill="#9146FF">
-                                                                                <path fillRule="evenodd" d="M12.5 3.5 8 2 3.5 3.5 2 8l1.5 4.5L8 14l4.5-1.5L14 8l-1.5-4.5ZM7 11l4.5-4.5L10 5 7 8 5.5 6.5 4 8l3 3Z" clipRule="evenodd"></path>
-                                                                            </svg>
-                                                                        )}
-                                                                    </button>
-                                                                    {/* min-h reserves this line even when a platform sends no
-                                                                        category (YouTube), so the bottom-anchored platform mark
-                                                                        sits on the same baseline on every card in the row
-                                                                        instead of riding up on shorter info blocks. */}
-                                                                    <div className="flex items-center w-full min-h-4">
-                                                                        {stream.game_name && (
-                                                                        <Tooltip content={stream.game_name} side="bottom">
-                                                                            <button 
-                                                                                onClick={(e) => {
-                                                                                    e.stopPropagation();
-                                                                                    if (stream.game_id && stream.game_name) {
-                                                                                        handleCategoryClick({ 
-                                                                                            id: stream.game_id, 
-                                                                                            name: stream.game_name, 
-                                                                                            box_art_url: '' 
-                                                                                        });
-                                                                                    }
-                                                                                }}
-                                                                                className="flex items-center gap-1 text-textMuted text-xs hover:text-textPrimary hover:bg-glass-hover px-1.5 py-0.5 -mx-1.5 -my-0.5 rounded transition-all text-left cursor-pointer focus:outline-none overflow-hidden"
-                                                                            >
-                                                                                <span className="line-clamp-1">{stream.game_name}</span>
-                                                                                {hasDrops && (
-                                                                                    <Gift size={10} className="text-accent flex-shrink-0" />
-                                                                                )}
-                                                                            </button>
-                                                                        </Tooltip>
-                                                                        )}
-                                                                    </div>
-                                                                </div>
-
-                                                                {/* Follow toggle for platforms with no follow API of
-                                                                    their own — StreamNook keeps the list. Shown on every
-                                                                    tab, since the platform's directory is where you find
-                                                                    channels to follow in the first place. */}
-                                                                {/* FOLLOW, and only where following is the question — a
-                                                                    platform's directory or search. On the Following tab every
-                                                                    row is already followed, so a filled heart on each would
-                                                                    say nothing; that tab gets the favourite toggle instead,
-                                                                    exactly like Twitch's. Plus (not a heart) so it never reads
-                                                                    as the favourite control. */}
-                                                                {isProviderView && activeTab !== 'following' && (
-                                                                    <Tooltip content={isProviderFollowed(stream) ? `Unfollow on ${providerLabel(streamProvider(stream))}` : `Follow on ${providerLabel(streamProvider(stream))}`} side="top">
-                                                                    <button
-                                                                        onClick={(e) => handleProviderFollowClick(e, stream)}
-                                                                        className="p-1 flex items-center justify-center bg-transparent transition-transform duration-300 hover:scale-110 active:scale-95"
-                                                                    >
-                                                                        {isProviderFollowed(stream) ? (
-                                                                            <Check size={16} className="text-accent" strokeWidth={2.5} />
-                                                                        ) : (
-                                                                            <Plus size={16} className="text-textSecondary hover:text-textPrimary opacity-0 group-hover:opacity-100 transition-all duration-300" strokeWidth={2.5} />
-                                                                        )}
-                                                                    </button>
-                                                                    </Tooltip>
-                                                                )}
-                                                                {activeTab === 'following' && (
-                                                                    <Tooltip content={isFavorite ? 'Remove from favorites' : 'Add to favorites'} side="top">
-                                                                    <button
-                                                                        onClick={(e) => handleFavoriteClick(e, favoriteIdOf(stream))}
-                                                                        className={`p-1 flex items-center justify-center bg-transparent transition-transform duration-300 hover:scale-110 active:scale-95`}
-                                                                    >
-                                                                        <Heart
-                                                                            size={16}
-                                                                            fill={isFavorite ? "url(#glass-heart-fill)" : "none"}
-                                                                            stroke={isFavorite ? "url(#glass-heart-stroke)" : "currentColor"}
-                                                                            strokeWidth={isFavorite ? 1.5 : 2}
-                                                                            className={`transition-all duration-300 ${isFavorite ? 'drop-shadow-[0_4px_8px_color-mix(in_srgb,var(--color-highlight-pink)_50%,transparent)]' : 'text-textSecondary hover:text-textPrimary opacity-0 group-hover:opacity-100'} ${animatingHearts.has(favoriteIdOf(stream)) ? 'animate-heart-break' : ''}`}
-                                                                        />
-                                                                    </button>
-                                                                    </Tooltip>
-                                                                )}
-                                                                {/* Platform, in the card's bottom-right corner — on the card
-                                                                    itself, not over the preview, where it would compete with
-                                                                    the artwork. Bare mark, no chip or button: at this size
-                                                                    these read by colour, and a container would make a passive
-                                                                    label look clickable. Shown ONLY while the grid is mixed,
-                                                                    and then on EVERY card including Twitch, since with
-                                                                    platforms mixed an unmarked card is a guess. */}
-                                                                {isUnifiedView && (
-                                                                    <Tooltip content={providerLabel(streamProvider(stream))} side="top">
-                                                                        {/* Same 24px box the heart button uses (p-1 + 16px icon),
-                                                                            mark centered, so the two icons share one center line
-                                                                            instead of mixing padded-box and bottom-padded
-                                                                            geometries. Cross-card alignment comes from the
-                                                                            reserved category line, so center optical mode is
-                                                                            right here. */}
-                                                                        <span className="flex h-6 w-6 flex-shrink-0 items-center justify-center opacity-80">
-                                                                            <ProviderLogo provider={streamProvider(stream)} size={13} />
-                                                                        </span>
-                                                                    </Tooltip>
-                                                                )}
-                                                            </div>
-                                                        </div>
-                                                    )}
-                                                </motion.div>
-                                            );
-                                        })();
-                                    })}
+                                        {displayStreams.map(renderStreamCard)}
                                     </AnimatePresence>
                                     </div>
                                 )}
+                                </LayoutGroup>
 
                                 {/* Offline Followed Channels Section */}
                                 {/* Twitch's offline follows. Hidden while scoped to another
@@ -3635,94 +4078,7 @@ const Home = () => {
                                                 const timeA = offlineLastBroadcasts[a.id] ? new Date(offlineLastBroadcasts[a.id]!).getTime() : 0;
                                                 const timeB = offlineLastBroadcasts[b.id] ? new Date(offlineLastBroadcasts[b.id]!).getTime() : 0;
                                                 return timeB - timeA;
-                                            }).map((user) => {
-                                                const lastOnline = offlineLastBroadcasts[user.id];
-                                                let relativeTimeResult = '';
-                                                if (lastOnline) {
-                                                    const date = new Date(lastOnline);
-                                                    if (!isNaN(date.getTime())) {
-                                                        const diffInSeconds = Math.floor((new Date().getTime() - date.getTime()) / 1000);
-                                                        if (diffInSeconds < 60) relativeTimeResult = `${diffInSeconds}s ago`;
-                                                        else if (diffInSeconds < 3600) relativeTimeResult = `${Math.floor(diffInSeconds / 60)}m ago`;
-                                                        else if (diffInSeconds < 86400) relativeTimeResult = `${Math.floor(diffInSeconds / 3600)}h ago`;
-                                                        else if (diffInSeconds < 2592000) relativeTimeResult = `${Math.floor(diffInSeconds / 86400)}d ago`;
-                                                        else if (diffInSeconds < 31536000) relativeTimeResult = `${Math.floor(diffInSeconds / 2592000)}mo ago`;
-                                                        else relativeTimeResult = `${Math.floor(diffInSeconds / 31536000)}y ago`;
-                                                    }
-                                                }
-
-                                                return (
-                                                    <div
-                                                        // Composite key: this list now mixes platforms, and a bare
-                                                        // platform id can collide across them.
-                                                        key={streamKey(user)}
-                                                        // Tags this card for the visibility observer that drives
-                                                        // avatar resolution.
-                                                        data-avatar-key={streamKey(user)}
-                                                        className="relative group w-[180px] sm:w-[200px] rounded-xl overflow-hidden glass-panel border border-borderSubtle hover:border-white/20 transition-all shadow-sm"
-                                                    >
-                                                        {/* Base Card Content */}
-                                                        <div className="w-full flex items-center gap-3 px-3 py-2">
-                                                            <div className="w-10 h-10 rounded-full bg-glass flex items-center justify-center overflow-hidden ring-1 ring-borderSubtle group-hover:ring-accent/40 flex-shrink-0 relative transition-all">
-                                                                {(() => {
-                                                                    // Twitch rows carry a thumbnail; provider follows carry
-                                                                    // nothing, so their avatar comes from the resolver.
-                                                                    const offlineAvatar =
-                                                                        user.profile_image_url ||
-                                                                        cardAvatars[streamKey(user)] ||
-                                                                        user.thumbnail_url;
-                                                                    return offlineAvatar ? (
-                                                                        <img src={offlineAvatar} alt={user.user_name} className="w-full h-full object-cover" />
-                                                                    ) : (
-                                                                        <User size={14} className="text-textSecondary" />
-                                                                    );
-                                                                })()}
-                                                            </div>
-                                                            <div className="flex-1 min-w-0 transition-opacity duration-200">
-                                                                <h4 className="text-sm font-semibold text-textPrimary truncate transition-colors">
-                                                                    {user.user_name}
-                                                                </h4>
-                                                                <p className="text-[10px] text-textSecondary truncate">
-                                                                    {relativeTimeResult ? `Last live ${relativeTimeResult}` : 'Offline'}
-                                                                </p>
-                                                            </div>
-                                                        </div>
-
-                                                        {/* Action Overlay (Optimized - No blur on hidden elements).
-                                                            Twitch only: "Watch VOD" starts Twitch's offline-chat mode
-                                                            and the profile modal is Twitch-shaped, so neither works for
-                                                            a provider channel. Better no action than a broken one. */}
-                                                        {streamProvider(user) === 'twitch' && (
-                                                        <div className="absolute inset-0 bg-[#0c0c0d]/90 opacity-0 group-hover:opacity-100 transition-all duration-200 flex items-center justify-center gap-2 z-10">
-                                                            <button
-                                                                onClick={(e) => {
-                                                                    e.stopPropagation();
-                                                                    const store = useAppStore.getState();
-                                                                    if (store.isHomeActive) store.toggleHome();
-                                                                    store.startOfflineChat(user.user_login, user);
-                                                                }}
-                                                                className="px-3 py-1.5 rounded-lg glass-button text-[12px] font-bold text-white hover:bg-white/20 transition-all border border-transparent shadow-lg flex items-center gap-1.5"
-                                                            >
-                                                                <Play size={14} strokeWidth={2.5} />
-                                                                <span>Watch VOD</span>
-                                                            </button>
-                                                            
-                                                            <Tooltip content="Profile" side="top">
-                                                                <button
-                                                                    onClick={(e) => {
-                                                                        e.stopPropagation();
-                                                                        setProfileModalUser(user);
-                                                                    }}
-                                                                    className="p-[7px] rounded-lg glass-button text-textSecondary hover:text-textPrimary hover:bg-white/20 transition-all border border-transparent shadow-lg"
-                                                                >
-                                                                    <User size={14} strokeWidth={2.5} />
-                                                                </button>
-                                                            </Tooltip>
-                                                        </div>
-                                                        )}
-                                                    </div>
-                                                );
-                                            })}
+                                            }).map(renderOfflineCard)}
                                             {isLoadingOfflineChannels && (
                                                 <div className="flex items-center justify-center p-2 w-[180px] sm:w-[200px]">
                                                     <Loader2 size={16} className="animate-spin text-accent" />
