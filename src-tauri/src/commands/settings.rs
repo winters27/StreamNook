@@ -357,6 +357,7 @@ pub async fn send_test_notification(
         stream_title: Some(random_message),
         stream_url: format!("https://twitch.tv/{}", mock_streamer_login),
         is_test: true,
+        source: None,
     };
 
     // Emit the notification event to the frontend (for in-app notification)

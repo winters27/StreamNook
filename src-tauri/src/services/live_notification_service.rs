@@ -20,6 +20,12 @@ pub struct LiveNotification {
     pub stream_url: String,
     #[serde(default)]
     pub is_test: bool,
+    /// Which watcher raised this. `None` = the follow poller (every existing
+    /// emitter). `Some("favorite")` = the favourites sweep, which the frontend
+    /// gates on its own setting — a channel you favourited but don't follow
+    /// must not be silenced by the follows toggle, and vice versa.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
 }
 
 pub struct LiveNotificationService {
@@ -154,6 +160,7 @@ impl LiveNotificationService {
             stream_title: Some(stream.title.clone()),
             stream_url: format!("https://twitch.tv/{}", stream.user_login),
             is_test: false,
+            source: None,
         };
 
         // Emit event to frontend (for in-app notifications)

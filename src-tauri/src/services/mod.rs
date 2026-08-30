@@ -30,6 +30,7 @@ pub mod kick_auth_service;
 pub mod layout_service;
 pub mod modroom_auth_service;
 pub mod youtube_auth_service;
+pub mod favorite_live_service;
 pub mod live_notification_service;
 pub mod provider_live_service;
 pub mod ll_origin;

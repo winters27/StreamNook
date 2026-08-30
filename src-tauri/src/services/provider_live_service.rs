@@ -302,6 +302,7 @@ async fn apply(app: &AppHandle, provider: &str, rows: Vec<ProviderStream>, notif
                 stream_title: Some(row.title.clone()).filter(|t| !t.is_empty()),
                 stream_url: row.watch_url.clone(),
                 is_test: false,
+                source: None,
             },
         );
     }
