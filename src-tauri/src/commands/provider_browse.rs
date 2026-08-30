@@ -78,6 +78,25 @@ pub async fn get_provider_followed_live() -> Result<Vec<ProviderStream>, String>
     Ok(crate::services::provider_live_service::snapshot().await)
 }
 
+/// The current who's-live snapshot for FAVOURITED channels, across every
+/// platform, for initial paint. Steady-state updates arrive on the
+/// `favorites-live-update` event.
+#[tauri::command]
+pub async fn get_favorite_live() -> Result<Vec<ProviderStream>, String> {
+    Ok(crate::services::favorite_live_service::snapshot().await)
+}
+
+/// Sweep favourites now instead of waiting out the cadence, so a channel you
+/// just favourited shows up as live immediately rather than up to a minute later.
+#[tauri::command]
+pub async fn refresh_favorites(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    crate::services::favorite_live_service::refresh_favorites(app, (*state).clone()).await;
+    Ok(())
+}
+
 /// Which of `channels` are live now. Batched by the adapter; also the offline
 /// detector for the currently-watched provider stream.
 #[tauri::command]
