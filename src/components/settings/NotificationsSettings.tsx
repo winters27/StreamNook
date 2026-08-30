@@ -113,6 +113,7 @@ const NotificationsSettings = () => {
     enabled: true,
     play_sound: true,
     show_live_notifications: true,
+    show_favorite_live_notifications: true,
     show_whisper_notifications: true,
     show_update_notifications: true,
     show_drops_notifications: true,
@@ -256,6 +257,19 @@ const NotificationsSettings = () => {
                   enabled={liveNotifications.show_live_notifications ?? true}
                   onChange={() => updateLiveNotifications({
                     show_live_notifications: !(liveNotifications.show_live_notifications ?? true)
+                  })}
+                />
+              }
+            />
+
+            <SettingsRow
+              title="Favorite Channel Notifications"
+              description="Get notified when a favorited channel goes live, even if you do not follow it"
+              control={
+                <Toggle
+                  enabled={liveNotifications.show_favorite_live_notifications ?? true}
+                  onChange={() => updateLiveNotifications({
+                    show_favorite_live_notifications: !(liveNotifications.show_favorite_live_notifications ?? true)
                   })}
                 />
               }

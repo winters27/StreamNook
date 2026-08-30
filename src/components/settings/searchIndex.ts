@@ -1361,6 +1361,12 @@ export const SETTINGS_INDEX: SettingsIndexEntry[] = [
   {
     tab: 'Notifications',
     section: 'Notification Types',
+    title: 'Favorite Channel Notifications',
+    description: 'Get notified when a favorited channel goes live, even if you do not follow it.'
+  },
+  {
+    tab: 'Notifications',
+    section: 'Notification Types',
     title: 'Whisper Notifications',
     description: 'Get notified when you receive whispers.'
   },
