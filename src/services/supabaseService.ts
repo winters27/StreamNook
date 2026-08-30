@@ -1,5 +1,7 @@
 import { createClient, RealtimeChannel, SupabaseClient } from '@supabase/supabase-js';
+import { invoke } from '@tauri-apps/api/core';
 import type { TwitchUser } from '../types';
+import { getClientConfig } from './clientConfig';
 
 import { Logger } from '../utils/logger';
 import type { Atmosphere } from './atmospheres';
@@ -258,6 +260,24 @@ export const updatePresence = async (userId: string, displayName: string, appVer
  * @param appVersion - Optional app version
  */
 export const upsertUser = async (user: TwitchUser, appVersion?: string): Promise<void> => {
+    // Server-authoritative path. The server takes the user id from the bearer
+    // token, so this can only ever write the caller's own row.
+    const synced = await writeViaApi('/api/v1/user/sync', {
+        username: user.login || user.username,
+        display_name: user.display_name || user.username,
+        avatar_url: user.profile_image_url ?? null,
+        app_version: appVersion ?? null,
+        platform: clientPlatform(),
+    });
+    if (synced.handled) {
+        // recordClient is folded into the sync endpoint; presence is separate and
+        // still ours to send. Sent regardless of whether the row write succeeded:
+        // presence and liveness must not disappear just because the sync failed,
+        // or a broken cohort goes invisible instead of looking broken.
+        await updatePresence(user.user_id, user.display_name || user.username, appVersion);
+        return;
+    }
+
     if (!supabase) {
         Logger.debug('[Supabase] Skipping user upsert - not configured');
         return;
@@ -283,11 +303,17 @@ export const upsertUser = async (user: TwitchUser, appVersion?: string): Promise
             });
 
         if (error) {
+            // Deliberately does NOT return. The client-record and presence calls
+            // below have nothing to do with whether the `users` row was written,
+            // and bailing here makes a client that cannot write `users` also stop
+            // refreshing last_seen, stop recording which client it is, and never
+            // join presence. That cohort then goes INVISIBLE rather than looking
+            // broken, which is the worst possible failure for the adoption
+            // measurement that gates revoking the anon write.
             Logger.error('[Supabase] Failed to upsert user:', error);
-            return;
+        } else {
+            Logger.debug('[Supabase] User upserted:', user.display_name || user.username);
         }
-
-        Logger.debug('[Supabase] User upserted:', user.display_name || user.username);
 
         // Which client they signed in from. Not awaited: it is telemetry, and
         // presence is what the user actually notices.
@@ -1206,8 +1232,60 @@ export const getProfilePrefs = async (userId: string): Promise<ProfilePrefs> => 
     }
 };
 
+/**
+ * Send a privileged write through the StreamNook API instead of Supabase.
+ *
+ * Returns false when the caller should fall back to the legacy direct write:
+ * either the switch is off, or the request never reached the server. A server
+ * REFUSAL (4xx) returns true, because the server deciding "no" is a real answer
+ * and must not be retried against a table that would happily accept it.
+ *
+ * Identity is not passed. The server derives the acting user from the bearer
+ * token that `streamnook_api_post` attaches in Rust, which is the entire point:
+ * these tables are world-writable by user id under the anon key, so a body-
+ * supplied id is exactly the hole being closed.
+ */
+interface ApiWriteResult {
+    /** False means the legacy direct-Supabase path should run instead. */
+    handled: boolean;
+    /** Only meaningful when handled: whether the server accepted the write. */
+    ok: boolean;
+    error?: string;
+}
+
+const writeViaApi = async (path: string, body: Record<string, unknown>): Promise<ApiWriteResult> => {
+    const { writeViaApi: enabled } = await getClientConfig();
+    if (!enabled) return { handled: false, ok: false };
+    try {
+        const res = await invoke<{ status: number; ok: boolean; body: string }>(
+            'streamnook_api_post',
+            { path, body },
+        );
+        if (!res.ok) {
+            Logger.warn(`[StreamNookAPI] ${path} -> ${res.status} ${res.body}`);
+            // Surface it through the existing health channel so a refusal is
+            // visible rather than silently dropping the user's change. 403 is the
+            // server declining on entitlement, which is the same user-facing
+            // shape as an RLS denial.
+            reportWriteIssue({
+                kind: res.status === 403 ? 'rls_denied' : 'other',
+                lastSeen: new Date().toISOString(),
+                detail: `${path} ${res.status}: ${res.body.slice(0, 200)}`,
+            });
+        }
+        return { handled: true, ok: res.ok, error: res.ok ? undefined : res.body.slice(0, 200) };
+    } catch (e) {
+        // Transport failure only (no token, offline, command denied). The legacy
+        // path is still open until the anon policies are revoked, so use it.
+        Logger.warn(`[StreamNookAPI] ${path} unavailable, falling back:`, e);
+        return { handled: false, ok: false };
+    }
+};
+
 export const setProfileTheme = async (userId: string, theme: string): Promise<void> => {
-    if (!supabase || !userId) return;
+    if (!userId) return;
+    if ((await writeViaApi('/api/cosmetics/theme', { theme })).handled) return;
+    if (!supabase) return;
     try {
         const { error } = await supabase.from('user_profile_prefs').upsert(
             {
@@ -1644,6 +1722,14 @@ export const getOwnedCosmeticSlugs = (userId: string | undefined | null): Set<st
     return owned;
 };
 
+/** Whether the cosmetics registry has actually loaded.
+ *
+ *  Needed because an empty registry and "this member owns nothing" are the same
+ *  answer from `getOwnedCosmeticSlugs`, and any gate that treats missing data as
+ *  "not owned" would blank a paying member's cosmetics during the load window or
+ *  a Supabase outage. Callers must allow rather than deny when this is false. */
+export const isCosmeticsRegistryLoaded = (): boolean => cosmeticsCatalog.size > 0;
+
 // Cosmetic kinds that own their own equip slot (see CosmeticSlot / SLOT_FOR_TYPE
 // in services/cosmetics/types). `user_cosmetic_active` predates that model: it is
 // a single UNTYPED slot, and it is what the chat badge renders. So a non-badge
@@ -2055,7 +2141,8 @@ export const setActiveCosmetic = async (
     userId: string,
     slug: string | null,
 ): Promise<{ ok: boolean; error?: string }> => {
-    if (!supabase) return { ok: false, error: 'supabase not configured' };
+    // No early `!supabase` bail: the API path below does not need the Supabase
+    // client, and returning here would make it unreachable.
     if (!userId) return { ok: false, error: 'no userId' };
     // Defence in depth alongside the picker's own filter: this row is the badge
     // slot, so refuse to write a cosmetic that belongs to a different one rather
@@ -2070,6 +2157,28 @@ export const setActiveCosmetic = async (
     if (slug) cosmeticsActive.set(userId, slug);
     else cosmeticsActive.delete(userId);
     bumpCosmeticsVersion();
+
+    const rollback = () => {
+        if (prev) cosmeticsActive.set(userId, prev);
+        else cosmeticsActive.delete(userId);
+        bumpCosmeticsVersion();
+    };
+
+    // Server-authoritative path. The server re-checks that the caller owns the
+    // cosmetic, which the anon policy's `USING (true)` never did.
+    const api = await writeViaApi('/api/cosmetics/equip', { slug });
+    if (api.handled) {
+        if (!api.ok) {
+            rollback();
+            return { ok: false, error: api.error ?? 'equip refused' };
+        }
+        return { ok: true };
+    }
+
+    if (!supabase) {
+        rollback();
+        return { ok: false, error: 'supabase not configured' };
+    }
 
     try {
         const { error } = await supabase
