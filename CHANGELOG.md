@@ -1,3 +1,52 @@
+## [8.5.2] - 2026-08-30
+
+## 🎉 New: Favorites, a watchlist that spans every platform
+> Star any channel on Twitch, Kick or YouTube, whether or not you follow it, and it gets its own section on Home and in the sidebar the moment it goes live. The section stays clear of anyone who is not streaming, and a favorite that is offline is still reachable further down with your other offline channels. Favorites also have their own go-live alert switch, so a long favorites list never forces you to silence alerts for the people you follow.
+
+---
+
+### ✨ Features
+- **Favorites work everywhere, following optional.** The heart is on every stream card now, including category browsing, search results and offline channels, so you can save a channel the moment you find it. Favorited channels report who is live across all three platforms, and a channel you just starred appears right away instead of waiting for the next check. The Favorites section only ever lists channels that are actually live; a starred channel that is offline sits with your other offline channels, keeping its name and picture so you can still get back to it.
+- **MultiNook runs Kick and YouTube.** One grid can hold everything you watch instead of Twitch only, including several YouTube streams at once. Add to MultiNook is offered on every platform, and stays disabled with the reason on hover for anything the grid cannot run yet.
+- **The grid picker searches every platform at once.** Add Stream and the preset editor look across all supported platforms together, and results from the smaller platforms sit near the top instead of being buried under Twitch matches. You can also type a platform prefix such as `kick:name` to add a channel the search did not surface.
+- **Presets remember which platform each channel is on**, so a mixed grid reloads exactly as you saved it. Two channels that share a name on different platforms stay separate everywhere: adding, removing, chat and presets.
+- **Hide bots and specific people from chat.** Mute a chatter or a bot for one channel or everywhere, so the giveaway and gambling spam stops without you having to read past it.
+- **A separate go-live switch for favorites**, so you can be alerted about a starred channel you do not follow, and keep follow alerts tuned independently.
+
+### 🐛 Bug Fixes
+- **Chat no longer misses messages on fast channels.** Repeat collapsing is opt-in and respects the threshold you set, and coming back from a pause keeps your scrollback instead of cutting it in one go.
+- **YouTube chat stays connected.** It no longer goes silent partway through, and closing a tile actually stops its chat instead of leaving it running in the background.
+- **Channel point redemptions show their emotes** instead of printing the emote name as plain text, and unrecognized emoji shortcodes no longer appear twice.
+- **1440p and 2160p on YouTube keep working** when you come back to a stream later in the same session, instead of quietly dropping to 1080p. High resolution playback also stutters and stalls far less, and closing a stream releases what it was holding so the next one can still go above 1080p.
+- **Opening the quality list on a YouTube stream no longer restarts it** on a different resolution.
+- **YouTube channels are detected as live** whether or not you have opened their chat, so the live list and favorites stop missing them, and tiles show real channel details rather than a bare video id.
+- **Favoriting a Kick or YouTube channel saves that exact channel.** A Kick channel could previously be stored as though it were a Twitch one, and a YouTube favorite saved a single broadcast rather than the channel, so neither ever came back as live. Existing YouTube favorites are repaired on launch.
+- **A favorited Kick or YouTube channel appears once**, not twice under both Favorites and Followed, and go-live alerts no longer double up for a channel you both follow and favorite. A stream that briefly drops and returns no longer announces itself again.
+- **Starring several channels quickly keeps all of them**, and un-starring then immediately re-starring no longer removes it a second later.
+- **Kick follows are keyed correctly**, so following and unfollowing from any surface agrees with what the sidebar shows.
+- **The player control bar renders correctly again**, in the main player and on MultiNook tiles, and the LIVE badge stays steady instead of flickering between LIVE and a timer.
+- **Smoother catch-up when you fall behind live.** The player eases back to the edge against real buffer rather than overspeeding into a stall, which also removes the audio crackle that came with it.
+- **The hype train wave animates cleanly** without a dark box behind it.
+- **Channel search results past the first twenty** show the correct viewer counts, thumbnails and start times.
+- **In MultiNook, the follow button and channel details match the tile you selected**, so two channels on different platforms that share a name can no longer be mixed up.
+- **Adding two streams in quick succession** no longer risks the two tiles colliding on the same slot.
+- **The reminder picker offers Twitch channels only**, so you cannot set a reminder that could never fire.
+
+### ⚡ Performance
+- **The app starts noticeably faster.** Boot no longer waits on two network round trips in a row, settings panels and the emoji set load when you first open them rather than up front, and the window paints the branded loader instead of flashing white.
+- **Chat opens almost immediately** when you switch channels or open another chat tab. Emote lists load in the background instead of holding the connection open, so a slow emote provider no longer leaves chat blank for several seconds.
+- **Paints, badges and personal emotes fill in right away** instead of trickling in one chatter at a time, including on a busy channel join with a large backlog.
+- **Busy channels are much lighter.** Chat rows only re-render when they actually change, and several per message scans over the whole buffer are gone, so a fast chat costs a fraction of the CPU it used to.
+- **YouTube streams start quicker**, because the same background lookup is no longer repeated up to three times before the first frame.
+- **Long sessions stay bounded.** Caches that grew for the life of the process are now capped, and settings and log writes are batched instead of rewriting whole files on every change.
+- **The download is smaller** and the app uses less memory for chat badges and emotes.
+
+### 🔧 Maintenance
+- **Updates are verified before they install.** Packages ship with a signature and are checked against a pinned key, so a corrupted or tampered download is refused rather than installed, including copies downloaded by hand.
+- **Content loaded into the app cannot run code of its own.** Chat, emotes and embedded pages are confined, and channel About panels are cleaned before display, so a channel cannot hide anything harmful in its own panel text.
+- **Profile and cosmetic changes are saved over a signed-in connection**, so only you can change yours, and a failed profile save no longer stops your presence from updating.
+- **Chat atmospheres only paint for members who genuinely unlocked them.**
+
 ## [8.5.1] - 2026-08-25
 
 ## 🎉 New: A smarter Discover feed
