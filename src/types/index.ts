@@ -515,12 +515,30 @@ export const DEFAULT_TOAST_POSITION: ToastPosition = 'bottom-right';
 // the chat input (which sits in the bottom-right corner) out of the box.
 export const DEFAULT_TOAST_EDGE_OFFSET = 72;
 
+/** Identity for a favorited channel, so an unfollowed favorite can still be
+ *  drawn while it is offline. Mirrors the Rust `FavoriteChannel`. */
+export interface FavoriteChannel {
+  /** The key used in favorite_streamers: a Twitch numeric user id, or a
+   *  composite `provider:channel`. See utils/favorites. */
+  id: string;
+  provider: ProviderId;
+  /** Login / slug / @handle / UC id: what chat and playback address. */
+  channel: string;
+  display_name?: string;
+  avatar?: string;
+  added_at?: string;
+}
+
 export interface LiveNotificationSettings {
   enabled: boolean;
   play_sound: boolean;
   sound_type?: string; // 'boop' | 'tick' | 'gentle' | 'soft' | 'whisper'
   // Notification type toggles
   show_live_notifications?: boolean;
+  // Go-live notifications for FAVORITED channels, which may not be followed.
+  // Separate from show_live_notifications so a long favorites list can be
+  // silenced without losing notifications for the channels you follow.
+  show_favorite_live_notifications?: boolean;
   show_whisper_notifications?: boolean;
   show_update_notifications?: boolean;
   show_drops_notifications?: boolean;
@@ -634,8 +652,14 @@ export interface CustomTheme {
 
 export interface MultiNookSlot {
   id: string;             // Unique identifier for the slot (e.g., cell-1)
-  channelLogin: string;   // The Twitch channel login name
-  channelId?: string;     // The Twitch user ID for chat connection mapping
+  // The platform this tile is on. ABSENT MEANS TWITCH, matching the bare-key
+  // convention in utils/providerKey.ts, so grids saved before this field keep
+  // loading untouched. The Rust MultiNookSlot must name this field too: that
+  // struct is typed on Settings and never reaches the `extra` catch-all, so a
+  // key it does not know is dropped on save (see its `quality` comment).
+  provider?: ProviderId;
+  channelLogin: string;   // The channel's login/slug on `provider`
+  channelId?: string;     // The platform user ID for chat connection mapping
   channelName?: string;   // The capitalization-correct display name
   volume: number;         // 0.0 to 1.0
   muted: boolean;         // Mute state
@@ -654,8 +678,9 @@ export interface MultiNookSlot {
  *  of MultiNookSlot. A preset records *which* channels to open, not transient
  *  view state (volume/mute/focus/minimize), which is re-derived on load. */
 export interface MultiNookPresetChannel {
-  channelLogin: string;      // The Twitch channel login name (canonical key)
-  channelId?: string;        // Twitch user ID, cached for instant chat mapping on load
+  provider?: ProviderId;     // Platform; absent means Twitch, as on MultiNookSlot
+  channelLogin: string;      // The channel's login/slug on `provider` (canonical key)
+  channelId?: string;        // Platform user ID, cached for instant chat mapping on load
   channelName?: string;      // Capitalization-correct display name for the preset UI
   profileImageUrl?: string;  // Cached avatar so preset rows render without a network hit
   quality?: string;          // Preferred Streamlink quality carried into the loaded tile
@@ -777,6 +802,9 @@ export interface Settings {
   streamlink?: StreamlinkSettings;
   drops: DropsSettings;
   favorite_streamers: string[];
+  // Display identity for the entries in favorite_streamers. A sidecar, not a
+  // replacement: favorite_streamers stays the answer to "is this favorited".
+  favorite_channels?: FavoriteChannel[];
   chat_design?: ChatDesignSettings;
   chat_highlights?: ChatHighlightSettings;
   chat_customization?: ChatCustomizationSettings;
