@@ -218,23 +218,50 @@ static STREAMS: Lazy<Mutex<HashMap<String, (ResolvedStreams, Instant)>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
 
 fn cached_streams(video_id: &str) -> Option<ResolvedStreams> {
+    cached_streams_with_age(video_id).map(|(s, _)| s)
+}
+
+/// The cached resolution AND how old it is.
+///
+/// A caller that needs FRESH urls can then decide for itself, instead of
+/// invalidating the entry and forcing a resolve. That distinction is the whole
+/// fix for the rotation thrash: see `resolve_streams_fresh`.
+fn cached_streams_with_age(video_id: &str) -> Option<(ResolvedStreams, Duration)> {
     let map = STREAMS.lock().ok()?;
     let (s, at) = map.get(video_id)?;
-    (at.elapsed() < STREAMS_TTL).then(|| s.clone())
+    let age = at.elapsed();
+    // GATED urls die of old age in about thirty seconds, so STREAMS_TTL (90
+    // minutes) is meaningless for them: handing one back does not save a resolve,
+    // it starts playback on a url the origin already refuses. Ungated visionos
+    // urls last as long as their own expiry says and keep the long TTL.
+    //
+    // Mirrors cached_highs in youtube_media, which has always bounded a gated set
+    // by ROTATE_AFTER for exactly this reason.
+    //
+    // Why this was not needed before: refresh_urls used to call invalidate_streams
+    // on every rotation, wiping this entry roughly every fifteen seconds and
+    // keeping it accidentally fresh. Removing that invalidation (correctly, it
+    // caused a resolver thrash with two surfaces on one broadcast) exposed the
+    // real defect underneath: a 90-minute cache of 30-second credentials.
+    // Measured 2026-08-29: with no rotation to wipe it, a start 24-48 minutes
+    // after the last resolve took an instant UPSTREAM 403 and every 1440p
+    // selection fell back to 1080p.
+    let ttl = if s
+        .videos
+        .iter()
+        .any(|v| crate::services::youtube_dash::is_gated(&v.url))
+    {
+        crate::services::youtube_dash::ROTATE_AFTER
+    } else {
+        STREAMS_TTL
+    };
+    (age < ttl).then(|| (s.clone(), age))
 }
 
 fn store_streams(video_id: &str, s: &ResolvedStreams) {
     if let Ok(mut map) = STREAMS.lock() {
         map.retain(|_, (_, at)| at.elapsed() < STREAMS_TTL);
         map.insert(video_id.to_string(), (s.clone(), Instant::now()));
-    }
-}
-
-/// Drop a cached resolution, so the next call re-resolves. Worth doing when
-/// fragments start failing: the signed URLs may simply have expired.
-pub fn invalidate_streams(video_id: &str) {
-    if let Ok(mut map) = STREAMS.lock() {
-        map.remove(video_id);
     }
 }
 
@@ -284,7 +311,67 @@ pub fn invalidate_session() {
     NEEDS_FRESH_SESSION.store(true, std::sync::atomic::Ordering::SeqCst);
 }
 
+/// One "yt-resolve" webview serves every stream, so only one resolve may drive
+/// it at a time. Before this, two streams rotating together both evaluated into
+/// the same window and both polled the same result: `ResolvedStreams` carries no
+/// video id, so a mixed-up read is undetectable and one stream simply plays the
+/// other's broadcast at the right resolution.
+///
+/// A tokio mutex, not a std one, because it is deliberately held across the
+/// resolve await. It is the ONLY async lock in this path.
+static RESOLVER: Lazy<tokio::sync::Mutex<()>> = Lazy::new(|| tokio::sync::Mutex::new(()));
+
+/// Resolve, reusing the cached entry ONLY while it is younger than `max_age`.
+///
+/// `resolve_streams` reuses an entry for the whole `STREAMS_TTL`, which is right
+/// for starting playback and wrong for a rotation: the point of rotating is to hold
+/// urls newer than the ones in hand.
+///
+/// The caller used to get that by invalidating the entry first. With TWO surfaces
+/// on one broadcast that was pathological: each wiped the other's result, so the
+/// re-check inside the lock could never hit, and every rotation cost two full
+/// hidden-webview resolves, forever. Bounding by age gives both halves. A rotation
+/// never adopts stale urls, and a second surface rotating moments later reuses the
+/// fresh ones the first just fetched instead of discarding them.
+///
+/// **The bound is not free to choose.** A stream that adopts an entry of age
+/// `max_age` records its own `issued` as now, so it will not rotate again for
+/// another `ROTATE_AFTER`. `max_age + ROTATE_AFTER` must therefore stay under the
+/// ~30s gated-url wall. The caller passes it rather than reading a constant here so
+/// that arithmetic is visible where both numbers are.
+pub async fn resolve_streams_fresh(
+    video_id: &str,
+    min_height: u32,
+    max_age: Duration,
+) -> Result<ResolvedStreams> {
+    if let Some((s, age)) = cached_streams_with_age(video_id) {
+        if age <= max_age {
+            return Ok(s);
+        }
+    }
+    let _drive = RESOLVER.lock().await;
+    // Re-check INSIDE the lock. While queueing, the resolve being waited on may
+    // have been for this very video, in which case its result is seconds old and
+    // is exactly what this call wanted. This is the line the old invalidate made
+    // unreachable.
+    if let Some((s, age)) = cached_streams_with_age(video_id) {
+        if age <= max_age {
+            return Ok(s);
+        }
+    }
+    let s = resolve_uncached(video_id, min_height).await?;
+    store_streams(video_id, &s);
+    Ok(s)
+}
+
 pub async fn resolve_streams(video_id: &str, min_height: u32) -> Result<ResolvedStreams> {
+    if let Some(s) = cached_streams(video_id) {
+        return Ok(s);
+    }
+    let _drive = RESOLVER.lock().await;
+    // Re-check inside the lock: while queueing, the resolve we were waiting on
+    // may have been for this very video, in which case there is nothing to do.
+    // This collapses N concurrent starts on one broadcast into a single resolve.
     if let Some(s) = cached_streams(video_id) {
         return Ok(s);
     }
@@ -296,9 +383,16 @@ pub async fn resolve_streams(video_id: &str, min_height: u32) -> Result<Resolved
 /// Close the reused resolver window.
 ///
 /// It is deliberately kept open across url rotations (rebuilding it per rotation
-/// was a visible stutter), so playback teardown is what ends it — otherwise a
+/// was a visible stutter), so playback teardown is what ends it, otherwise a
 /// hidden YouTube webview would outlive the stream it was serving.
-pub fn close_resolver() {
+///
+/// Takes RESOLVER first. Closing the window out from under an in-flight resolve
+/// does not fail that resolve, it makes it poll a window that no longer exists
+/// until MINT_TIMEOUT (45s), by which point its urls are already past the ~30s
+/// gated-url wall. The caller must also be sure no stream still needs it: see
+/// youtube_dash::stop, which only reaches here once the registry is empty.
+pub async fn close_resolver() {
+    let _drive = RESOLVER.lock().await;
     if let Some(app) = crate::services::providers::app_handle() {
         use tauri::Manager;
         if let Some(w) = app.get_webview_window("yt-resolve") {
@@ -329,6 +423,20 @@ async fn resolve_uncached(video_id: &str, min_height: u32) -> Result<ResolvedStr
         MINT_PAGE,
         chrono::Utc::now().timestamp_millis(),
         urlencoding::encode(video_id),
+        min_height
+    );
+
+    // The only line that distinguishes a real resolve from a cache reuse. Without
+    // it the rotation logs look identical either way, which is what made the
+    // two-surface thrash invisible for as long as it was.
+    //
+    // Same [YouTubeStreams] prefix as the completion line below, deliberately, so
+    // one grep returns both halves of every resolve and they pair up start-to-
+    // finish. A rotation that logs "re-issued urls" with NO resolve line between
+    // these two is a reuse, which is what the fix is supposed to produce.
+    log::info!(
+        "[YouTubeStreams] resolving {} (min {}p)",
+        video_id,
         min_height
     );
 
@@ -462,6 +570,62 @@ mod tests {
     fn short_keeps_small_bindings_whole() {
         assert_eq!(short("abc"), "abc");
         assert!(short(&"x".repeat(40)).contains('…'));
+    }
+
+    fn a_resolution() -> ResolvedStreams {
+        ResolvedStreams {
+            videos: vec![],
+            audio_url: "https://example/a".into(),
+            audio_itag: 140,
+        }
+    }
+
+    /// The rotation thrash, and the reason it existed.
+    ///
+    /// Two surfaces on ONE broadcast is a supported case: youtube_dash's registry
+    /// is keyed by stream id, not video id, so the same channel can be a tile and
+    /// the solo player at once. Rotation used to `invalidate_streams` BEFORE taking
+    /// the resolver lock, so each surface wiped the other's just-stored result, the
+    /// coalescing re-check inside the lock could never hit, and both paid a full
+    /// hidden-webview resolve every ROTATE_AFTER, indefinitely.
+    ///
+    /// Reuse is bounded by AGE now. These two cases are the whole contract, and
+    /// they pull in opposite directions on purpose: reuse what is fresh, refuse
+    /// what is stale.
+    ///
+    /// Both assert through `resolve_uncached`, which cannot run in a test (no app
+    /// handle, so no webview). That is what makes them meaningful: reuse returns
+    /// Ok WITHOUT resolving, and a refusal to reuse can only surface as the Err
+    /// from attempting one.
+    #[tokio::test]
+    async fn a_fresh_entry_is_reused_rather_than_re_resolved() {
+        let id = "thrash-fresh";
+        store_streams(id, &a_resolution());
+
+        let out = resolve_streams_fresh(id, 1080, Duration::from_secs(5)).await;
+
+        assert!(
+            out.is_ok(),
+            "a seconds-old entry must be reused; resolving instead is the thrash"
+        );
+        assert_eq!(out.unwrap().audio_url, "https://example/a");
+    }
+
+    #[tokio::test]
+    async fn a_stale_entry_is_not_reused_so_rotation_stays_honest() {
+        let id = "thrash-stale";
+        store_streams(id, &a_resolution());
+
+        // Zero tolerance: anything already stored is older than this.
+        let out = resolve_streams_fresh(id, 1080, Duration::ZERO).await;
+
+        // It could only get here by declining the cache and attempting a real
+        // resolve, which has no webview to use. Reusing would have returned Ok and
+        // silently handed a rotation the very urls it was rotating away from.
+        assert!(
+            out.is_err(),
+            "a stale entry must NOT be reused, or rotation is a no-op"
+        );
     }
 
     #[test]
