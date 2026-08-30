@@ -35,10 +35,10 @@ use anyhow::{anyhow, Context, Result};
 use bytes::Bytes;
 use once_cell::sync::Lazy;
 use rand::Rng;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use warp::Filter;
 
@@ -147,7 +147,73 @@ struct Session {
     audio_backoff: u64,
 }
 
-static SESSION: Lazy<Mutex<Option<Session>>> = Lazy::new(|| Mutex::new(None));
+/// Everything ONE relayed stream owns.
+///
+/// This used to be a set of module statics, which meant exactly one YouTube
+/// stream could exist per process. A second `start` overwrote the session while
+/// the first player kept polling the same port, so it was served the second
+/// broadcast's fragments: no error anywhere, just the wrong video. That is why
+/// every field below is per-stream rather than shared.
+struct DashStream {
+    /// Registry key, and the `/s/{id}/` segment on the wire.
+    id: String,
+    /// Playback identity, minted once per stream. YouTube reads it as "this is
+    /// one viewing session of one video", so two concurrent streams must not
+    /// share one.
+    cpn: String,
+    rn: AtomicU64,
+    force_rotate: std::sync::atomic::AtomicBool,
+    rotating: std::sync::atomic::AtomicBool,
+    session: Mutex<Session>,
+    /// Recently served segments, already remuxed. Values are `Bytes` so a hit
+    /// serves by refcount instead of copying. Per-stream because sequence
+    /// numbers restart per broadcast: two streams that both reach video 13305
+    /// would otherwise serve each other's bytes against the wrong init segment.
+    segments: Mutex<HashMap<(bool, u64), Bytes>>,
+    /// Segments being fetched right now, each behind its own gate.
+    ///
+    /// A set of keys was not enough: it told a caller that someone else was
+    /// already fetching, but gave it nothing to WAIT on, so the foreground
+    /// request just fetched the same segment again. Since prefetch warms sq+1
+    /// and the player asks for sq+1 next, that was the common case, not a rare
+    /// race: every segment was downloaded and remuxed twice.
+    inflight: Mutex<HashMap<(bool, u64), Arc<tokio::sync::Mutex<()>>>>,
+    last_segment_warn: Mutex<Option<Instant>>,
+    /// Throttle for the segment cost breakdown below. Separate from
+    /// `last_segment_warn` on purpose: one throttles failures, this throttles a
+    /// diagnostic about successes, and sharing one would hide whichever is rarer.
+    last_cost_log: Mutex<Option<Instant>>,
+    /// Touched by every request. The reaper reads it; nothing here runs on a
+    /// timer, so a stream that went away without a stop is collected lazily.
+    last_seen: Mutex<Instant>,
+}
+
+static REGISTRY: Lazy<Mutex<HashMap<String, Arc<DashStream>>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
+
+/// Concurrent relayed streams. Above this a stream stays on the 1080p HLS
+/// ladder rather than queueing behind the one shared resolver webview.
+const MAX_DASH_STREAMS: usize = 4;
+
+/// A stream nothing has requested for this long is gone: the player closed
+/// without a stop, or the window was destroyed. Swept on the next `start`
+/// rather than by a ticker, because a ticker would turn every leaked entry into
+/// a hidden webview resolve every fifteen seconds.
+const IDLE_EVICT: Duration = Duration::from_secs(120);
+
+/// Ids reach the URL path, so keep them to something that needs no escaping and
+/// cannot contain the separator `route_of` splits on.
+fn valid_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 64
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'.')
+}
+
+fn lookup(id: &str) -> Option<Arc<DashStream>> {
+    REGISTRY.lock().ok()?.get(id).cloned()
+}
 
 /// Client playback nonce: one per playback session, sent on every media request.
 ///
@@ -158,54 +224,56 @@ static SESSION: Lazy<Mutex<Option<Session>>> = Lazy::new(|| Mutex::new(None));
 /// They are NOT what fixed the 403 wall, despite an earlier note here saying so.
 /// Adding them changed nothing. Gated urls expire about thirty seconds after
 /// they are issued and the cure is to re-issue them; see `rotate_if_stale`.
-static CPN: Lazy<Mutex<String>> = Lazy::new(|| Mutex::new(String::new()));
-static RN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-
-fn playback_nonce() -> String {
-    let mut g = match CPN.lock() {
-        Ok(g) => g,
-        Err(e) => e.into_inner(),
-    };
-    if g.is_empty() {
-        const A: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
-        let mut r = rand::rng();
-        *g = (0..16).map(|_| A[r.random_range(0..A.len())] as char).collect();
-    }
-    g.clone()
-}
-
-/// Start a new playback session, so a fresh stream is not seen as a continuation
-/// of the last one.
-fn reset_nonce() {
-    if let Ok(mut g) = CPN.lock() {
-        g.clear();
-    }
-    RN.store(0, std::sync::atomic::Ordering::Relaxed);
+/// Mint a playback nonce. One per DashStream, generated at construction.
+///
+/// This was a process-global that `start` cleared on every call, which meant
+/// starting a second stream rewrote the nonce the first was mid-playback on and
+/// reset its request counter to zero. A fresh instance is now a fresh nonce, so
+/// the reset function is gone entirely.
+fn mint_nonce() -> String {
+    const A: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    let mut r = rand::rng();
+    (0..16).map(|_| A[r.random_range(0..A.len())] as char).collect()
 }
 static PORT: Lazy<Mutex<Option<u16>>> = Lazy::new(|| Mutex::new(None));
 static SERVER: Lazy<Mutex<Option<tokio::task::JoinHandle<()>>>> = Lazy::new(|| Mutex::new(None));
 
 /// Fetch one fragment. `sq` of `None` asks for the live edge, which is also the
 /// cheapest way to learn the current head sequence number.
-async fn fragment(base: &str, sq: Option<u64>, video: bool) -> Result<(Vec<u8>, Option<u64>)> {
+///
+/// Free rather than a method, and it returns the head EVEN ON FAILURE, because
+/// `start` runs its probes before any stream exists to record them against. The
+/// caller decides what to do with the head; recording it is the instance's job.
+/// `age` is the current session's url age, purely for the 403 log line.
+async fn fetch_fragment(
+    cpn: &str,
+    rn: &AtomicU64,
+    base: &str,
+    sq: Option<u64>,
+    video: bool,
+    age: Option<Duration>,
+) -> (Option<u64>, Result<Vec<u8>>) {
     // Every media request carries the playback session identity, the way the
     // real player does.
-    let rn = RN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let rn = rn.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let url = match sq {
-        Some(n) => format!("{}&sq={}&cpn={}&rn={}", base, n, playback_nonce(), rn),
-        None => format!("{}&cpn={}&rn={}", base, playback_nonce(), rn),
+        Some(n) => format!("{}&sq={}&cpn={}&rn={}", base, n, cpn, rn),
+        None => format!("{}&cpn={}&rn={}", base, cpn, rn),
     };
-    let resp = HTTP.get(&url).send().await?;
+    let resp = match HTTP.get(&url).send().await {
+        Ok(r) => r,
+        Err(e) => return (None, Err(e.into())),
+    };
     let head = resp
         .headers()
         .get("x-head-seqnum")
         .and_then(|v| v.to_str().ok())
         .and_then(|s| s.trim().parse::<u64>().ok());
     let status = resp.status();
-    // Record the head from EVERY response, including failures. A 404 for a
+    // The head is returned from EVERY response, including failures. A 404 for a
     // sequence past the edge still reports where the edge actually is, and that
-    // correction is the only way an over-eager head recovers.
-    note_head(video, head);
+    // correction is the only way an over-eager head recovers. Recording it is
+    // the caller's job now, since this runs before a stream exists.
     if !status.is_success() {
         // Logged, not just returned. A 403 here means the urls stopped being
         // authorised — the difference between "this segment is not written yet"
@@ -218,18 +286,11 @@ async fn fragment(base: &str, sq: Option<u64>, video: bool) -> Result<(Vec<u8>, 
             // relay never recovered: it fell back to HLS (1080p ceiling) and
             // every later attempt 403'd instantly on its first fetch.
             crate::services::youtube_potoken::invalidate_session();
-            // Recover on the NEXT segment request rather than waiting out the
-            // rotation clock, so the viewer keeps the resolution they picked
-            // instead of watching it stall and drop to the HLS ceiling.
-            FORCE_ROTATE.store(true, std::sync::atomic::Ordering::SeqCst);
             log::warn!(
                 "[YouTubeDash] UPSTREAM 403 for {} sq={:?} — urls no longer authorised (age {:?})",
                 if video { "video" } else { "audio" },
                 sq,
-                SESSION
-                    .lock()
-                    .ok()
-                    .and_then(|g| g.as_ref().map(|s| s.issued.elapsed()))
+                age
             );
         } else if status.as_u16() != 404 {
             log::warn!(
@@ -239,17 +300,25 @@ async fn fragment(base: &str, sq: Option<u64>, video: bool) -> Result<(Vec<u8>, 
                 sq
             );
         }
-        return Err(anyhow!(
-            "segment {:?} returned {} (origin says head={:?})",
-            sq,
-            status,
-            head
-        )
-        .context(UpstreamStatus(status.as_u16())));
+        // The exact text matters: try_high's `is_refusal` retry matches on
+        // "403" appearing in it.
+        return (
+            head,
+            Err(anyhow!(
+                "segment {:?} returned {} (origin says head={:?})",
+                sq,
+                status,
+                head
+            )
+            .context(UpstreamStatus(status.as_u16()))),
+        );
     }
     // `Bytes` is already one contiguous buffer; `to_vec` here copied every
     // megabyte of every segment for nothing.
-    Ok((resp.bytes().await?.into(), head))
+    match resp.bytes().await {
+        Ok(b) => (head, Ok(b.into())),
+        Err(e) => (head, Err(e.into())),
+    }
 }
 
 /// Ask for the live edge purely to read `X-Head-Seqnum`. Sequence 0 is always
@@ -262,9 +331,50 @@ async fn probe_head(base: &str) -> Option<u64> {
         .and_then(|s| s.trim().parse::<u64>().ok())
 }
 
-fn note_head(video: bool, head: Option<u64>) {
-    if let (Some(h), Ok(mut g)) = (head, SESSION.lock()) {
-        if let Some(s) = g.as_mut() {
+impl DashStream {
+    /// The two media urls, cloned, so no lock is held across an await. That rule
+    /// is why this exists rather than callers reading the session inline.
+    fn urls(&self) -> Option<(String, String)> {
+        let g = self.session.lock().ok()?;
+        Some((g.video_url.clone(), g.audio_url.clone()))
+    }
+
+    fn touch(&self) {
+        if let Ok(mut g) = self.last_seen.lock() {
+            *g = Instant::now();
+        }
+    }
+
+    fn idle_for(&self) -> Duration {
+        self.last_seen.lock().ok().map(|g| g.elapsed()).unwrap_or_default()
+    }
+
+    /// One fragment, carrying this stream's playback identity and recording the
+    /// head it reports.
+    ///
+    /// A 403 arms a forced rotation for THIS stream only. It used to set a
+    /// process-global flag, so one stream's refusal was consumed by whichever
+    /// stream rotated next, and the stream that was actually refused never
+    /// force-rotated: it kept its dead credential and died on it.
+    async fn fragment(&self, base: &str, sq: Option<u64>, video: bool) -> Result<Vec<u8>> {
+        let age = self.session.lock().ok().map(|g| g.issued.elapsed());
+        let (head, out) = fetch_fragment(&self.cpn, &self.rn, base, sq, video, age).await;
+        self.note_head(video, head);
+        if let Err(e) = &out {
+            if upstream_status(e) == Some(403) {
+                // Recover on the NEXT segment request rather than waiting out the
+                // rotation clock, so the viewer keeps the resolution they picked
+                // instead of watching it stall and drop to the HLS ceiling.
+                self.force_rotate.store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+        out
+    }
+
+    fn note_head(&self, video: bool, head: Option<u64>) {
+    if let (Some(h), Ok(mut g)) = (head, self.session.lock()) {
+        {
+            let s = &mut *g;
             let (cur, at) = if video {
                 (&mut s.video_head, &mut s.video_head_at)
             } else {
@@ -287,7 +397,7 @@ fn note_head(video: bool, head: Option<u64>) {
                     *cur,
                     h,
                     *cur - h,
-                    ROTATING.load(std::sync::atomic::Ordering::SeqCst)
+                    self.rotating.load(std::sync::atomic::Ordering::SeqCst)
                 );
             } else if h > *cur + 3 {
                 log::warn!(
@@ -309,9 +419,10 @@ fn note_head(video: bool, head: Option<u64>) {
 /// Only counts failures at or past the edge we published: an older sequence
 /// failing means it aged out of the DVR window, which says nothing about how
 /// close to the head is safe.
-fn widen_backoff(video: bool, sq: u64) {
-    if let Ok(mut g) = SESSION.lock() {
-        if let Some(s) = g.as_mut() {
+fn widen_backoff(&self, video: bool, sq: u64) {
+    if let Ok(mut g) = self.session.lock() {
+        {
+            let s = &mut *g;
             let (head, backoff) = if video {
                 (s.video_head, &mut s.video_backoff)
             } else {
@@ -331,16 +442,50 @@ fn widen_backoff(video: bool, sq: u64) {
     }
 }
 
-/// Point the server at a rendition, priming everything the playlists need.
+}
+
+/// Point the relay at a rendition for one stream, priming everything the
+/// playlists need.
 ///
 /// Returns the local URL the player should load. Safe to call again for a
-/// quality change: the server and its port are reused.
-pub async fn start(video_id: &str, above: u32, r: &HighRendition) -> Result<String> {
-    reset_nonce();
+/// quality change on the SAME `stream_id`: it replaces that stream's entry and
+/// leaves every other stream alone.
+pub async fn start(
+    stream_id: &str,
+    video_id: &str,
+    above: u32,
+    r: &HighRendition,
+) -> Result<String> {
+    // The id reaches the URL path, so anything needing escaping is refused here
+    // rather than mangled later. The message must not contain "403" or
+    // "no longer authorised": try_high's `is_refusal` matches on those and would
+    // rebuild the potoken session and retry for nothing.
+    if !valid_id(stream_id) {
+        return Err(anyhow!("unusable stream id '{}'", stream_id));
+    }
+    // Lazy reaper. Nothing in this module runs on a timer (a ticker would turn
+    // every leaked entry into a hidden webview resolve every fifteen seconds),
+    // so abandoned streams are collected the next time one starts.
+    reap_idle();
+    {
+        let reg = REGISTRY.lock().map_err(|_| anyhow!("registry poisoned"))?;
+        if !reg.contains_key(stream_id) && reg.len() >= MAX_DASH_STREAMS {
+            return Err(anyhow!(
+                "already relaying {} streams; this one stays on the HLS ladder",
+                reg.len()
+            ));
+        }
+    }
+    // One nonce per stream, minted here. This used to be a process-global that
+    // was cleared on every start, which rewrote the nonce a running stream was
+    // mid-playback on.
+    let cpn = mint_nonce();
+    let rn = AtomicU64::new(0);
     // The bare url answers with the live EDGE, which is a chunk of whatever the
     // origin has buffered rather than one addressable segment. It is the cheapest
     // way to learn the head sequence, and that is all it is used for.
-    let (_edge, vhead) = fragment(&r.video_url, None, true).await?;
+    let (vhead, edge) = fetch_fragment(&cpn, &rn, &r.video_url, None, true, None).await;
+    edge?;
     let head = vhead.unwrap_or(0);
     if head == 0 {
         return Err(anyhow!("origin reported no head sequence"));
@@ -355,7 +500,8 @@ pub async fn start(video_id: &str, above: u32, r: &HighRendition) -> Result<Stri
     // symptom looked like an edge problem (404s near the head) but the cause was
     // the advertised segment duration.
     let probe_sq = head.saturating_sub(EDGE_BACKOFF_START);
-    let (vbytes, _) = fragment(&r.video_url, Some(probe_sq), true).await?;
+    let (_, vbytes) = fetch_fragment(&cpn, &rn, &r.video_url, Some(probe_sq), true, None).await;
+    let vbytes = vbytes?;
     let parsed: Parsed = webm_fmp4::parse(&vbytes)?;
     let cfg = Vp9Config::from_keyframe(
         &parsed.samples[0].data,
@@ -366,16 +512,14 @@ pub async fn start(video_id: &str, above: u32, r: &HighRendition) -> Result<Stri
     let init_video = webm_fmp4::init_segment(&parsed.track, &cfg);
     let target = (parsed.duration() as f64 / parsed.track.timescale as f64).max(0.2);
 
-    let (abytes, ahead) = fragment(&r.audio_url, Some(probe_sq), false).await?;
+    let (ahead, abytes) = fetch_fragment(&cpn, &rn, &r.audio_url, Some(probe_sq), false, None).await;
+    let abytes = abytes?;
     let (init_audio, _) = webm_fmp4::split_audio_fragment(&abytes)?;
     if init_audio.is_empty() {
         return Err(anyhow!("audio fragment carried no init"));
     }
 
-    // Sequence numbers restart per broadcast, so entries from the previous one
-    // would collide by key and serve the wrong video's bytes.
-    clear_segment_cache();
-    *SESSION.lock().map_err(|_| anyhow!("session poisoned"))? = Some(Session {
+    let session = Session {
         video_id: video_id.to_string(),
         above,
         itag: r.itag,
@@ -396,10 +540,33 @@ pub async fn start(video_id: &str, above: u32, r: &HighRendition) -> Result<Stri
         audio_head_at: Instant::now(),
         video_backoff: EDGE_BACKOFF_START,
         audio_backoff: EDGE_BACKOFF_START,
+    };
+
+    // A brand new instance, never a mutation of one already registered: an
+    // in-flight request holding the old Arc finishes against the rendition it
+    // started on rather than being handed a different one's bytes mid-segment.
+    // Sequence numbers restart per broadcast, so a fresh cache comes with it.
+    let stream = Arc::new(DashStream {
+        id: stream_id.to_string(),
+        cpn,
+        rn,
+        force_rotate: std::sync::atomic::AtomicBool::new(false),
+        rotating: std::sync::atomic::AtomicBool::new(false),
+        session: Mutex::new(session),
+        segments: Mutex::new(HashMap::new()),
+        inflight: Mutex::new(HashMap::new()),
+        last_segment_warn: Mutex::new(None),
+        last_cost_log: Mutex::new(None),
+        last_seen: Mutex::new(Instant::now()),
     });
+    REGISTRY
+        .lock()
+        .map_err(|_| anyhow!("registry poisoned"))?
+        .insert(stream_id.to_string(), stream);
 
     log::info!(
-        "[YouTubeDash] {} ({}x{}@{}) itag={} codec={} segment={:.3}s head={}",
+        "[YouTubeDash] {}: {} ({}x{}@{}) itag={} codec={} segment={:.3}s head={}",
+        stream_id,
         r.name,
         r.width,
         r.height,
@@ -410,50 +577,125 @@ pub async fn start(video_id: &str, above: u32, r: &HighRendition) -> Result<Stri
         head
     );
 
-    let port = ensure_server().await?;
+    let port = ensure_server()?;
+    // The id lives in the PATH, not the query. Every reference the playlists emit
+    // is a bare relative name (`video.m3u8`, `init_v.mp4`, `v/97.m4s`), and a
+    // player resolves those against the playlist's own URL, so a path prefix is
+    // inherited by every child request for free and the playlist bodies need no
+    // change at all. A query parameter would be dropped by that same resolution,
+    // and `warp::path::full()` cannot see one anyway.
+    //
+    // `?t=` stays: it is the React effect key. Without it a quality change that
+    // reuses the same id returns a byte-identical URL, the effect never re-runs,
+    // and the menu relabels while playback stays on the old rendition.
     Ok(format!(
-        "http://localhost:{}/stream.m3u8?t={}",
+        "http://localhost:{}/s/{}/stream.m3u8?t={}",
         port,
+        stream_id,
         chrono::Utc::now().timestamp_millis()
     ))
 }
 
-/// Drop the session so a later stream cannot serve this one's fragments. The
-/// server itself is left running; it is inert without a session.
-pub fn stop() {
-    if let Ok(mut g) = SESSION.lock() {
-        *g = None;
-    }
-    // Same reason the session is dropped: cached fragments belong to the stream
-    // that just ended.
-    clear_segment_cache();
-    // The resolver webview is kept alive BETWEEN rotations, so something has to
-    // close it when there are no more rotations coming.
-    crate::services::youtube_potoken::close_resolver();
+/// Drop streams nothing has asked about for a while.
+///
+/// A leaked entry is inert (every clock in this module is read inside `handle`
+/// on an incoming request), but it holds two init segments plus up to six
+/// remuxed fragments, and it counts against MAX_DASH_STREAMS, so the next real
+/// stream would be refused and silently fall back to 1080p.
+fn reap_idle() {
+    let Ok(mut reg) = REGISTRY.lock() else { return };
+    reg.retain(|id, st| {
+        let keep = st.idle_for() < IDLE_EVICT;
+        if !keep {
+            log::info!("[YouTubeDash] {}: idle, dropping the relay", id);
+        }
+        keep
+    });
 }
 
-async fn ensure_server() -> Result<u16> {
-    if let Some(p) = *PORT.lock().map_err(|_| anyhow!("port poisoned"))? {
+/// Drop ONE stream. A missing id is a deliberate no-op: this is called from the
+/// ordinary sub-1080p resolve path far more often than a stream actually ends.
+///
+/// The shared server keeps running; it is inert for an id it does not know.
+pub async fn stop(stream_id: &str) {
+    let removed = REGISTRY
+        .lock()
+        .ok()
+        .and_then(|mut r| r.remove(stream_id))
+        .is_some();
+    if removed {
+        log::info!("[YouTubeDash] {}: relay stopped", stream_id);
+    }
+    // Only once nothing is left. The resolver webview is shared, and every
+    // running stream rotates through it: closing it because ONE tile went away
+    // would leave the others playing for about fifteen seconds and then failing
+    // one at a time, minutes after the action that caused it.
+    close_resolver_if_idle(removed).await;
+}
+
+/// Grid teardown: drop every stream except the one named, normally the solo
+/// player's. Exiting the grid must not kill a stream playing behind it.
+pub async fn stop_all_except(keep: &str) {
+    let dropped = {
+        let Ok(mut reg) = REGISTRY.lock() else { return };
+        let before = reg.len();
+        reg.retain(|id, _| id == keep);
+        before != reg.len()
+    };
+    close_resolver_if_idle(dropped).await;
+}
+
+async fn close_resolver_if_idle(removed_something: bool) {
+    if !removed_something {
+        return;
+    }
+    let empty = REGISTRY.lock().map(|r| r.is_empty()).unwrap_or(false);
+    if empty {
+        crate::services::youtube_potoken::close_resolver().await;
+    }
+}
+
+/// One server for the process, serving every stream by path.
+///
+/// The route captures nothing per-stream, so there is nothing a second listener
+/// would isolate. A port per stream would instead mean N chances to lose a bind
+/// race, and a failed start here degrades silently to the 1080p HLS ceiling.
+///
+/// The PORT guard is held across the whole function: there are no awaits inside,
+/// so two concurrent starts cannot both bind and leak one of the listeners.
+fn ensure_server() -> Result<u16> {
+    let mut port_guard = PORT.lock().map_err(|_| anyhow!("port poisoned"))?;
+    if let Some(p) = *port_guard {
         return Ok(p);
     }
-    let port = rand::rng().random_range(20000..30000);
-    let addr = SocketAddr::from(([127, 0, 0, 1], port));
 
     let route = warp::path::full()
         .and_then(|p: warp::path::FullPath| async move { handle(p.as_str().to_string()).await })
         .boxed();
 
+    // Port 0 lets the OS pick a free one, which removes the collision class
+    // entirely. Nothing bakes in a port range: the CSP is connect-src *, and the
+    // frontend only ever follows the URL this returns.
     let socket = tokio::net::TcpSocket::new_v4()?;
-    socket.set_reuseaddr(true)?;
-    socket.bind(addr)?;
+    socket.bind(SocketAddr::from(([127, 0, 0, 1], 0)))?;
+    let port = socket.local_addr()?.port();
     let listener = socket.listen(512)?;
     let handle = tokio::spawn(async move {
         warp::serve(route).incoming(listener).run().await;
     });
     *SERVER.lock().map_err(|_| anyhow!("server poisoned"))? = Some(handle);
-    *PORT.lock().map_err(|_| anyhow!("port poisoned"))? = Some(port);
+    *port_guard = Some(port);
     log::info!("[YouTubeDash] serving on port {}", port);
     Ok(port)
+}
+
+/// Split `/s/{id}/{tail}` once, at the top, so every match arm below keeps the
+/// exact pattern it had when there was only one stream. `v/97.m4s` has to reach
+/// the segment arm unchanged, or the playlists serve while every segment 404s.
+fn route_of(path: &str) -> Option<(&str, &str)> {
+    let rest = path.trim_start_matches('/').strip_prefix("s/")?;
+    let (id, tail) = rest.split_once('/')?;
+    (!id.is_empty() && !tail.is_empty()).then_some((id, tail))
 }
 
 fn cors(body: impl Into<Bytes>, content_type: &str) -> warp::http::Response<Bytes> {
@@ -494,20 +736,12 @@ fn fail_because(code: u16, why: String) -> warp::http::Response<Bytes> {
         .unwrap_or_else(|_| warp::http::Response::new(Bytes::new()))
 }
 
-/// Snapshot the parts of the session a handler needs, so no lock is held across
-/// an await.
-fn snapshot() -> Option<(String, String, u64, f64)> {
-    let g = SESSION.lock().ok()?;
-    let s = g.as_ref()?;
-    Some((s.video_url.clone(), s.audio_url.clone(), s.video_head, s.target))
-}
-
-fn head_is_stale(video: bool) -> bool {
-    SESSION
-        .lock()
-        .ok()
-        .and_then(|g| {
-            g.as_ref().map(|s| {
+impl DashStream {
+    fn head_is_stale(&self, video: bool) -> bool {
+        self.session
+            .lock()
+            .ok()
+            .map(|s| {
                 let (h, at) = if video {
                     (s.video_head, s.video_head_at)
                 } else {
@@ -515,8 +749,8 @@ fn head_is_stale(video: bool) -> bool {
                 };
                 at.elapsed() > HEAD_TTL || h == 0
             })
-        })
-        .unwrap_or(false)
+            .unwrap_or(false)
+    }
 }
 
 /// Gated urls stop working about thirty seconds after they are issued, so they
@@ -568,36 +802,41 @@ static SLOW_SERVE_SUPPRESSED: AtomicU64 = AtomicU64::new(0);
 /// stalls playback for exactly as long as it takes, which shows up as a stutter
 /// on a fixed cadence. The gap between `ROTATE_AFTER` and the ~30s wall is the
 /// headroom that lets the swap land while the current urls still work.
-fn rotate_if_stale() {
-    let Some((video_id, above, itag)) = ({
-        let g = match SESSION.lock() {
-            Ok(g) => g,
-            Err(_) => return,
-        };
-        g.as_ref().and_then(|s| {
-            let forced = FORCE_ROTATE.load(std::sync::atomic::Ordering::SeqCst);
-            let due = is_gated(&s.video_url) && (forced || s.issued.elapsed() >= ROTATE_AFTER);
-            due.then(|| (s.video_id.clone(), s.above, s.itag))
-        })
-    }) else {
-        return;
-    };
-
-    use std::sync::atomic::Ordering;
-    if ROTATING.swap(true, Ordering::SeqCst) {
-        return;
+impl DashStream {
+    fn rotation_due(&self) -> Option<(String, u32, u64)> {
+        let g = self.session.lock().ok()?;
+        let forced = self.force_rotate.load(std::sync::atomic::Ordering::SeqCst);
+        let due = is_gated(&g.video_url) && (forced || g.issued.elapsed() >= ROTATE_AFTER);
+        due.then(|| (g.video_id.clone(), g.above, g.itag))
     }
-    // Cleared only once a rotation is actually under way, so a refusal can never
-    // be swallowed by a concurrent caller that then declined to rotate.
-    FORCE_ROTATE.store(false, Ordering::SeqCst);
 
-    tokio::spawn(async move {
-        let outcome = refresh_urls(&video_id, above, itag).await;
-        ROTATING.store(false, Ordering::SeqCst);
-        if let Err(e) = outcome {
-            log::warn!("[YouTubeDash] could not re-issue urls for itag {}: {}", itag, e);
+    fn rotate_if_stale(self: &Arc<Self>) {
+        let Some((video_id, above, itag)) = self.rotation_due() else {
+            return;
+        };
+
+        use std::sync::atomic::Ordering;
+        if self.rotating.swap(true, Ordering::SeqCst) {
+            return;
         }
-    });
+        // Cleared only once a rotation is actually under way, so a refusal can never
+        // be swallowed by a concurrent caller that then declined to rotate.
+        self.force_rotate.store(false, Ordering::SeqCst);
+
+        let me = Arc::clone(self);
+        tokio::spawn(async move {
+            let outcome = me.refresh_urls(&video_id, above, itag).await;
+            me.rotating.store(false, Ordering::SeqCst);
+            if let Err(e) = outcome {
+                log::warn!(
+                    "[YouTubeDash] {}: could not re-issue urls for itag {}: {}",
+                    me.id,
+                    itag,
+                    e
+                );
+            }
+        });
+    }
 }
 
 /// Swap the host of a videoplayback url, keeping everything else byte for byte.
@@ -651,58 +890,76 @@ async fn pick_url(fresh: &str, current: &str) -> String {
     fresh.to_string()
 }
 
-async fn refresh_urls(video_id: &str, above: u32, itag: u64) -> Result<()> {
-    // The resolver caches for the rest of the hour, which is the right call for
-    // a fresh session and exactly wrong here, so the entry is dropped first.
-    crate::services::youtube_potoken::invalidate_streams(video_id);
+impl DashStream {
+    async fn refresh_urls(&self, video_id: &str, above: u32, itag: u64) -> Result<()> {
+    // Bounded by AGE, never by invalidating first.
+    //
+    // Invalidating before the resolver lock meant two surfaces on ONE broadcast
+    // each wiped the other's just-stored result, so the coalescing re-check inside
+    // that lock could never hit: both paid a full hidden-webview resolve, every
+    // ROTATE_AFTER, indefinitely. The registry is keyed by stream id precisely so
+    // one broadcast CAN be open twice, which makes that a supported case rather
+    // than an exotic one.
+    //
+    // REUSE_WITHIN + ROTATE_AFTER must stay under the ~30s gated-url wall, because
+    // a stream adopting an entry of that age records `issued` as now and will not
+    // rotate again for another ROTATE_AFTER. 5 + 15 = 20s leaves ~10s of headroom.
     // Straight to the gated resolver rather than through `high_renditions`.
     // Nothing but a gated url is ever rotated, so re-asking the visionos client
     // every fifteen seconds would only re-learn that it has nothing to offer,
     // at the cost of a watch-page scrape and a player call each time.
-    let resolved = crate::services::youtube_potoken::resolve_streams(video_id, above).await?;
+    const REUSE_WITHIN: Duration = Duration::from_secs(5);
+    let resolved =
+        crate::services::youtube_potoken::resolve_streams_fresh(video_id, above, REUSE_WITHIN)
+            .await?;
     let fresh = resolved
         .videos
         .iter()
         .find(|v| v.itag as u64 == itag)
         .ok_or_else(|| anyhow!("itag {} is no longer offered by '{}'", itag, video_id))?;
 
-    let (cur_video, cur_audio) = {
-        let g = SESSION.lock().map_err(|_| anyhow!("session poisoned"))?;
-        let s = g.as_ref().ok_or_else(|| anyhow!("session ended mid-refresh"))?;
-        (s.video_url.clone(), s.audio_url.clone())
-    };
+    let (cur_video, cur_audio) = self
+        .urls()
+        .ok_or_else(|| anyhow!("session ended mid-refresh"))?;
     // Both settled BEFORE the swap, so the urls that go live are already proven
     // and already have a connection open.
     let video_url = pick_url(&fresh.url, &cur_video).await;
     let audio_url = pick_url(&resolved.audio_url, &cur_audio).await;
 
-    let mut g = SESSION.lock().map_err(|_| anyhow!("session poisoned"))?;
-    let s = g.as_mut().ok_or_else(|| anyhow!("session ended mid-refresh"))?;
+    let mut g = self.session.lock().map_err(|_| anyhow!("session poisoned"))?;
     // The session may have been restarted onto a different rendition while this
     // was in flight; overwriting it then would silently switch quality.
-    if s.itag != itag {
-        return Err(anyhow!("session moved to itag {} mid-refresh", s.itag));
+    if g.itag != itag {
+        return Err(anyhow!("session moved to itag {} mid-refresh", g.itag));
     }
-    s.video_url = video_url;
-    s.audio_url = audio_url;
-    s.issued = Instant::now();
-    log::info!("[YouTubeDash] re-issued urls for itag {}", itag);
+    g.video_url = video_url;
+    g.audio_url = audio_url;
+    g.issued = Instant::now();
+    log::info!("[YouTubeDash] {}: re-issued urls for itag {}", self.id, itag);
     Ok(())
+    }
 }
 
-async fn handle(path: String) -> Result<warp::http::Response<Bytes>, std::convert::Infallible> {
+async fn handle(full: String) -> Result<warp::http::Response<Bytes>, std::convert::Infallible> {
     let started = Instant::now();
-    let path = path.trim_start_matches('/').to_string();
-    let path = path.split('?').next().unwrap_or("").to_string();
+    // No `?` handling: warp::path::full() yields the path only, never the query.
+    let Some((id, tail)) = route_of(&full) else {
+        return Ok(fail_because(404, format!("unroutable path {}", full)));
+    };
+    let path = tail.to_string();
 
-    if SESSION.lock().ok().map(|g| g.is_none()).unwrap_or(true) {
-        return Ok(fail(503));
-    }
+    let Some(st) = lookup(id) else {
+        // 503, not 404: this is what an in-flight request gets after its stream
+        // stopped, and hls.js treats the two differently.
+        return Ok(fail_because(503, format!("no session for stream {}", id)));
+    };
+    // Proof of life for the reaper.
+    st.touch();
     // Every request goes through here, so the refresh rides the player's own
     // cadence instead of needing a timer of its own. It does not block: the
     // current urls stay good for another ten seconds or so.
-    let was_rotating = ROTATING.load(std::sync::atomic::Ordering::SeqCst);
-    rotate_if_stale();
+    let was_rotating = st.rotating.load(std::sync::atomic::Ordering::SeqCst);
+    st.rotate_if_stale();
 
     // Anything the player waits on for more than a beat is a candidate for the
     // visible hitch, so name it with whether a url rotation was in flight. A
@@ -735,10 +992,11 @@ async fn handle(path: String) -> Result<warp::http::Response<Bytes>, std::conver
             {
                 SLOW_SERVE_SUPPRESSED.store(0, Ordering::Relaxed);
                 log::warn!(
-                    "[YouTubeDash] slow serve: {} took {}ms (rotation in flight: {}; {} more suppressed since the previous report)",
+                    "[YouTubeDash] {}: slow serve: {} took {}ms (rotation in flight: {}; {} more suppressed since the previous report)",
+                    st.id,
                     kind,
                     ms,
-                    was_rotating || ROTATING.load(Ordering::SeqCst),
+                    was_rotating || st.rotating.load(Ordering::SeqCst),
                     suppressed
                 );
             }
@@ -746,34 +1004,40 @@ async fn handle(path: String) -> Result<warp::http::Response<Bytes>, std::conver
     };
 
     let res = match path.as_str() {
-        "stream.m3u8" => master().map(|m| cors(m.into_bytes(), "application/vnd.apple.mpegurl")),
+        "stream.m3u8" => st
+            .session
+            .lock()
+            .map(|g| cors(master(&g).into_bytes(), "application/vnd.apple.mpegurl"))
+            .map_err(|_| anyhow!("session poisoned")),
         "video.m3u8" | "audio.m3u8" => {
             let video = path.starts_with("video");
             // Refresh the live edge only when it has aged out, so this rides the
             // player's own playlist cadence instead of adding a timer.
             // Each track's own head, from its own url: they advance
             // independently and one cannot stand in for the other.
-            if head_is_stale(video) {
-                if let Some((v, a, _, _)) = snapshot() {
+            if st.head_is_stale(video) {
+                if let Some((v, a)) = st.urls() {
                     let base = if video { v } else { a };
-                    note_head(video, probe_head(&base).await);
+                    st.note_head(video, probe_head(&base).await);
                 }
             }
-            media_playlist(video).map(|m| cors(m.into_bytes(), "application/vnd.apple.mpegurl"))
+            st.session
+                .lock()
+                .map_err(|_| anyhow!("session poisoned"))
+                .and_then(|g| media_playlist(&g, video))
+                .map(|m| cors(m.into_bytes(), "application/vnd.apple.mpegurl"))
         }
         "init_v.mp4" | "init_a.mp4" => {
             let video = path.starts_with("init_v");
-            SESSION
+            st.session
                 .lock()
                 .ok()
-                .and_then(|g| {
-                    g.as_ref().map(|s| {
-                        if video {
-                            s.init_video.clone()
-                        } else {
-                            s.init_audio.clone()
-                        }
-                    })
+                .map(|g| {
+                    if video {
+                        g.init_video.clone()
+                    } else {
+                        g.init_audio.clone()
+                    }
                 })
                 .map(|b| cors(b, "video/mp4"))
                 .ok_or_else(|| anyhow!("no init"))
@@ -781,7 +1045,7 @@ async fn handle(path: String) -> Result<warp::http::Response<Bytes>, std::conver
         p if p.starts_with("v/") || p.starts_with("a/") => {
             let video = p.starts_with("v/");
             match p[2..].trim_end_matches(".m4s").parse::<u64>() {
-                Ok(sq) => segment(video, sq).await.map(|b| cors(b, "video/mp4")),
+                Ok(sq) => st.segment(video, sq).await.map(|b| cors(b, "video/mp4")),
                 Err(_) => Err(anyhow!("bad sequence")),
             }
         }
@@ -798,8 +1062,8 @@ async fn handle(path: String) -> Result<warp::http::Response<Bytes>, std::conver
             // so say them, throttled to one line a second rather than one per
             // retry.
             if path.starts_with("v/") || path.starts_with("a/") {
-                static LAST: Lazy<Mutex<Option<Instant>>> = Lazy::new(|| Mutex::new(None));
-                let say = LAST
+                let say = st
+                    .last_segment_warn
                     .lock()
                     .ok()
                     .map(|mut g| {
@@ -811,20 +1075,20 @@ async fn handle(path: String) -> Result<warp::http::Response<Bytes>, std::conver
                     })
                     .unwrap_or(false);
                 if say {
-                    log::warn!("[YouTubeDash] {} -> {}", path, e);
+                    log::warn!("[YouTubeDash] {}: {} -> {}", st.id, path, e);
                 }
             } else {
-                log::debug!("[YouTubeDash] {} -> {}", path, e);
+                log::debug!("[YouTubeDash] {}: {} -> {}", st.id, path, e);
             }
             fail_because(404, format!("{}: {}", path, e))
         }
     })
 }
 
-fn master() -> Result<String> {
-    let g = SESSION.lock().map_err(|_| anyhow!("poisoned"))?;
-    let s = g.as_ref().ok_or_else(|| anyhow!("no session"))?;
-    Ok(format!(
+/// Free, over a borrowed session, so the playlist tests can build one by hand
+/// and assert on the text without any shared state to serialise around.
+fn master(s: &Session) -> String {
+    format!(
         "#EXTM3U\n\
          #EXT-X-VERSION:7\n\
          #EXT-X-INDEPENDENT-SEGMENTS\n\
@@ -832,12 +1096,10 @@ fn master() -> Result<String> {
          #EXT-X-STREAM-INF:BANDWIDTH={},RESOLUTION={}x{},FRAME-RATE={:.3},CODECS=\"{},{}\",AUDIO=\"aud\"\n\
          video.m3u8\n",
         s.bandwidth, s.width, s.height, s.fps, s.video_codec, AUDIO_CODEC
-    ))
+    )
 }
 
-fn media_playlist(video: bool) -> Result<String> {
-    let g = SESSION.lock().map_err(|_| anyhow!("poisoned"))?;
-    let s = g.as_ref().ok_or_else(|| anyhow!("no session"))?;
+fn media_playlist(s: &Session, video: bool) -> Result<String> {
     let head = if video { s.video_head } else { s.audio_head };
     if head == 0 {
         return Err(anyhow!("live edge unknown"));
@@ -863,43 +1125,97 @@ fn media_playlist(video: bool) -> Result<String> {
     Ok(m)
 }
 
-async fn segment(video: bool, sq: u64) -> Result<Bytes> {
-    if let Some(hit) = cached_segment(video, sq) {
+impl DashStream {
+    async fn segment(self: &Arc<Self>, video: bool, sq: u64) -> Result<Bytes> {
+    if let Some(hit) = self.cached_segment(video, sq) {
         return Ok(hit);
     }
-    // `Bytes::from(Vec)` takes ownership of the remux buffer; the cache insert
-    // and the served body then share it by refcount.
-    let out = Bytes::from(fetch_and_remux(video, sq).await?);
-    store_segment(video, sq, out.clone());
+    let out = self.fetch_once(video, sq).await?;
     // With this one served, warm the NEXT one so its round trip happens while the
     // player is still chewing on this segment instead of inside its next request.
-    prefetch_next(video, sq);
+    self.prefetch_next(video, sq);
     Ok(out)
 }
 
+/// Fetch and remux a segment AT MOST ONCE, however many callers want it.
+///
+/// The gate is a per-key async mutex rather than a notification, deliberately: a
+/// waiter that clones a notifier, drops the map lock and only then awaits can
+/// miss a wake that lands in between, and the cost of that bug is a stalled
+/// segment rather than a duplicated one. Taking a lock has no such window.
+///
+/// Every path re-checks the cache AFTER acquiring, so the second caller through
+/// pays nothing, and a first caller that FAILED leaves the second to try for
+/// itself rather than inheriting an error it never saw.
+async fn fetch_once(self: &Arc<Self>, video: bool, sq: u64) -> Result<Bytes> {
+    let gate = {
+        let mut f = self
+            .inflight
+            .lock()
+            .map_err(|_| anyhow!("inflight poisoned"))?;
+        Arc::clone(
+            f.entry((video, sq))
+                .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(()))),
+        )
+    };
+    let _held = gate.lock().await;
+
+    if let Some(hit) = self.cached_segment(video, sq) {
+        return Ok(hit);
+    }
+
+    // `Bytes::from(Vec)` takes ownership of the remux buffer; the cache insert
+    // and the served body then share it by refcount.
+    let outcome = self
+        .fetch_and_remux(video, sq)
+        .await
+        .map(Bytes::from)
+        .inspect(|out| self.store_segment(video, sq, out.clone()));
+
+    // Dropped only after the bytes are cached, so a caller arriving now takes the
+    // cache hit rather than opening a fresh gate. A waiter already blocked holds
+    // its own Arc, so removing the entry cannot strand it.
+    if let Ok(mut f) = self.inflight.lock() {
+        f.remove(&(video, sq));
+    }
+    outcome
+}
+
 /// Fetch one segment upstream and convert it to fMP4.
-async fn fetch_and_remux(video: bool, sq: u64) -> Result<Vec<u8>> {
-    let (vurl, aurl, _, _) = snapshot().ok_or_else(|| anyhow!("no session"))?;
+async fn fetch_and_remux(&self, video: bool, sq: u64) -> Result<Vec<u8>> {
+    let (vurl, aurl) = self.urls().ok_or_else(|| anyhow!("no session"))?;
     let base = if video { vurl } else { aurl };
-    let (bytes, _head) = match fragment(&base, Some(sq), video).await {
+    let fetch_started = Instant::now();
+    let bytes = match self.fragment(&base, Some(sq), video).await {
         Ok(v) => v,
         Err(e) => {
             // Only a 404 means "not written yet". A 403 means the URL is no
             // longer authorised, and widening the backoff for it just walks
             // further from the edge while never fixing anything.
             if upstream_status(&e) != Some(403) {
-                widen_backoff(video, sq);
+                self.widen_backoff(video, sq);
             }
             return Err(e);
         }
     };
-    // The remux is CPU-bound over a multi-megabyte buffer (a 1440p60 fragment
-    // through a full WebM parser). Run inline it occupies an async worker for the
-    // whole parse, so every other task on that thread — the playlist, the other
-    // track's fetch, the next segment — waits behind it. That is invisible in a
-    // serve-time measurement of THIS request and shows up as an unexplained
-    // hitch elsewhere.
-    tokio::task::spawn_blocking(move || {
+    // Kept on a blocking worker so a parse can never occupy an async worker that
+    // the playlist, the other track's fetch or the next segment is waiting on.
+    //
+    // MEASURED 2026-08-28, because this comment used to claim the parse was
+    // "CPU-bound over a multi-megabyte buffer" and that claim sent two separate
+    // investigations down the wrong path. Over 22 steady-state 1440p60 segments:
+    //
+    //     size  median 2146KB      FETCH median 1134ms      REMUX median 1ms
+    //
+    // The remux is 0.1% of the cost. The parse is effectively free and always
+    // was; the entire per-segment time is pulling bytes from googlevideo. Do NOT
+    // reason about this path as though transmuxing were expensive. The
+    // spawn_blocking stays because it is correct and costs nothing, not because
+    // the work behind it is heavy.
+    let fetch_ms = fetch_started.elapsed().as_millis();
+    let raw_len = bytes.len();
+    let remux_started = Instant::now();
+    let out: Result<Vec<u8>> = tokio::task::spawn_blocking(move || {
         if video {
             let parsed = webm_fmp4::parse(&bytes)?;
             // Sequence number doubles as the moof sequence, which keeps it unique
@@ -911,37 +1227,62 @@ async fn fetch_and_remux(video: bool, sq: u64) -> Result<Vec<u8>> {
         }
     })
     .await
-    .map_err(|e| anyhow!("remux task failed: {}", e))?
+    .map_err(|e| anyhow!("remux task failed: {}", e))?;
+
+    // WHERE a slow segment actually goes. Logged only when it is slow, and at
+    // most once a second per stream, because the point is to answer one question
+    // rather than to narrate every segment: is the cost the gated googlevideo
+    // fetch, or is it running a 1440p60 VP9 fragment through a full WebM parser
+    // for a tile a few hundred pixels wide?
+    //
+    // This exists because the two costs were only ever measured TOGETHER, and the
+    // gated resolve path reports bitrate 0, so even the segment size was unknown.
+    // Without the split, "1.3s per serve" cannot be acted on: one answer means the
+    // relay is innocent, the other means 1440p60 is simply the wrong rendition to
+    // hand a small tile.
+    let remux_ms = remux_started.elapsed().as_millis();
+    if fetch_ms + remux_ms >= 250 {
+        let due = self
+            .last_cost_log
+            .lock()
+            .ok()
+            .map(|mut g| {
+                let due = g.map(|t| t.elapsed() > Duration::from_secs(1)).unwrap_or(true);
+                if due {
+                    *g = Some(Instant::now());
+                }
+                due
+            })
+            .unwrap_or(false);
+        if due {
+            log::info!(
+                "[YouTubeDash] {}: slow {} sq={} {}KB fetch={}ms remux={}ms",
+                self.id,
+                if video { "video" } else { "audio" },
+                sq,
+                raw_len / 1024,
+                fetch_ms,
+                remux_ms
+            );
+        }
+    }
+    out
 }
 
-/// Recently served segments, already remuxed. Bounded, and dropped whenever a
-/// session starts so one broadcast can never serve another's bytes. Values are
-/// `Bytes` so a cache hit serves by refcount instead of copying the segment.
-static SEGMENTS: OnceLock<std::sync::Mutex<HashMap<(bool, u64), Bytes>>> = OnceLock::new();
-/// Segments currently being prefetched, so a player request for the same one
-/// does not start a second fetch alongside it.
-static INFLIGHT: OnceLock<std::sync::Mutex<HashSet<(bool, u64)>>> = OnceLock::new();
 /// A couple of seconds of look-ahead per track is all the player is ever ahead
 /// by; more would just hold megabytes for segments it may never ask for.
+/// Per INSTANCE now, so N streams cost N of these rather than fighting over one.
 const SEGMENT_CACHE_MAX: usize = 6;
 
-fn segment_cache() -> &'static std::sync::Mutex<HashMap<(bool, u64), Bytes>> {
-    SEGMENTS.get_or_init(|| std::sync::Mutex::new(HashMap::new()))
+fn cached_segment(&self, video: bool, sq: u64) -> Option<Bytes> {
+    self.segments.lock().ok()?.get(&(video, sq)).cloned()
 }
 
-fn inflight() -> &'static std::sync::Mutex<HashSet<(bool, u64)>> {
-    INFLIGHT.get_or_init(|| std::sync::Mutex::new(HashSet::new()))
-}
-
-fn cached_segment(video: bool, sq: u64) -> Option<Bytes> {
-    segment_cache().lock().ok()?.get(&(video, sq)).cloned()
-}
-
-fn store_segment(video: bool, sq: u64, bytes: Bytes) {
-    if let Ok(mut c) = segment_cache().lock() {
+fn store_segment(&self, video: bool, sq: u64, bytes: Bytes) {
+    if let Ok(mut c) = self.segments.lock() {
         // Keyed by sequence, so "oldest" is simply the lowest number on this
         // track. Live playback only ever moves forward.
-        if c.len() >= SEGMENT_CACHE_MAX {
+        if c.len() >= Self::SEGMENT_CACHE_MAX {
             if let Some(&oldest) = c.keys().filter(|(v, _)| *v == video).min_by_key(|(_, n)| *n) {
                 c.remove(&oldest);
             }
@@ -950,12 +1291,12 @@ fn store_segment(video: bool, sq: u64, bytes: Bytes) {
     }
 }
 
-/// Drop everything cached for the previous session.
-fn clear_segment_cache() {
-    if let Ok(mut c) = segment_cache().lock() {
+/// Drop everything cached for this stream.
+fn clear_segment_cache(&self) {
+    if let Ok(mut c) = self.segments.lock() {
         c.clear();
     }
-    if let Ok(mut f) = inflight().lock() {
+    if let Ok(mut f) = self.inflight.lock() {
         f.clear();
     }
 }
@@ -967,48 +1308,51 @@ fn clear_segment_cache() {
 /// duplicate of something cached or already in flight, and failures are dropped
 /// silently — this is an optimisation, and the real request will report any
 /// genuine problem itself.
-fn prefetch_next(video: bool, sq: u64) {
+fn prefetch_next(self: &Arc<Self>, video: bool, sq: u64) {
     let next = sq + 1;
     let head = {
-        let Ok(g) = SESSION.lock() else { return };
-        let Some(s) = g.as_ref() else { return };
-        if video { s.video_head } else { s.audio_head }
+        let Ok(g) = self.session.lock() else { return };
+        if video { g.video_head } else { g.audio_head }
     };
     if head == 0 || next >= head {
         return; // not written yet upstream
     }
-    if cached_segment(video, next).is_some() {
+    if self.cached_segment(video, next).is_some() {
         return;
     }
+    // Cheap pre-check only. `fetch_once` is the real guard; this just avoids
+    // spawning a task that would immediately block on a gate someone else holds.
     {
-        let Ok(mut f) = inflight().lock() else { return };
-        if !f.insert((video, next)) {
+        let Ok(f) = self.inflight.lock() else { return };
+        if f.contains_key(&(video, next)) {
             return; // already being fetched
         }
     }
+    let me = Arc::clone(self);
     tokio::spawn(async move {
-        let outcome = fetch_and_remux(video, next).await;
-        if let Ok(bytes) = outcome {
-            store_segment(video, next, Bytes::from(bytes));
-        }
-        if let Ok(mut f) = inflight().lock() {
-            f.remove(&(video, next));
-        }
+        // Through the same gate as a foreground request, which is what lets the
+        // player JOIN this fetch instead of starting a second one. Failures stay
+        // silent: this is an optimisation, and the real request reports for
+        // itself.
+        let _ = me.fetch_once(video, next).await;
     });
+}
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// The relay keeps ONE session for the process, so these tests share it and
-    /// must not overlap. Without this they pass or fail depending on scheduling,
-    /// which is worse than failing.
-    static TEST_LOCK: Mutex<()> = Mutex::new(());
+    /// A session built by hand. There is no shared state to serialise around
+    /// any more: the playlist functions take a borrowed Session, so each test
+    /// owns its own and they can run in any order or in parallel. The lock this
+    /// replaced existed purely because the relay had ONE session per process.
+    fn a_session(target: f64, head: u64) -> Session {
+        a_session_with_heads(target, head, head)
+    }
 
-    fn with_session<T>(target: f64, head: u64, f: impl FnOnce() -> T) -> T {
-        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        *SESSION.lock().unwrap() = Some(Session {
+    fn a_session_with_heads(target: f64, video_head: u64, audio_head: u64) -> Session {
+        Session {
             video_id: "vid".into(),
             above: 1080,
             itag: 308,
@@ -1023,16 +1367,13 @@ mod tests {
             init_video: Bytes::from(vec![1, 2, 3]),
             init_audio: Bytes::from(vec![4, 5, 6]),
             target,
-            video_head: head,
-            audio_head: head,
+            video_head,
+            audio_head,
             video_head_at: Instant::now(),
             audio_head_at: Instant::now(),
             video_backoff: EDGE_BACKOFF_START,
             audio_backoff: EDGE_BACKOFF_START,
-        });
-        let out = f();
-        *SESSION.lock().unwrap() = None;
-        out
+        }
     }
 
 
@@ -1054,7 +1395,7 @@ mod tests {
         let r = &highs[0];
         println!("rendition {} itag={} {}x{}", r.name, r.itag, r.width, r.height);
 
-        let url = start(&id, 1080, r).await.expect("start relay");
+        let url = start("e2e", &id, 1080, r).await.expect("start relay");
         println!("relay url {}", url);
         let base = url.split("/stream.m3u8").next().unwrap().to_string();
 
@@ -1112,12 +1453,12 @@ mod tests {
             println!("HOLDING relay at {} for {}s", base, secs);
             tokio::time::sleep(std::time::Duration::from_secs(secs)).await;
         }
-        stop();
+        stop("e2e").await;
     }
 
     #[test]
     fn master_pairs_the_video_variant_with_an_audio_group() {
-        let m = with_session(5.0, 100, || master().unwrap());
+        let m = master(&a_session(5.0, 100));
         assert!(m.contains("RESOLUTION=2560x1440"));
         assert!(m.contains("CODECS=\"vp09.00.50.08,mp4a.40.2\""));
         // Without the audio group hls.js would play a silent video-only stream.
@@ -1130,7 +1471,7 @@ mod tests {
         // head is being written and head-1 has only just closed. Advertising
         // head-1 races the origin and 404s often enough to stall the player,
         // which is how this first failed in the app.
-        let m = with_session(5.0, 100, || media_playlist(true).unwrap());
+        let m = media_playlist(&a_session(5.0, 100), true).unwrap();
         assert!(m.contains("v/97.m4s"));
         assert!(!m.contains("v/98.m4s"), "the edge is further back than it looks");
         assert!(!m.contains("v/100.m4s"));
@@ -1141,25 +1482,185 @@ mod tests {
 
     #[test]
     fn audio_playlist_points_at_its_own_init_and_directory() {
-        let m = with_session(5.0, 100, || media_playlist(false).unwrap());
+        let m = media_playlist(&a_session(5.0, 100), false).unwrap();
         assert!(m.contains("#EXT-X-MAP:URI=\"init_a.mp4\""));
         assert!(m.contains("a/97.m4s"));
         assert!(!m.contains("v/"));
     }
 
+    /// The route parser is the ONLY guard on the id prefix, and a bug in it is
+    /// invisible in the worst way: the master and both media playlists still
+    /// serve (they are matched by literal name), while every segment 404s. The
+    /// player attaches, reports the right resolution, and never renders a frame.
     #[test]
-    fn the_playback_nonce_is_stable_within_a_session_and_new_between_them() {
-        // Stable within a session because the origin reads it as playback
-        // identity; new between sessions so a fresh stream is not taken for a
-        // continuation of the last.
-        reset_nonce();
-        let a = playback_nonce();
-        let b = playback_nonce();
-        assert_eq!(a, b, "must not change mid-session");
-        assert_eq!(a.chars().count(), 16);
-        assert!(a.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'));
-        reset_nonce();
-        assert_ne!(a, playback_nonce(), "a new session needs a new nonce");
+    fn route_of_splits_the_stream_id_off_every_shape() {
+        assert_eq!(route_of("/s/cell-1-0/stream.m3u8"), Some(("cell-1-0", "stream.m3u8")));
+        assert_eq!(route_of("/s/cell-1-0/video.m3u8"), Some(("cell-1-0", "video.m3u8")));
+        assert_eq!(route_of("/s/cell-1-0/audio.m3u8"), Some(("cell-1-0", "audio.m3u8")));
+        assert_eq!(route_of("/s/cell-1-0/init_v.mp4"), Some(("cell-1-0", "init_v.mp4")));
+        // The segment tail must survive INTACT: the match arm below tests
+        // `starts_with("v/")` and slices `p[2..]`.
+        assert_eq!(route_of("/s/cell-1-0/v/97.m4s"), Some(("cell-1-0", "v/97.m4s")));
+        assert_eq!(route_of("/s/solo/a/13305.m4s"), Some(("solo", "a/13305.m4s")));
+    }
+
+    #[test]
+    fn route_of_rejects_anything_it_cannot_attribute() {
+        // The old unprefixed shape: it named no stream, so it must not resolve
+        // to an arbitrary one.
+        assert_eq!(route_of("/stream.m3u8"), None);
+        assert_eq!(route_of("/s/"), None);
+        assert_eq!(route_of("/s/id"), None); // an id with no tail
+        assert_eq!(route_of("/s//video.m3u8"), None); // empty id
+        assert_eq!(route_of("/other/id/video.m3u8"), None);
+        assert_eq!(route_of(""), None);
+    }
+
+    #[test]
+    fn stream_ids_that_would_need_escaping_are_refused() {
+        // Real ids from both callers.
+        assert!(valid_id("solo"));
+        assert!(valid_id("cell-1724700000000-3"));
+        assert!(valid_id("a.b_c-1"));
+        // A slash would split wrong in route_of; the rest would need escaping.
+        assert!(!valid_id(""));
+        assert!(!valid_id("a/b"));
+        assert!(!valid_id("a?b"));
+        assert!(!valid_id("a b"));
+        assert!(!valid_id("caf\u{e9}"));
+        assert!(!valid_id(&"x".repeat(65)));
+    }
+
+    fn a_stream(id: &str, session: Session) -> Arc<DashStream> {
+        Arc::new(DashStream {
+            id: id.to_string(),
+            cpn: mint_nonce(),
+            rn: AtomicU64::new(0),
+            force_rotate: std::sync::atomic::AtomicBool::new(false),
+            rotating: std::sync::atomic::AtomicBool::new(false),
+            session: Mutex::new(session),
+            segments: Mutex::new(HashMap::new()),
+            inflight: Mutex::new(HashMap::new()),
+            last_segment_warn: Mutex::new(None),
+            last_cost_log: Mutex::new(None),
+            last_seen: Mutex::new(Instant::now()),
+        })
+    }
+
+    /// THE bug this whole refactor exists to remove. Sequence numbers restart per
+    /// broadcast, so two live streams routinely hold the same `(video, sq)` key.
+    /// Shared, one stream served the other's remuxed bytes against its own init
+    /// segment, which describes a different resolution and codec config: the
+    /// symptom is a decode error or garbage frames, so it gets triaged as a
+    /// transmux bug rather than a keying one.
+    #[test]
+    fn two_streams_do_not_share_a_segment_cache() {
+        let a = a_stream("a", a_session(5.0, 13305));
+        let b = a_stream("b", a_session(5.0, 13305));
+        a.store_segment(true, 13305, Bytes::from_static(b"AAAA"));
+        b.store_segment(true, 13305, Bytes::from_static(b"BBBB"));
+        assert_eq!(a.cached_segment(true, 13305).unwrap(), Bytes::from_static(b"AAAA"));
+        assert_eq!(b.cached_segment(true, 13305).unwrap(), Bytes::from_static(b"BBBB"));
+        // And clearing one leaves the other alone.
+        a.clear_segment_cache();
+        assert!(a.cached_segment(true, 13305).is_none());
+        assert!(b.cached_segment(true, 13305).is_some());
+    }
+
+    /// The freeze this fixed. `prefetch_next` warms sq+1 and the player asks for
+    /// sq+1 next, so "someone is already fetching this" was the COMMON case, not a
+    /// rare race. The old code knew that and did nothing with it: `inflight` was a
+    /// set of keys, which told a caller to expect a duplicate without giving it
+    /// anything to wait on. Every segment was downloaded and remuxed twice, and a
+    /// 1440p60 remux is multi-megabyte and CPU-bound.
+    ///
+    /// Measured before the fix: 774 slow serves in 34 minutes against a 2.0s
+    /// segment budget, median 1310ms, max 2786ms.
+    #[tokio::test]
+    async fn a_request_joins_an_in_flight_fetch_instead_of_duplicating_it() {
+        let st = a_stream("a", a_session(5.0, 100));
+
+        // Hold the gate for (video, 97) the way an in-flight prefetch would.
+        let gate = {
+            let mut f = st.inflight.lock().unwrap();
+            Arc::clone(
+                f.entry((true, 97))
+                    .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(()))),
+            )
+        };
+        let held = gate.lock().await;
+
+        // A foreground request for the SAME segment must not proceed while that
+        // gate is held. If it does, it is duplicating the download and remux.
+        let waiter = {
+            let st = Arc::clone(&st);
+            tokio::spawn(async move { st.fetch_once(true, 97).await.is_ok() })
+        };
+        tokio::task::yield_now().await;
+        assert!(!waiter.is_finished(), "a second caller must WAIT, not race");
+
+        // The owner finishes and publishes its bytes.
+        st.store_segment(true, 97, Bytes::from_static(b"REAL"));
+        drop(held);
+
+        // The waiter now takes the cache hit rather than fetching. It must not
+        // reach the network, which in this test would fail.
+        let ok = tokio::time::timeout(Duration::from_secs(5), waiter)
+            .await
+            .expect("waiter must wake once the gate drops")
+            .expect("waiter task panicked");
+        assert!(ok, "the waiter should have been served from cache");
+        assert_eq!(st.cached_segment(true, 97).unwrap(), Bytes::from_static(b"REAL"));
+    }
+
+    #[test]
+    fn a_head_recorded_on_one_stream_does_not_move_another() {
+        let a = a_stream("a", a_session(5.0, 100));
+        let b = a_stream("b", a_session(5.0, 100));
+        a.note_head(true, Some(500));
+        assert_eq!(a.session.lock().unwrap().video_head, 500);
+        assert_eq!(b.session.lock().unwrap().video_head, 100, "b must not follow a");
+    }
+
+    /// A 403 arms a forced rotation. As a process-global this was consumed by
+    /// whichever stream rotated first, so the stream that was actually refused
+    /// never force-rotated and died on the credential the origin had rejected.
+    #[test]
+    fn a_forced_rotation_belongs_to_one_stream() {
+        let gated = || {
+            let mut s = a_session(5.0, 100);
+            s.video_url = "https://example/v?pot=abc".into();
+            s
+        };
+        let a = a_stream("a", gated());
+        let b = a_stream("b", gated());
+        a.force_rotate.store(true, std::sync::atomic::Ordering::SeqCst);
+        assert!(a.rotation_due().is_some(), "a was refused, so a rotates");
+        assert!(b.rotation_due().is_none(), "b's urls are fresh and unrefused");
+    }
+
+    /// Only gated urls perish on a clock, so an ungated one must not rotate just
+    /// because another stream's did.
+    #[test]
+    fn an_ungated_url_never_rotates_on_age() {
+        let st = a_stream("a", a_session(5.0, 100)); // plain https://example/v
+        st.force_rotate.store(true, std::sync::atomic::Ordering::SeqCst);
+        assert!(st.rotation_due().is_none());
+    }
+
+    #[test]
+    fn each_stream_gets_its_own_playback_nonce() {
+        // The origin reads cpn as "one viewing session of one video". It must be
+        // stable for a stream's whole life, and it must NOT be shared: this was
+        // a process-global that start() cleared, so opening a second stream
+        // rewrote the nonce the first was mid-playback on.
+        let a = mint_nonce();
+        let b = mint_nonce();
+        assert_ne!(a, b, "two streams must not share a playback nonce");
+        for n in [&a, &b] {
+            assert_eq!(n.chars().count(), 16);
+            assert!(n.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'));
+        }
     }
 
     #[test]
@@ -1176,58 +1677,43 @@ mod tests {
 
     #[test]
     fn each_track_uses_its_own_head() {
-        let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         // The bug this guards: audio and video number segments independently
         // (measured 13305 vs 13306 on one broadcast). Sharing a head makes the
         // lagging track request a segment that does not exist, and it 404s
         // forever because the head only ever moves forward.
-        *SESSION.lock().unwrap() = Some(Session {
-            video_id: "vid".into(),
-            above: 1080,
-            itag: 308,
-            issued: Instant::now(),
-            video_url: "https://example/v".into(),
-            audio_url: "https://example/a".into(),
-            width: 2560,
-            height: 1440,
-            fps: 60.0,
-            bandwidth: 9_016_000,
-            video_codec: "vp09.00.50.08".into(),
-            init_video: Bytes::from(vec![1]),
-            init_audio: Bytes::from(vec![2]),
-            target: 5.0,
-            video_head: 100,
-            audio_head: 140,
-            video_head_at: Instant::now(),
-            audio_head_at: Instant::now(),
-            video_backoff: EDGE_BACKOFF_START,
-            audio_backoff: EDGE_BACKOFF_START,
-        });
-        let v = media_playlist(true).unwrap();
-        let a = media_playlist(false).unwrap();
-        *SESSION.lock().unwrap() = None;
+        let s = a_session_with_heads(5.0, 100, 140);
+        let v = media_playlist(&s, true).unwrap();
+        let a = media_playlist(&s, false).unwrap();
         assert!(v.contains("v/97.m4s"), "video must follow the video head");
-        assert!(!v.contains("138"), "video must not inherit the audio head");
         assert!(a.contains("a/137.m4s"), "audio must follow the audio head");
+        // The previous assertion here was `!v.contains("138")`, which was
+        // vacuous: with audio_head 140 and backoff 3 the audio window is
+        // 132..=137, so "138" appears in neither playlist whatever happens.
+        // These name the audio window's real numbers instead.
+        assert!(!v.contains("a/137.m4s"), "video must not serve audio segments");
+        assert!(
+            !v.contains("#EXT-X-MEDIA-SEQUENCE:132"),
+            "video must not inherit the audio head"
+        );
     }
 
     #[test]
     fn playlist_is_refused_until_the_live_edge_is_known() {
         // Serving a window computed from head 0 would advertise sequence 0, which
         // is always outside the DVR window and 404s every fragment.
-        assert!(with_session(5.0, 0, || media_playlist(true)).is_err());
+        assert!(media_playlist(&a_session(5.0, 0), true).is_err());
     }
 
     #[test]
     fn target_duration_rounds_up_so_it_never_understates_a_segment() {
-        let m = with_session(4.967, 50, || media_playlist(true).unwrap());
+        let m = media_playlist(&a_session(4.967, 50), true).unwrap();
         assert!(m.contains("#EXT-X-TARGETDURATION:5"));
         assert!(m.contains("#EXTINF:4.967,"));
     }
 
     #[test]
     fn window_clamps_at_the_start_of_a_stream() {
-        let m = with_session(5.0, 3, || media_playlist(true).unwrap());
+        let m = media_playlist(&a_session(5.0, 3), true).unwrap();
         assert!(m.contains("#EXT-X-MEDIA-SEQUENCE:0"));
         assert_eq!(m.matches("#EXTINF").count(), 1);
     }
