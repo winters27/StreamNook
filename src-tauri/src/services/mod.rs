@@ -1,3 +1,4 @@
+pub mod link_detect;
 pub mod background_service;
 pub mod badge_polling_service;
 pub mod badge_service;

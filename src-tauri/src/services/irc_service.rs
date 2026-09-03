@@ -5,6 +5,7 @@ use crate::models::settings::AppState;
 use crate::plugin_host::PluginHost;
 use crate::services::chat_logger_service::ChatLoggerService;
 use crate::services::emoji_service;
+use crate::services::link_detect;
 use crate::services::emote_service::{Emote, EmoteService, EmoteSet};
 use crate::services::layout_service::LayoutService;
 use crate::services::twitch_service::TwitchService;
@@ -3312,12 +3313,6 @@ impl IrcService {
     fn parse_text_segment(text: &str, ctx: &ParseCtx<'_>) -> Vec<MessageSegment> {
         let mut segments = Vec::new();
 
-        // URL pattern - matches http://, https://, and www. URLs. Compiled once:
-        // this function runs per text segment of every message, and a fresh
-        // Regex::new here was full NFA compilation on the chat hot path.
-        static URL_REGEX: OnceLock<regex::Regex> = OnceLock::new();
-        let url_regex = URL_REGEX
-            .get_or_init(|| regex::Regex::new(r"(https?://[^\s]+|www\.[^\s]+)").unwrap());
 
         // Split by spaces to check each word
         let words: Vec<&str> = text.split(' ').collect();
@@ -3336,18 +3331,21 @@ impl IrcService {
                 continue;
             }
 
-            // Check if word is a URL
-            if url_regex.is_match(word) {
-                let url = if word.starts_with("http") {
-                    word.to_string()
-                } else {
-                    format!("https://{}", word)
-                };
-
+            // Check if word is a URL. Schemes, www. hosts and bare domains all
+            // count; see services/link_detect.rs for why a bare domain needs a
+            // TLD table rather than just a dot. Sentence punctuation trailing
+            // the link becomes its own text run, so "see test.fr." does not
+            // put the full stop inside the href.
+            if let Some((link, trailing)) = link_detect::split_link(word) {
                 segments.push(MessageSegment::Link {
-                    content: word.to_string(),
-                    url,
+                    content: link.to_string(),
+                    url: link_detect::link_url(link),
                 });
+                if !trailing.is_empty() {
+                    segments.push(MessageSegment::Text {
+                        content: trailing.to_string(),
+                    });
+                }
             } else if let Some((prefix, bits, tier, color, cheermote_url)) =
                 Self::parse_cheermote(word, ctx.cheermotes)
             {
