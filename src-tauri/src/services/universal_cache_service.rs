@@ -40,7 +40,7 @@ static DOWNLOAD_CLIENT: Lazy<reqwest::Client> = Lazy::new(|| {
 
 // In-memory mirror of the on-disk manifest. Initialized from disk on first
 // access; every subsequent read/write hits memory only. A background task
-// flushes dirty state to disk on a 5-second debounce (or on next tick if a
+// flushes dirty state to disk on a MANIFEST_FLUSH_DEBOUNCE_SECS debounce (or on next tick if a
 // flush failed). The public load_manifest/save_manifest functions keep their
 // existing signatures so the dozens of read-modify-write call sites work
 // unchanged. The pre-existing MANIFEST_LOCK / ASYNC_MANIFEST_LOCK continue to
@@ -53,6 +53,8 @@ static MANIFEST_MEMORY: Lazy<StdRwLock<UniversalCacheManifest>> =
 // flush task clears this on a successful disk write; sets it back if write
 // failed so the next tick retries.
 static MANIFEST_DIRTY: AtomicBool = AtomicBool::new(false);
+/// Seconds between debounced manifest flushes. See ensure_flush_task.
+const MANIFEST_FLUSH_DEBOUNCE_SECS: u64 = 30;
 
 // Background flush task is started lazily on first write so we don't spawn
 // anything if the app never modifies the manifest (read-only sessions).
@@ -75,30 +77,53 @@ fn ensure_flush_task() {
             return;
         }
         tokio::spawn(async {
+            let mut consecutive_failures: u32 = 0;
             loop {
-                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                // Every flush rewrites the whole manifest (tens of thousands of
+                // entries, ~20 MB on a long-lived install), and a busy chat dirties
+                // it on every newly cached emote. Measured at 5 s this rewrote the
+                // file every 15-30 s for the whole session; 30 s bounds the disk
+                // and CPU cost at two writes a minute worst case. Controlled exits
+                // still flush synchronously (flush_manifest_now); a crash loses at
+                // most the last window of entries, whose files self-heal on the
+                // next cache of the same id.
+                tokio::time::sleep(std::time::Duration::from_secs(MANIFEST_FLUSH_DEBOUNCE_SECS)).await;
                 if !MANIFEST_DIRTY.swap(false, Ordering::AcqRel) {
                     continue;
                 }
-                let snapshot = match MANIFEST_MEMORY.read() {
-                    Ok(g) => g.clone(),
-                    Err(_) => {
-                        // Poisoned lock — try again next tick.
-                        MANIFEST_DIRTY.store(true, Ordering::Release);
-                        continue;
-                    }
-                };
                 // On the blocking pool: the manifest can be large JSON, and a
                 // sync write here (on this runtime task) stalls every async task
                 // in the process — the same sync-fs-on-runtime class behind the
-                // `rt_stall` freezes.
-                let flushed =
-                    tokio::task::spawn_blocking(move || save_manifest_to_disk(&snapshot)).await;
+                // `rt_stall` freezes. Serialize under the read lock rather than
+                // cloning the whole entry map first (the clone doubled the
+                // manifest's memory for the duration of every flush), then drop
+                // the guard BEFORE touching the disk so writers only wait for
+                // the encode, never for the file write.
+                let flushed = tokio::task::spawn_blocking(|| {
+                    let json = {
+                        let guard = MANIFEST_MEMORY
+                            .read()
+                            .map_err(|_| anyhow::anyhow!("manifest memory lock poisoned"))?;
+                        serde_json::to_vec(&*guard)?
+                    };
+                    write_manifest_bytes(&json)
+                })
+                .await;
                 if !matches!(flushed, Ok(Ok(()))) {
+                    consecutive_failures += 1;
                     if let Ok(Err(e)) = flushed {
-                        debug!("[UniversalCache] Debounced manifest flush failed (will retry): {e}");
+                        // One failure is routine (a scanner holding the file);
+                        // a run of them means nothing is being persisted, which
+                        // must be visible in a normal log.
+                        if consecutive_failures >= 2 {
+                            log::warn!("[UniversalCache] Manifest flush has failed {consecutive_failures} times in a row (will keep retrying): {e}");
+                        } else {
+                            debug!("[UniversalCache] Debounced manifest flush failed (will retry): {e}");
+                        }
                     }
                     MANIFEST_DIRTY.store(true, Ordering::Release);
+                } else {
+                    consecutive_failures = 0;
                 }
             }
         });
@@ -231,9 +256,29 @@ fn load_manifest_from_disk() -> Result<UniversalCacheManifest> {
 /// which updates the in-memory mirror and schedules a debounced flush. This
 /// is only invoked by the background flush task.
 fn save_manifest_to_disk(manifest: &UniversalCacheManifest) -> Result<()> {
+    // Compact, not pretty: nothing reads this file by eye, and the indentation
+    // was ~22% of a 22 MB file rewritten many times per session.
+    let json = serde_json::to_vec(manifest)?;
+    write_manifest_bytes(&json)
+}
+
+/// Replace manifest.json with `json` atomically: write a sibling, then rename
+/// over the original, so a crash mid-write can never leave a truncated manifest
+/// behind (the load path treats parse failure as "start over", which would
+/// silently forget every cached file). std::fs::rename replaces an existing
+/// destination on Windows (MoveFileExW with replace) and on Unix.
+fn write_manifest_bytes(json: &[u8]) -> Result<()> {
+    use std::io::Write;
     let manifest_path = get_universal_cache_dir()?.join("manifest.json");
-    let json = serde_json::to_string_pretty(manifest)?;
-    fs::write(&manifest_path, json).context("Failed to write manifest file")?;
+    let tmp_path = manifest_path.with_extension("json.tmp");
+    {
+        let mut file = fs::File::create(&tmp_path).context("Failed to create manifest temp file")?;
+        file.write_all(json).context("Failed to write manifest file")?;
+        // Flush the data before the rename lands in the journal: without it a
+        // power loss can leave a correctly named, zero-filled manifest.
+        file.sync_all().context("Failed to sync manifest file")?;
+    }
+    fs::rename(&tmp_path, &manifest_path).context("Failed to replace manifest file")?;
     Ok(())
 }
 
@@ -253,11 +298,22 @@ pub fn load_manifest() -> Result<UniversalCacheManifest> {
 /// pre-existing MANIFEST_LOCK / ASYNC_MANIFEST_LOCK at the call site — this
 /// function does not protect against load-modify-save races.
 pub fn save_manifest(manifest: &UniversalCacheManifest) -> Result<()> {
+    // Clone BEFORE taking the lock. Cloning tens of thousands of entries takes
+    // ~80 ms on a long-lived install, and std's RwLock is writer-preferring on
+    // Windows: holding the write lock across that clone parked every reader,
+    // including the per-message emote lookups on the chat path.
+    save_manifest_owned(manifest.clone())
+}
+
+/// `save_manifest` for callers that own their copy and are done with it. Moves
+/// the manifest into the mirror instead of cloning it, so a read-modify-write
+/// batch costs one clone (the `load_manifest`) instead of two.
+pub fn save_manifest_owned(manifest: UniversalCacheManifest) -> Result<()> {
     {
         let mut guard = MANIFEST_MEMORY
             .write()
             .map_err(|_| anyhow::anyhow!("manifest memory lock poisoned"))?;
-        *guard = manifest.clone();
+        *guard = manifest;
     }
     MANIFEST_DIRTY.store(true, Ordering::Release);
     ensure_flush_task();
@@ -288,14 +344,21 @@ pub fn flush_manifest_now() -> Result<()> {
     if !MANIFEST_DIRTY.swap(false, Ordering::AcqRel) {
         return Ok(());
     }
-    let snapshot = match MANIFEST_MEMORY.read() {
-        Ok(g) => g.clone(),
+    let json = match MANIFEST_MEMORY.read() {
+        Ok(g) => serde_json::to_vec(&*g),
         Err(_) => {
             MANIFEST_DIRTY.store(true, Ordering::Release);
             return Err(anyhow::anyhow!("manifest memory lock poisoned"));
         }
     };
-    if let Err(e) = save_manifest_to_disk(&snapshot) {
+    let json = match json {
+        Ok(j) => j,
+        Err(e) => {
+            MANIFEST_DIRTY.store(true, Ordering::Release);
+            return Err(e.into());
+        }
+    };
+    if let Err(e) = write_manifest_bytes(&json) {
         MANIFEST_DIRTY.store(true, Ordering::Release);
         return Err(e);
     }
@@ -415,15 +478,16 @@ async fn download_universal_manifest() -> Result<bool> {
             // Update last_sync time
             local_manifest.last_sync = Some(get_current_timestamp());
 
-            save_manifest(&local_manifest)?;
-            debug!("[UniversalCache] Merged universal manifest into local cache");
-
-            // Assign positions if not already set
+            // Read what the caller still needs from the local copy BEFORE moving
+            // it into the mirror, so the merge costs no second clone.
             let needs_positions = local_manifest
                 .entries
                 .iter()
                 .filter(|(_, entry)| entry.metadata.source == "badgebase")
                 .any(|(_, entry)| entry.position.is_none());
+
+            save_manifest_owned(local_manifest)?;
+            debug!("[UniversalCache] Merged universal manifest into local cache");
 
             if needs_positions {
                 debug!("[UniversalCache] Assigning positions to badge metadata...");
@@ -462,6 +526,20 @@ fn peek_entry(id: &str) -> Result<(Option<UniversalCacheEntry>, Option<u64>)> {
         .read()
         .map_err(|_| anyhow::anyhow!("manifest memory lock poisoned"))?;
     Ok((guard.entries.get(id).cloned(), guard.last_sync))
+}
+
+/// Public single-entry read. Callers that want ONE entry must use this rather
+/// than `load_manifest()`, which clones every entry.
+pub fn peek_cached_entry(id: &str) -> Result<Option<UniversalCacheEntry>> {
+    Ok(peek_entry(id)?.0)
+}
+
+/// Timestamp of the last universal-cache sync, without cloning the manifest.
+pub fn manifest_last_sync() -> Result<Option<u64>> {
+    let guard = MANIFEST_MEMORY
+        .read()
+        .map_err(|_| anyhow::anyhow!("manifest memory lock poisoned"))?;
+    Ok(guard.last_sync)
 }
 
 /// Get an item from cache (checks local first, downloads manifest if needed).
@@ -711,7 +789,7 @@ fn assign_badge_metadata_positions_impl() -> Result<usize> {
         })
         .count();
 
-    save_manifest(&manifest)?;
+    save_manifest_owned(manifest)?;
     debug!(
         "[UniversalCache] Assigned positions to {} badge metadata entries",
         count
@@ -792,7 +870,7 @@ pub async fn sync_universal_cache(item_types: Vec<CacheType>) -> Result<usize> {
     // Update last sync time
     let mut manifest = load_manifest()?;
     manifest.last_sync = Some(get_current_timestamp());
-    save_manifest(&manifest)?;
+    save_manifest_owned(manifest)?;
 
     debug!(
         "[UniversalCache] Sync complete. Synced {} items",
@@ -814,7 +892,7 @@ pub fn cleanup_expired_entries() -> Result<usize> {
     let removed_count = initial_count - manifest.entries.len();
 
     if removed_count > 0 {
-        save_manifest(&manifest)?;
+        save_manifest_owned(manifest)?;
         debug!(
             "[UniversalCache] Cleaned up {} expired entries",
             removed_count
@@ -956,13 +1034,13 @@ pub fn migrate_emote_cache_on_version_change(_current_version: &str) -> Result<b
 
                 let removed_count = initial_count - manifest.entries.len();
                 if removed_count > 0 {
-                    // Update the in-memory mirror...
-                    let _ = save_manifest(&manifest);
-                    // ...and write through to disk now. This runs before the
-                    // async runtime, so the debounced flush task can't run yet;
-                    // a direct write guarantees the pruned manifest persists even
+                    // Write through to disk now: this runs before the async
+                    // runtime, so the debounced flush task can't run yet and a
+                    // direct write guarantees the pruned manifest persists even
                     // if the app exits before the first post-runtime flush.
                     let _ = save_manifest_to_disk(&manifest);
+                    // ...then hand the same manifest to the in-memory mirror.
+                    let _ = save_manifest_owned(manifest);
                     debug!(
                         "[UniversalCache] Cleared {} emote entries from manifest",
                         removed_count
@@ -1054,8 +1132,8 @@ pub fn migrate_ffz_animated_cache() -> Result<bool> {
                 // write through to disk now. This runs before the async runtime, so
                 // the debounced flush task can't run yet; a direct write guarantees
                 // the pruned manifest survives even if the app exits early.
-                let _ = save_manifest(&manifest);
                 let _ = save_manifest_to_disk(&manifest);
+                let _ = save_manifest_owned(manifest);
                 debug!(
                     "[UniversalCache] Purged {} FFZ emote entries from cache",
                     removed_count
@@ -1121,8 +1199,8 @@ pub fn migrate_emote_namespace_cache() -> Result<bool> {
 
         let removed = initial_count - manifest.entries.len();
         if removed > 0 {
-            let _ = save_manifest(&manifest);
             let _ = save_manifest_to_disk(&manifest);
+            let _ = save_manifest_owned(manifest);
             debug!(
                 "[UniversalCache] Namespace migration: dropped {} non-7TV emote entries, deleted {} files",
                 removed, files_deleted

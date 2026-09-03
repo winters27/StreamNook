@@ -1193,7 +1193,11 @@ impl YouTubeSource {
         if !resp.status().is_success() {
             return Err(anyhow!("YouTube subscriptions HTTP {}", resp.status()));
         }
-        let json: Value = resp.json().await?;
+        // Keep the raw body: its length is what the log line below reports.
+        // Re-serializing the parsed tree just to count bytes cost a second
+        // 1-2 MB encode on every poll of a feed that is fetched every two minutes.
+        let body = resp.bytes().await?;
+        let json: Value = serde_json::from_slice(&body)?;
 
         // A signed-OUT request still returns 200 WITH a `contents` tree, so
         // "did we get contents" cannot tell a stale session from a quiet one and an
@@ -1221,9 +1225,10 @@ impl YouTubeSource {
             rows.len(),
             contains_key(&json, "backgroundPromoRenderer"),
             json.get("contents").is_some(),
-            serde_json::to_string(&json).map(|s| s.len()).unwrap_or(0),
+            body.len(),
             renderer_histogram(&json),
         );
+        drop(body);
         if content_items == 0 && contains_key(&json, "backgroundPromoRenderer") {
             // Decisive: ask a DIFFERENT authenticated endpoint whether these exact
             // cookies work. account_menu uses the same headers and the same client
