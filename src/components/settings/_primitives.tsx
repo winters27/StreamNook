@@ -1,5 +1,5 @@
 import { useLayoutEffect, useRef, useState, type ReactNode } from 'react';
-import { RotateCcw } from 'lucide-react';
+import { CircleHelp, RotateCcw } from 'lucide-react';
 import { Tooltip } from '../ui/Tooltip';
 
 interface SettingsSectionProps {
@@ -41,6 +41,10 @@ interface SettingsRowProps {
   /** Small inline element after the title (e.g. a source-scope indicator). */
   titleBadge?: ReactNode;
   description?: string;
+  /** The longer explanation, behind a small help glyph beside the title. Keeps
+   *  the row to one short line while the detail stays one hover away, so a
+   *  tab full of rows reads as a list of settings rather than a wall of prose. */
+  help?: ReactNode;
   control?: ReactNode;
   children?: ReactNode;
   disabled?: boolean;
@@ -54,6 +58,7 @@ export const SettingsRow = ({
   title,
   titleBadge,
   description,
+  help,
   control,
   children,
   disabled = false,
@@ -69,6 +74,17 @@ export const SettingsRow = ({
         <div className="text-[13px] font-medium text-textPrimary">
           {title}
           {titleBadge && <span className="ml-1.5 align-middle">{titleBadge}</span>}
+          {help && (
+            <Tooltip content={<span className="block max-w-[34ch] text-left leading-relaxed">{help}</span>}>
+              <span
+                tabIndex={0}
+                aria-label="More about this setting"
+                className="ml-1.5 inline-flex align-middle text-textMuted hover:text-textSecondary transition-colors cursor-help"
+              >
+                <CircleHelp size={12} />
+              </span>
+            </Tooltip>
+          )}
           {onReset && (
             <Tooltip content="Reset to default">
               <button
