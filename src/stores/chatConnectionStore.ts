@@ -19,6 +19,13 @@
 // at the API boundary.
 
 import { useEffect, useState } from 'react';
+import {
+  CHAT_BUFFER_SIZE,
+  currentBufferLimit,
+  liveAppendLimit,
+  resumeOverflowFor,
+  trimWithEventRetention,
+} from './chatBufferTrim';
 import { create } from 'zustand';
 import { useShallow } from 'zustand/react/shallow';
 import { PROVIDERS, type ProviderId } from '../types/providers';
@@ -42,12 +49,7 @@ import type { SongMatch } from '../utils/songId';
 // per-channel limits means a 5-channel MultiChat caps memory at 5x the
 // historical single-channel ceiling — bounded and predictable.
 const CHAT_HISTORY_MAX = 100;
-const CHAT_BUFFER_SIZE = 150; // extra slack while a channel is paused (scrolled up)
 const CHAT_MAX_WITH_BUFFER = CHAT_HISTORY_MAX + CHAT_BUFFER_SIZE;
-/** How many rows of paused-overflow scrollback each flush retires after a
- *  resume. Gentle on purpose: rows leave from the top while the user sits at
- *  the bottom, so the drain is invisible; one hard trim on resume was not. */
-const RESUME_DECAY_PER_FLUSH = 5;
 
 // Reconnection is UNBOUNDED by design: a capped ladder ended in a permanent
 // dead state for anyone with a flaky connection. This only controls wording —
@@ -120,6 +122,9 @@ interface ChannelSlice {
   pinnedMessage: any | null;
   refCount: number;
   isPausedForBuffer: boolean;
+  /** Rows above the cap still allowed after a resume; set by setChannelPaused,
+   *  released RESUME_DECAY_PER_FLUSH per flush by flushPending. */
+  resumeOverflow: number;
   /** Monotonic count of live messages appended to this channel since the slice
    *  was created. NEVER decremented — buffer trimming, moderation removals, and
    *  the cap don't touch it. This is the reliable baseline for "N new messages
@@ -650,46 +655,7 @@ function scheduleFlush(): void {
   }
 }
 
-// Every chat row — plain chat, subs, gift bombs, redemptions, raids — shares one
-// capped buffer. A burst of low-value rows (a mass-gift's children, a channel
-// sub-bot posting one line per sub, or plain spam) must not evict the recent
-// high-value events with it. trimWithEventRetention keeps the last `limit` rows
-// AND rescues up to EVENT_RETAIN recent event rows from just before that window,
-// so an event survives a flood long enough to be seen, then scrolls off
-// naturally. EVENT_LOOKBACK bounds how far back a rescue reaches (so old events
-// aren't pinned forever); memory stays within `limit + EVENT_RETAIN`.
-const EVENT_RETAIN = 30;
-const EVENT_LOOKBACK = 600;
-const EVENT_MSG_IDS = new Set([
-  'sub', 'resub', 'subgift', 'submysterygift', 'anonsubgift', 'anonsubmysterygift',
-  'raid', 'unraid', 'viewermilestone', 'announcement', 'bitsbadgetier', 'charitydonation',
-  'highlighted-message', 'gigantified-emote-message', 'animated-message', 'skip-subs-mode-message',
-]);
-
-function isEventRow(m: any): boolean {
-  if (!m || typeof m !== 'object') return false; // raw-string fallback rows aren't rescued
-  const mt = m.metadata?.msg_type || m.tags?.['msg-id'];
-  return !!(
-    m.metadata?.system_message ||
-    m.tags?.['system-msg'] ||
-    m.tags?.['custom-reward-id'] ||
-    (mt && EVENT_MSG_IDS.has(mt))
-  );
-}
-
-function trimWithEventRetention(messages: any[], limit: number): any[] {
-  if (messages.length <= limit) return messages;
-  const windowStart = messages.length - limit;
-  const recentTail = messages.slice(windowStart);
-  const rescued: any[] = [];
-  const lookbackStart = Math.max(0, windowStart - EVENT_LOOKBACK);
-  for (let i = windowStart - 1; i >= lookbackStart && rescued.length < EVENT_RETAIN; i--) {
-    if (isEventRow(messages[i])) rescued.push(messages[i]);
-  }
-  if (rescued.length === 0) return recentTail;
-  rescued.reverse(); // newest-first scan back to chronological order
-  return rescued.concat(recentTail);
-}
+// Event retention and post-resume decay live in chatBufferTrim.ts (pure, unit-tested).
 
 // Deletion marks (CLEARMSG) accumulate one id per moderation event for the
 // life of the slice. A mark may only be dropped when it is provably inert:
@@ -743,17 +709,17 @@ function flushPending(): void {
     // paused overflow. Never cut it to historyMax in one step (that deletes
     // scrollback the user just read mid-glide, a visible jump); instead let the
     // overflow decay a few rows per flush from the top, invisible from the
-    // bottom the user resumed to. setChannelPaused leaves the trim entirely to
-    // this path.
-    const limit = slice.isPausedForBuffer
-      ? historyMax + CHAT_BUFFER_SIZE
-      : Math.max(historyMax, slice.messages.length - RESUME_DECAY_PER_FLUSH);
+    // bottom the user resumed to. setChannelPaused only records the allowance;
+    // every live append (here and pushMessage) shares liveAppendLimit so no one
+    // path can drain it faster. See chatBufferTrim.ts for why the allowance is
+    // its own counter rather than something derived from messages.length.
+    const limit = liveAppendLimit(slice, historyMax);
     // Push everything received this frame, then trim event-aware so a burst can't
     // evict recent subs/redemptions/raids from the shared buffer. liveMessageCount
     // still counts every message (drives the accurate "N new since paused" badge).
     for (const m of queued) slice.messages.push(m);
     slice.liveMessageCount += queued.length;
-    slice.messages = trimWithEventRetention(slice.messages, limit);
+    slice.messages = trimWithEventRetention(slice.messages, limit, slice.liveMessageCount);
     pruneModerationMarks(slice);
   }
   const touched = Array.from(pendingByChannel.keys());
@@ -862,6 +828,7 @@ function emptySlice(
     pinnedMessage: null,
     refCount: 0,
     isPausedForBuffer: false,
+    resumeOverflow: 0,
     liveMessageCount: 0,
     seenMessageIds: new Set(),
     pendingUpgradeIds: new Set(),
@@ -971,13 +938,12 @@ function insertChronological(slice: ChannelSlice, incoming: any[]): void {
 }
 
 function pushMessage(slice: ChannelSlice, msg: any) {
-  const historyMax = getActiveHistoryMax();
-  const limit = slice.isPausedForBuffer ? historyMax + CHAT_BUFFER_SIZE : historyMax;
+  const limit = liveAppendLimit(slice, getActiveHistoryMax());
   slice.messages.push(msg);
   // Monotonic — counts the append regardless of any trim below. Drives the
   // accurate "N new since paused" badge.
   slice.liveMessageCount++;
-  slice.messages = trimWithEventRetention(slice.messages, limit);
+  slice.messages = trimWithEventRetention(slice.messages, limit, slice.liveMessageCount);
 }
 
 /**
@@ -1361,6 +1327,7 @@ export async function hardRefreshChannel(
     s.deletedMessageIds = new Set();
     s.clearedUserContexts = new Map();
     s.liveMessageCount = 0;
+    s.resumeOverflow = 0;
   });
   pendingByChannel.delete(key);
 
@@ -1666,8 +1633,7 @@ async function preloadChannel(
       } else {
         slice.messages = [...filtered, ...slice.messages];
       }
-      const historyMax = getActiveHistoryMax();
-      const limit = slice.isPausedForBuffer ? historyMax + CHAT_BUFFER_SIZE : historyMax;
+      const limit = currentBufferLimit(slice, getActiveHistoryMax());
       if (slice.messages.length > limit) {
         slice.messages = slice.messages.slice(slice.messages.length - limit);
       }
@@ -3171,6 +3137,11 @@ export function injectRedemptionMessage(
 
 export function setChannelPaused(channel: string, paused: boolean): void {
   withSlice(channel, (slice) => {
+    if (!paused && slice.isPausedForBuffer) {
+      // Record how far above the cap the paused buffer got; flushPending
+      // releases it gradually from there.
+      slice.resumeOverflow = resumeOverflowFor(slice.messages.length, getActiveHistoryMax());
+    }
     slice.isPausedForBuffer = paused;
     // No trim here: cutting the paused overflow to historyMax in one step
     // deleted up to CHAT_BUFFER_SIZE rows the user had scrolled up to read,
