@@ -2172,23 +2172,79 @@ html[data-motion="reduced"] .animate-shimmer {
   font-weight: 800;
   letter-spacing: 0.5px;
   animation: plyr-live-pulse 2s ease-in-out infinite;
+  text-shadow: 0 0 14px color-mix(in srgb, var(--color-live) 65%, transparent);
   display: inline-flex;
   align-items: center;
   justify-content: center;
   padding: 0 4px;
 }
 
+/* Opacity only. Animating text-shadow here re-layerized the whole player tree on
+   every frame of playback; the glow is now a static value on the rule above, so
+   this runs entirely on the compositor. Visually identical. */
 @keyframes plyr-live-pulse {
   0%,
   100% {
     opacity: 1;
-    text-shadow: 0 0 10px color-mix(in srgb, var(--color-live) 50%, transparent);
   }
   50% {
     opacity: 0.8;
-    text-shadow: 0 0 20px color-mix(in srgb, var(--color-live) 80%, transparent);
   }
 }
+
+/* ===== Watching gate =====
+   `data-watching` is set on <html> while a stream is actually on screen (see
+   App.tsx). Decorative chrome animations are the app's character while you are
+   browsing, so they run freely on Home — but during playback they were the
+   single largest CPU cost in the app: an infinite `filter`/`color` pulse on the
+   title-bar gift icon plus an infinite `box-shadow` pulse on the update pill
+   repaint the window on every frame, and on a 144 Hz display that measured 0.31
+   of a CPU core on top of the video itself. Each element below keeps a static
+   value taken from inside its own animation's range, so nothing looks unstyled
+   while it is held still.
+
+   While Home is overlaid on a playing stream the attribute is cleared, because
+   then you are browsing again and the animations belong back on screen. */
+html[data-watching] .plyr__time--live {
+  animation: none;
+}
+
+html[data-watching] .gift-shimmer-silver {
+  animation: none;
+  color: #d4d4d4;
+  filter: drop-shadow(0 0 4px rgba(255, 255, 255, 0.45));
+}
+
+html[data-watching] .gift-shimmer-gold {
+  animation: none;
+  color: #e6bf3f;
+  filter: drop-shadow(0 0 5px rgba(255, 215, 0, 0.5));
+}
+
+html[data-watching] .gift-shimmer-iridescent {
+  animation: none;
+  color: #7bd9de;
+  filter: drop-shadow(0 0 5px rgba(121, 157, 241, 0.55));
+}
+
+html[data-watching] .update-pill {
+  animation: none;
+  box-shadow:
+    0 0 13px rgba(132, 255, 87, 0.32),
+    inset 0 0 9px rgba(132, 255, 87, 0.11),
+    inset 1px 1px 0 0 rgba(255, 255, 255, 0.08);
+}
+
+/* The badge already carries this shadow statically, so only the pulse stops. */
+html[data-watching] .drops-progress-inline {
+  animation: none;
+}
+
+/* Deliberately NOT gated: shared chat and hype trains are rare, transient events
+   whose whole job is to be noticed, and a hype train is most worth noticing
+   while you are watching. They cost nothing when they are not happening,
+   because the elements are not on screen — provided they really do come off
+   screen when the event ends (see the shared-chat teardown in ChatWidget). */
 
 /* Tooltip */
 .video-player-container .plyr__tooltip {

@@ -4153,7 +4153,7 @@ const Home = () => {
                         <div className="animate-fly-up-fade">
                             <Gift
                                 size={24}
-                                className="gift-shimmer-gold drop-shadow-[0_0_10px_rgba(255,215,0,0.8)]"
+                                className="gift-shimmer-gold"
                             />
                         </div>
                     </div>

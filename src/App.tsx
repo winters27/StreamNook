@@ -1037,6 +1037,25 @@ function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loadSettings, checkAuthStatus]);
 
+  // Tell CSS when a stream is actually on screen. Decorative chrome animations
+  // (the title-bar gift pulse, the update pill's glow, the shared-chat shimmer)
+  // are part of how the app feels while you browse, so they run freely on Home.
+  // During playback they are pure cost: they repaint the window every frame on
+  // top of the video, which measured 0.31 of a CPU core on a 144 Hz display.
+  // globals.css holds them still under `html[data-watching]`. Home overlaying a
+  // running stream counts as browsing, not watching, so the flag clears there.
+  useEffect(() => {
+    // 'offline' is the offline-chat sentinel, not a playing stream, so it does
+    // not count: there is no video on screen to spend the frames on.
+    const hasVideo = (!!streamUrl && streamUrl !== 'offline') || isMultiNookActive;
+    const watching = hasVideo && !isHomeActive;
+    if (watching) {
+      document.documentElement.dataset.watching = 'true';
+    } else {
+      delete document.documentElement.dataset.watching;
+    }
+  }, [streamUrl, isMultiNookActive, isHomeActive]);
+
   // Apply theme when settings are loaded or theme changes
   useEffect(() => {
     const themeId = settings.theme || DEFAULT_THEME_ID;
@@ -1833,8 +1852,10 @@ function App() {
       <ChatWidget />
     );
 
+  // sn-app-shell: the hook a theme's light treatment paints onto (see
+  // styles/theme-prism.css); the room every glass surface sits in.
   return (
-    <div className="flex flex-col h-screen bg-background">
+    <div className="sn-app-shell flex flex-col h-screen bg-background">
       <ErrorBoundary
         componentName="TitleBar"
         fallback={
