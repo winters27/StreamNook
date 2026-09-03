@@ -39,6 +39,8 @@ const toOverlayAtmosphere = (atm: Atmosphere | null | undefined): OverlayAtmosph
     layers2: atm.layers2,
     chatEdge: atm.chatEdge,
     chatFrost: atm.chatFrost,
+    chatBlur: atm.chatBlur,
+    chatRim: atm.chatRim,
   };
 };
 

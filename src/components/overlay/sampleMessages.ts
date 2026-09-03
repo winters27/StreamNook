@@ -41,10 +41,14 @@ export interface OverlayAtmosphere {
   image?: string;
   layers?: string;
   layers2?: string;
-  /** 1px gradient edge down the left of the row. */
+  /** 1px gradient edge down the left of the row ('none' = no edge). */
   chatEdge: string;
   /** Frost the text block for readability over a busy (image) wash. */
   chatFrost?: boolean;
+  /** Defocus (px) for an image wash, so it reads as dispersed light. */
+  chatBlur?: number;
+  /** 1px gradient rim around the row. */
+  chatRim?: string;
 }
 
 /** A preview message: the real backend shape plus the cosmetics the live overlay

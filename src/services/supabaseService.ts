@@ -5,6 +5,8 @@ import { getClientConfig } from './clientConfig';
 
 import { Logger } from '../utils/logger';
 import type { Atmosphere } from './atmospheres';
+import { DEV_ATMOSPHERES } from './devAtmospheres';
+import { DEV_COSMETICS, isDevCosmetic, readDevActiveCosmetic, writeDevActiveCosmetic } from './devCosmetics';
 import type { ActiveEquipment, CosmeticSlot, CosmeticType } from './cosmetics/types';
 import { SLOT_FOR_TYPE } from './cosmetics/types';
 // Supabase client singleton
@@ -1598,6 +1600,11 @@ const loadCosmetics = async (): Promise<void> => {
             for (const row of (catalogRes.data || []) as CosmeticCatalogEntry[]) {
                 nextCatalog.set(row.slug, row);
             }
+            // Dev builds get candidate badge slots merged in after the live rows
+            // (see devCosmetics.ts). Tree-shaken out of production.
+            if (import.meta.env.DEV) {
+                for (const c of DEV_COSMETICS) nextCatalog.set(c.slug, c);
+            }
 
             const nextEnt = new Map<string, Set<string>>();
             for (const row of (entRes.data || []) as { twitch_user_id: string; slug: string }[]) {
@@ -1610,6 +1617,10 @@ const loadCosmetics = async (): Promise<void> => {
             for (const row of (activeRes.data || []) as { twitch_user_id: string; active_slug: string | null }[]) {
                 if (row.active_slug) nextActive.set(row.twitch_user_id, row.active_slug);
             }
+            // A dev badge equipped locally is restored over the server's answer,
+            // since the server never heard about it. Dev builds only.
+            const devActive = readDevActiveCosmetic();
+            if (devActive) nextActive.set(devActive.userId, devActive.slug);
 
             cosmeticsCatalog = nextCatalog;
             cosmeticsEntitlements = nextEnt;
@@ -1713,7 +1724,9 @@ export const getUserCosmeticSlugs = (userId: string | undefined | null): Set<str
 export const getOwnedCosmeticSlugs = (userId: string | undefined | null): Set<string> => {
     const owned = new Set<string>();
     for (const cosmetic of cosmeticsCatalog.values()) {
-        if (cosmetic.is_default) owned.add(cosmetic.slug);
+        // Dev-only candidate slots always count as owned on a dev build; that
+        // is what they are for. isDevCosmetic is always false in production.
+        if (cosmetic.is_default || isDevCosmetic(cosmetic.slug)) owned.add(cosmetic.slug);
     }
     if (userId) {
         const explicit = cosmeticsEntitlements.get(userId);
@@ -1815,6 +1828,8 @@ interface AtmosphereRow {
     motion: string;
     chat_edge: string;
     chat_frost: boolean | null;
+    chat_blur: number | null;
+    chat_rim: string | null;
     unlock_kind: string;
     unlock_accolade_id: string | null;
     sort_order: number;
@@ -1838,6 +1853,8 @@ const rowToAtmosphere = (row: AtmosphereRow): Atmosphere => ({
     motion: row.motion === 'drift' ? 'drift' : 'aurora',
     chatEdge: row.chat_edge,
     chatFrost: !!row.chat_frost,
+    chatBlur: typeof row.chat_blur === 'number' && row.chat_blur > 0 ? row.chat_blur : undefined,
+    chatRim: row.chat_rim || undefined,
     unlock: row.unlock_kind === 'accolade' && row.unlock_accolade_id
         ? { kind: 'accolade', accoladeId: row.unlock_accolade_id }
         : { kind: 'subscriber' },
@@ -1861,6 +1878,12 @@ const loadAtmospheres = async (): Promise<void> => {
             const next = new Map<string, Atmosphere>();
             for (const row of (res.data || []) as AtmosphereRow[]) {
                 next.set(row.id, rowToAtmosphere(row));
+            }
+            // Dev builds get candidate slots merged in after the live rows, so an
+            // asset can be judged in the real app before it ships (see
+            // devAtmospheres.ts). Tree-shaken out of production.
+            if (import.meta.env.DEV) {
+                for (const a of DEV_ATMOSPHERES) next.set(a.id, a);
             }
             atmospheresCatalog = next;
             atmospheresLoaded = true;
@@ -2157,6 +2180,15 @@ export const setActiveCosmetic = async (
     if (slug) cosmeticsActive.set(userId, slug);
     else cosmeticsActive.delete(userId);
     bumpCosmeticsVersion();
+
+    // Dev-only candidate badges equip LOCALLY: the server would refuse a slug
+    // it has no row for. Persisted so a reload keeps it; cleared the moment a
+    // real badge is chosen, so the server path below takes over again.
+    if (isDevCosmetic(slug)) {
+        writeDevActiveCosmetic(userId, slug);
+        return { ok: true };
+    }
+    if (isDevCosmetic(prev)) writeDevActiveCosmetic(userId, null);
 
     const rollback = () => {
         if (prev) cosmeticsActive.set(userId, prev);

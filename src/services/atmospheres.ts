@@ -44,13 +44,21 @@ export interface Atmosphere {
   // flows two curtain layers horizontally (seamless loop) with a gentle sway.
   motion: 'drift' | 'aurora';
   // A 1px gradient edge drawn down the left of the member's chat message row (in
-  // place of a flat accent bar).
+  // place of a flat accent bar). 'none' draws no edge at all, for atmospheres
+  // whose wash is its own signature and wants no bar beside it.
   chatEdge: string;
   // Frosted readability block (dark translucent fill + slight backdrop blur)
   // behind the member's chat text. Only for atmospheres whose wash is busy
   // enough to fight the text (typically image-backed ones); subtle gradient
   // washes leave it off.
   chatFrost?: boolean;
+  // Defocus the image wash behind the chat row by this many px, so a crisp
+  // asset reads as dispersed light on the row rather than a cropped picture.
+  // Image-backed atmospheres only; gradient washes ignore it.
+  chatBlur?: number;
+  // A 1px rim around the member's chat row, as a CSS gradient, so the wash
+  // reads as light caught on the row's glass edge. Absent = no rim.
+  chatRim?: string;
   // How this Atmosphere is unlocked. 'subscriber' = the paid subscriber tier
   // (the default for the house line). 'accolade' = earned by unlocking a
   // specific accolade, available to ANY member regardless of subscription.
