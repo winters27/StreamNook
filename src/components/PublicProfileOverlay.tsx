@@ -455,7 +455,7 @@ const PublicProfileOverlay = () => {
           animate={{ opacity: 1, scale: 1 }}
           exit={{ opacity: 0, scale: 0.97 }}
           transition={{ type: 'spring', stiffness: 380, damping: 30 }}
-          className="fixed left-[calc(50%-380px)] top-12 z-[60] flex max-h-[86vh] w-[760px] max-w-[94vw] flex-col overflow-hidden rounded-xl border border-white/10 bg-[rgba(14,14,18,0.96)] shadow-[0_24px_60px_-15px_rgba(0,0,0,0.8)] backdrop-blur-2xl"
+          className="sn-light-off fixed left-[calc(50%-380px)] top-12 z-[60] flex max-h-[86vh] w-[760px] max-w-[94vw] flex-col overflow-hidden rounded-xl border border-white/10 bg-[rgba(14,14,18,0.96)] shadow-[0_24px_60px_-15px_rgba(0,0,0,0.8)] backdrop-blur-2xl"
           style={panelStyle}
         >
           {/* Whole-overlay backdrop. Only the Atmosphere (subscriber tier) fills

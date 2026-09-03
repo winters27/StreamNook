@@ -818,7 +818,7 @@ const BadgeDetailOverlay = ({ badge, setId, onClose, onBack }: BadgeDetailOverla
         animate={{ opacity: 1, scale: 1, y: 0 }}
         exit={{ opacity: 0, scale: 0.96, y: 12 }}
         transition={{ type: 'spring', stiffness: 380, damping: 30 }}
-        className="liquid-glass-panel w-[90vw] max-h-[85vh] max-w-5xl flex flex-col relative z-10 overflow-hidden"
+        className="sn-light-off liquid-glass-panel w-[90vw] max-h-[85vh] max-w-5xl flex flex-col relative z-10 overflow-hidden"
       >
         {/* Header */}
         <div className="flex items-center justify-between p-4 border-b border-borderSubtle">

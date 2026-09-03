@@ -4,6 +4,7 @@ import { AnimatePresence, motion } from 'framer-motion';
 import { useAppStore } from '../../stores/AppStore';
 import { refreshAtmosphere } from '../../stores/chatUserStore';
 import { AtmosphereBackground } from '../AtmosphereBackground';
+import { isDevAtmosphere } from '../../services/devAtmospheres';
 import { MajorCologneChrome } from '../MajorCologneChrome';
 import { getPreviewEmotes, previewEmoteUrl, rollPreviewChat, type PreviewEmote } from '../../utils/previewChat';
 import { openBadgesWithPaintInMain, openBadgesOnStreamNookInMain } from '../../utils/openBadgesInMain';
@@ -977,9 +978,13 @@ const ProfileSettings = () => {
   // per-item: you keep every one you unlocked, and an active subscriber can
   // apply (and thereby keep) new ones. Lapsing freezes you to what you own.
   const atmUnlocked = (a: Atmosphere): boolean =>
-    a.unlock?.kind === 'accolade'
-      ? earnedAccolades.has(a.unlock.accoladeId)
-      : ownedCosmeticSlugs.has(a.id) || subscribed;
+    // Dev-only candidate slots are always pickable on a dev build; that is
+    // what they are for. No-op in production (the set is empty there).
+    isDevAtmosphere(a.id)
+      ? true
+      : a.unlock?.kind === 'accolade'
+        ? earnedAccolades.has(a.unlock.accoladeId)
+        : ownedCosmeticSlugs.has(a.id) || subscribed;
 
   // How an atmosphere is earned, shown as the picker tooltip. Accolade-gated
   // ones only appear once earned, so this reads as "here's how you got it";
@@ -1036,8 +1041,10 @@ const ProfileSettings = () => {
     );
   }
 
+  // sn-light-off: this tab previews the user's OWN cosmetics (atmospheres,
+  // paints, badges), so a theme's light treatment must not paint under them.
   return (
-    <div className="space-y-6">
+    <div className="sn-light-off space-y-6">
       {/* Share controls rendered into the dialog hero's actions slot
           (#settings-hero-actions). Same vertical row as the "Profile"
           title/description, on the right side. Zero impact on the layout

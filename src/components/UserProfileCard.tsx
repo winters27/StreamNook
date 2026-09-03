@@ -1527,7 +1527,7 @@ const UserProfileCard = ({
       )}
       <div
         ref={cardRef}
-        className={`${isStandaloneWindow ? 'w-full h-full' : 'fixed z-50 w-[402px] max-h-[88vh]'} user-profile-card backdrop-blur-xl shadow-2xl border border-borderSubtle rounded-lg overflow-hidden flex flex-col`}
+        className={`${isStandaloneWindow ? 'w-full h-full' : 'fixed z-50 w-[402px] max-h-[88vh]'} sn-light-off user-profile-card backdrop-blur-xl shadow-2xl border border-borderSubtle rounded-lg overflow-hidden flex flex-col`}
         style={isStandaloneWindow ? { backgroundColor: 'rgba(0, 0, 0, 0.75)' } : cardStyle}
         onMouseDown={isStandaloneWindow ? undefined : handleMouseDown}
       >

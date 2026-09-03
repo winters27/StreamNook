@@ -1633,7 +1633,9 @@ const BadgesOverlay = ({ onClose, onBadgeClick, initialPaintId, initialBadgeId, 
         exit={{ opacity: 0, scale: 0.95, y: 15 }}
         transition={{ type: "spring", stiffness: 350, damping: 25 }}
         style={{ willChange: "transform, opacity" }}
-        className="liquid-glass-panel w-[90vw] h-[85vh] max-w-7xl flex flex-col relative z-10 overflow-hidden"
+        // sn-light-off: a cosmetics stage; a theme's light treatment stays off
+        // it so a badge or atmosphere is seen on neutral glass.
+        className="sn-light-off liquid-glass-panel w-[90vw] h-[85vh] max-w-7xl flex flex-col relative z-10 overflow-hidden"
       >
         {/* Header */}
         <div className="flex items-center justify-between p-4 border-b border-borderSubtle">
