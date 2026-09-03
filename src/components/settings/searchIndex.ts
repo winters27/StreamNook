@@ -287,7 +287,7 @@ export const SETTINGS_INDEX: SettingsIndexEntry[] = [
     tab: 'Theme',
     section: 'Theme',
     title: 'Theme',
-    description: 'Pick a color theme or build your own. Themes set the palette only; font and glassiness are chosen separately, so you can use any font with any theme.'
+    description: 'Pick a color theme or build your own. Themes set the palette only; font and glassiness are chosen separately, so you can use any font with any theme. Signature themes: Frosted Glass, Standard Issue, OLED, Prism (spectral dispersion, refracted light, iridescent, optical).'
   },
   {
     tab: 'Theme',

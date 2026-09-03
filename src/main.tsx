@@ -24,6 +24,9 @@ import './utils/multichatTrayBridge';
 // used by the tier-badge rank number and rides StreamNookBadge.tsx instead.
 import '@fontsource-variable/fraunces';
 import './styles/globals.css';
+// Light treatment for the Prism theme. Separate from globals.css so the effect
+// is one self-contained sheet, and loaded after it so its selectors win.
+import './styles/theme-prism.css';
 import { initLogCapture } from './services/logService';
 
 import { Logger } from './utils/logger';
