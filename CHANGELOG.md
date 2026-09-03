@@ -1,3 +1,27 @@
+## [8.5.3] - 2026-09-02
+
+## 🎉 New: Prism, a theme made of light
+> Prism is a dark, colorless theme where refracted light lands on the glass: a soft bloom in a corner, a streak of separated color across a dialog, a catch of light on a hovered button. It is free for everyone in Theme settings. Alongside it, the Prism set: Facet, a supporter badge; Lumen, a subscriber badge; and Dispersion, an atmosphere that puts dispersed light behind a subscriber's messages and profile. The set is available through October 31.
+
+![Prism and the Prism set](https://raw.githubusercontent.com/winters27/StreamNook/main/.github/assets/release-8.5.3-prism.png)
+
+---
+
+### ✨ Features
+- **Prism theme.** Ivory on near-black, with light instead of color: the interface stays neutral and the spectrum appears only where it would in a photograph of glass. It scales with your glassiness setting, so a solid setup gets a quieter version.
+- **The Prism set, through October 31.** Supporters get Facet, subscribers get Lumen and the Dispersion atmosphere as well as Facet. Anyone who holds a tier before the end of October keeps their pieces for good.
+- **A rebuilt Stream Overlay builder.** Eight short sections instead of one long scroll, a row of tiles to jump between them, a dot on any section you have changed, and one short line per setting with the detail a hover away.
+- **Atmospheres can shape their chat wash.** An atmosphere can drop the left edge, defocus its image behind your messages, and draw a faint rim around the row, so a crisp piece of art reads as light on the row instead of a cropped picture.
+
+### 🐛 Bug Fixes
+- **Links like test.fr are recognized**, not only ones starting with https or www, and a full stop after a link stays out of it.
+- **The shared-chat banner clears when a shared session ends**, instead of staying up until you change channels.
+
+### ⚡ Performance
+- **Chat memory no longer grows for as long as a channel is open.** The buffer trim leaked one row per flush, which on a busy channel added up to over a gigabyte in half an hour.
+- **Far less CPU while watching.** Decorative animations in the title bar and update pill are held still during playback and run again while you browse; they were repainting the window on every frame.
+- **Lighter badge and emote cache.** Lookups read one entry instead of cloning the whole manifest, the manifest is written compactly and atomically at a gentler interval, and the YouTube feed poll no longer re-encodes each response just to log its size.
+
 ## [8.5.2] - 2026-08-30
 
 ## 🎉 New: Favorites, a watchlist that spans every platform
