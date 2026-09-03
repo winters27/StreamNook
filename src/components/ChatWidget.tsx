@@ -331,6 +331,9 @@ interface ChatMessagesPanelProps {
   hoveringRef: React.MutableRefObject<boolean>;
 }
 
+/** How many consecutive untagged messages end the shared-chat indicator. */
+const SHARED_CHAT_END_STREAK = 10;
+
 const ChatMessagesPanel = ({
   channelKey,
   provider,
@@ -365,6 +368,9 @@ const ChatMessagesPanel = ({
   const live = useChannelChat(override ? null : channelKey);
   const src: ChatMessagesPanelSource = override ?? live;
   const addUser = useChatUserStore((state) => state.addUser);
+  /** Consecutive Twitch messages seen with no source-room-id tag. Drives the
+   *  shared-chat session-end detection below. */
+  const sharedChatQuietRef = useRef(0);
 
   // Keyboard moderation reads the visible messages synchronously through this
   // ref; the panel owns the snapshot now, so it keeps the ref fresh.
@@ -447,6 +453,7 @@ const ChatMessagesPanel = ({
               ? parsed.tags.get('room-id')
               : message.tags['room-id'];
           if (srcRoom && ownRoom && srcRoom !== ownRoom) {
+            sharedChatQuietRef.current = 0;
             setIsSharedChat(true);
             if (!sharedRoomsRef.current.has(srcRoom)) {
               sharedRoomsRef.current.add(srcRoom);
@@ -454,6 +461,20 @@ const ChatMessagesPanel = ({
                 Logger.warn('[ChatWidget] Failed to prefetch badges for shared channel:', srcRoom, err),
               );
             }
+          } else if (srcRoom) {
+            // Still in the session, just a message from this channel itself.
+            sharedChatQuietRef.current = 0;
+          } else if (++sharedChatQuietRef.current >= SHARED_CHAT_END_STREAK) {
+            // Twitch tags EVERY message in a shared-chat session with
+            // source-room-id, including the host channel's own (see the shared
+            // chat section of the IRC docs), so messages arriving without it
+            // mean the session ended. Without this the flag was sticky until
+            // the next channel change: the header kept reading "SHARED STREAM
+            // CHAT" and its gradient kept animating for the rest of the stream.
+            // A streak rather than a single miss because the docs describe the
+            // tag's presence but do not guarantee it on every message shape,
+            // and one stray untagged line must not flicker the indicator.
+            setIsSharedChat(false);
           }
         }
 
