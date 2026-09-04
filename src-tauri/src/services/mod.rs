@@ -27,6 +27,7 @@ pub mod eventsub_service;
 pub mod file_log;
 pub mod http;
 pub mod irc_service;
+pub mod irc_transport;
 pub mod kick_auth_service;
 pub mod layout_service;
 pub mod modroom_auth_service;

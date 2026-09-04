@@ -10,6 +10,7 @@ use crate::services::emote_service::{Emote, EmoteService, EmoteSet};
 use crate::services::layout_service::LayoutService;
 use crate::services::twitch_service::TwitchService;
 use crate::services::user_message_history_service::UserMessageHistoryService;
+use crate::services::irc_transport::{self, IrcTransport, IrcWriter};
 use anyhow::Result;
 use futures_util::{SinkExt, StreamExt};
 use log::{debug, error, info, warn};
@@ -43,8 +44,7 @@ static IRC_HANDLE: OnceLock<Mutex<Option<tokio::task::JoinHandle<()>>>> = OnceLo
 // half-open connection indefinitely after stop().
 static IRC_PING_ABORT: OnceLock<Mutex<Option<tokio::task::AbortHandle>>> = OnceLock::new();
 static IRC_HEARTBEAT_ABORT: OnceLock<Mutex<Option<tokio::task::AbortHandle>>> = OnceLock::new();
-static IRC_WRITER: OnceLock<Mutex<Option<Arc<Mutex<tokio::io::WriteHalf<TcpStream>>>>>> =
-    OnceLock::new();
+static IRC_WRITER: OnceLock<Mutex<Option<Arc<Mutex<IrcWriter>>>>> = OnceLock::new();
 static SHARED_CHAT_ROOMS: OnceLock<Mutex<HashMap<String, Vec<String>>>> = OnceLock::new();
 // Fast-path gate for enhance_message_with_shared_chat: the overwhelming
 // majority of sessions never see a shared-chat room, so the per-message
@@ -111,9 +111,6 @@ static PERSONAL_EMOTES: OnceLock<
 static PERSONAL_EMOTES_PRESENT: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
-const IRC_SERVER: &str = "irc.chat.twitch.tv";
-const IRC_PORT: u16 = 6667;
-
 // Serializes start()'s check-then-spawn body. Two concurrent fresh starts
 // (boot storm, or two windows' watchdogs escalating together) could each
 // spawn a supervisor, leaking one forever on a duplicate socket.
@@ -136,7 +133,6 @@ const LIFECYCLE_LOG_CAP: usize = 100;
 // ample tolerance for this cadence.
 const IRC_PING_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
 const IRC_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(75);
-const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 const HANDSHAKE_STEP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 // Read timeout plus slack: past this the frontend must be allowed to see
 // silence so its own watchdog can act.
@@ -636,7 +632,7 @@ async fn send_to_bridge(msg: String, queue_on_fail: bool) -> bool {
     delivered
 }
 
-fn get_irc_writer() -> &'static Mutex<Option<Arc<Mutex<tokio::io::WriteHalf<TcpStream>>>>> {
+fn get_irc_writer() -> &'static Mutex<Option<Arc<Mutex<IrcWriter>>>> {
     IRC_WRITER.get_or_init(|| Mutex::new(None))
 }
 
@@ -1107,6 +1103,7 @@ impl IrcService {
         layout_service: Arc<LayoutService>,
         emote_service: Arc<tokio::sync::RwLock<EmoteService>>,
     ) {
+        irc_transport::load_hint().await;
         let mut consecutive_failures: u32 = 0;
         loop {
             // Re-fetched every attempt: get_token refreshes an expiring token.
@@ -1229,100 +1226,120 @@ impl IrcService {
     ) -> std::result::Result<&'static str, SessionError> {
         debug!("[IRC Chat] Connecting to Twitch IRC...");
 
-        let stream = tokio::time::timeout(
-            CONNECT_TIMEOUT,
-            TcpStream::connect((IRC_SERVER, IRC_PORT)),
-        )
-        .await
-        .map_err(|_| SessionError::Transient(anyhow::anyhow!("connect timed out")))??;
-        let (reader, writer) = tokio::io::split(stream);
-        let mut reader = BufReader::new(reader);
+        let connect_started = std::time::Instant::now();
+        let connected = irc_transport::connect_transport()
+            .await
+            .map_err(|reason| SessionError::Transient(anyhow::anyhow!("{}", reason)))?;
+        let transport = connected.transport;
+        if transport == IrcTransport::WebSocket {
+            record_lifecycle(&format!(
+                "connected via websocket in {}ms{}",
+                connect_started.elapsed().as_millis(),
+                connected
+                    .tcp_failed
+                    .as_deref()
+                    .map(|e| format!(" (tcp 6667 failed: {})", e))
+                    .unwrap_or_default()
+            ));
+        }
+        let mut reader = connected.reader;
         // The global IRC_WRITER is published only after auth succeeds, so
         // ensure_joined/send_message can never write into an unauthenticated
         // or mid-handshake socket.
-        let writer = Arc::new(Mutex::new(writer));
+        let writer = Arc::new(Mutex::new(connected.writer));
 
-        // IMPORTANT: CAP negotiation must happen BEFORE authentication
-        // Step 1: Request capabilities first
-        {
-            let mut w = writer.lock().await;
-            debug!("[IRC Chat] Requesting capabilities...");
-            w.write_all(b"CAP REQ :twitch.tv/tags twitch.tv/commands twitch.tv/membership\r\n")
-                .await?;
-            w.flush().await?;
-        }
-
-        // Step 2: Wait for CAP ACK before authenticating
+        // The handshake runs in its own block so a transient failure after a
+        // successful connect can be attributed to the transport that carried
+        // it (a firewall that accepts the SYN but blackholes the data looks
+        // exactly like this). Auth rejections are transport-agnostic.
         let mut line = String::new();
-        let mut cap_acknowledged = false;
-
-        while !cap_acknowledged {
-            line.clear();
-            let n = tokio::time::timeout(HANDSHAKE_STEP_TIMEOUT, reader.read_line(&mut line))
-                .await
-                .map_err(|_| {
-                    SessionError::Transient(anyhow::anyhow!("timed out waiting for CAP ACK"))
-                })??;
-            if n == 0 {
-                return Err(SessionError::Transient(anyhow::anyhow!(
-                    "connection closed during capability negotiation"
-                )));
-            }
-
-            debug!("[IRC Chat] Server response: {}", line.trim());
-
-            if line.contains("CAP * ACK") {
-                cap_acknowledged = true;
-                debug!("[IRC Chat] Capabilities acknowledged");
-            }
-        }
-
-        // Step 3: Now authenticate with PASS and NICK
-        {
-            let mut w = writer.lock().await;
-            // IRC requires "oauth:" prefix for the password
-            let auth_token = format!("oauth:{}", token);
-
-            debug!("[IRC Chat] Authenticating with username: {}", username);
-
-            w.write_all(format!("PASS {}\r\n", auth_token).as_bytes())
-                .await?;
-            w.write_all(format!("NICK {}\r\n", username.to_lowercase()).as_bytes())
-                .await?;
-            w.flush().await?;
-        }
-
-        // Step 4: Wait for authentication confirmation
-        let mut authenticated = false;
-
-        while !authenticated {
-            line.clear();
-            let n = tokio::time::timeout(HANDSHAKE_STEP_TIMEOUT, reader.read_line(&mut line))
-                .await
-                .map_err(|_| {
-                    SessionError::Transient(anyhow::anyhow!(
-                        "timed out waiting for auth confirmation"
-                    ))
-                })??;
-            if n == 0 {
-                return Err(SessionError::Transient(anyhow::anyhow!(
-                    "connection closed during authentication"
-                )));
-            }
-
-            debug!("[IRC Chat] Auth response: {}", line.trim());
-
-            if line.contains("001") {
-                authenticated = true;
-            } else if line.contains("NOTICE")
-                && (line.contains("Login unsuccessful")
-                    || line.contains("Login authentication failed"))
+        let handshake: std::result::Result<(), SessionError> = async {
+            // IMPORTANT: CAP negotiation must happen BEFORE authentication
+            // Step 1: Request capabilities first
             {
-                return Err(SessionError::Auth(anyhow::anyhow!(
-                    "IRC authentication failed - token may be invalid or expired"
-                )));
+                let mut w = writer.lock().await;
+                debug!("[IRC Chat] Requesting capabilities...");
+                w.send_line("CAP REQ :twitch.tv/tags twitch.tv/commands twitch.tv/membership\r\n")
+                    .await?;
             }
+
+            // Step 2: Wait for CAP ACK before authenticating
+            let mut cap_acknowledged = false;
+
+            while !cap_acknowledged {
+                line.clear();
+                let n = tokio::time::timeout(HANDSHAKE_STEP_TIMEOUT, reader.read_line(&mut line))
+                    .await
+                    .map_err(|_| {
+                        SessionError::Transient(anyhow::anyhow!("timed out waiting for CAP ACK"))
+                    })??;
+                if n == 0 {
+                    return Err(SessionError::Transient(anyhow::anyhow!(
+                        "connection closed during capability negotiation"
+                    )));
+                }
+
+                debug!("[IRC Chat] Server response: {}", line.trim());
+
+                if line.contains("CAP * ACK") {
+                    cap_acknowledged = true;
+                    debug!("[IRC Chat] Capabilities acknowledged");
+                }
+            }
+
+            // Step 3: Now authenticate with PASS and NICK
+            {
+                let mut w = writer.lock().await;
+                // IRC requires "oauth:" prefix for the password
+                let auth_token = format!("oauth:{}", token);
+
+                debug!("[IRC Chat] Authenticating with username: {}", username);
+
+                w.send_line(&format!("PASS {}\r\n", auth_token)).await?;
+                w.send_line(&format!("NICK {}\r\n", username.to_lowercase())).await?;
+            }
+
+            // Step 4: Wait for authentication confirmation
+            let mut authenticated = false;
+
+            while !authenticated {
+                line.clear();
+                let n = tokio::time::timeout(HANDSHAKE_STEP_TIMEOUT, reader.read_line(&mut line))
+                    .await
+                    .map_err(|_| {
+                        SessionError::Transient(anyhow::anyhow!(
+                            "timed out waiting for auth confirmation"
+                        ))
+                    })??;
+                if n == 0 {
+                    return Err(SessionError::Transient(anyhow::anyhow!(
+                        "connection closed during authentication"
+                    )));
+                }
+
+                debug!("[IRC Chat] Auth response: {}", line.trim());
+
+                if line.contains("001") {
+                    authenticated = true;
+                } else if line.contains("NOTICE")
+                    && (line.contains("Login unsuccessful")
+                        || line.contains("Login authentication failed"))
+                {
+                    return Err(SessionError::Auth(anyhow::anyhow!(
+                        "IRC authentication failed - token may be invalid or expired"
+                    )));
+                }
+            }
+            Ok(())
         }
+        .await;
+        if let Err(e) = handshake {
+            if matches!(e, SessionError::Transient(_)) {
+                irc_transport::note_handshake_failure(transport);
+            }
+            return Err(e);
+        }
+        irc_transport::note_authenticated(transport);
 
         *get_irc_writer().lock().await = Some(writer.clone());
         mark_irc_read();
@@ -1359,9 +1376,8 @@ impl IrcService {
             {
                 let mut w = writer.lock().await;
                 for ch in &channels {
-                    w.write_all(format!("JOIN #{}\r\n", ch).as_bytes()).await?;
+                    w.send_line(&format!("JOIN #{}\r\n", ch)).await?;
                 }
-                w.flush().await?;
             }
             {
                 // Everything this session will JOIN goes into the ack tracker up
@@ -1396,15 +1412,9 @@ impl IrcService {
                         tokio::time::sleep(JOIN_PACE_INTERVAL).await;
                         let mut w = writer_join.lock().await;
                         for ch in chunk {
-                            if w.write_all(format!("JOIN #{}\r\n", ch).as_bytes())
-                                .await
-                                .is_err()
-                            {
+                            if w.send_line(&format!("JOIN #{}\r\n", ch)).await.is_err() {
                                 return;
                             }
-                        }
-                        if w.flush().await.is_err() {
-                            return;
                         }
                         record_lifecycle(&format!("paced JOIN batch: {:?}", chunk));
                     }
@@ -1488,7 +1498,7 @@ impl IrcService {
             loop {
                 interval.tick().await;
                 let mut w = writer_clone.lock().await;
-                if w.write_all(b"PING :tmi.twitch.tv\r\n").await.is_err() {
+                if w.send_line("PING :tmi.twitch.tv\r\n").await.is_err() {
                     break;
                 }
             }
@@ -1563,11 +1573,7 @@ impl IrcService {
                         ));
                         {
                             let mut w = writer_watch.lock().await;
-                            if w.write_all(format!("JOIN #{}\r\n", key).as_bytes())
-                                .await
-                                .is_err()
-                                || w.flush().await.is_err()
-                            {
+                            if w.send_line(&format!("JOIN #{}\r\n", key)).await.is_err() {
                                 return;
                             }
                         }
@@ -1653,7 +1659,7 @@ impl IrcService {
 
     async fn handle_irc_message(
         line: &str,
-        writer: &Arc<Mutex<tokio::io::WriteHalf<TcpStream>>>,
+        writer: &Arc<Mutex<IrcWriter>>,
         layout_service: &LayoutService,
     ) -> Result<()> {
         let trimmed = line.trim();
@@ -1676,9 +1682,7 @@ impl IrcService {
             // socket and the session ends with an honest "closed by server".
             match tokio::time::timeout(std::time::Duration::from_secs(5), writer.lock()).await {
                 Ok(mut w) => {
-                    w.write_all(format!("PONG {}\r\n", ping_data).as_bytes())
-                        .await?;
-                    w.flush().await?;
+                    w.send_line(&format!("PONG {}\r\n", ping_data)).await?;
                 }
                 Err(_) => {
                     record_lifecycle("PONG skipped: writer lock busy >5s (socket congested)");
@@ -2450,8 +2454,7 @@ impl IrcService {
         };
 
         debug!("[IRC Chat] Sending message: {}", message);
-        w.write_all(formatted_message.as_bytes()).await?;
-        w.flush().await?;
+        w.send_line(&formatted_message).await?;
         drop(w);
 
         // Messages sent over THIS connection get no IRC echo (Helix sends do,
@@ -2513,7 +2516,7 @@ impl IrcService {
     /// instead of failing the JOIN outright.
     async fn wait_for_irc_writer(
         max_attempts: u32,
-    ) -> Option<Arc<Mutex<tokio::io::WriteHalf<TcpStream>>>> {
+    ) -> Option<Arc<Mutex<IrcWriter>>> {
         for attempt in 0..max_attempts {
             if let Some(writer) = get_irc_writer().lock().await.as_ref() {
                 return Some(writer.clone());
@@ -2606,8 +2609,7 @@ impl IrcService {
             Some(writer) => {
                 let write_result = async {
                     let mut w = writer.lock().await;
-                    w.write_all(format!("JOIN #{}\r\n", key).as_bytes()).await?;
-                    w.flush().await
+                    w.send_line(&format!("JOIN #{}\r\n", key)).await
                 }
                 .await;
                 match write_result {
@@ -2772,8 +2774,7 @@ impl IrcService {
         // watches.
         if let Some(writer) = get_irc_writer().lock().await.as_ref().cloned() {
             let mut w = writer.lock().await;
-            let _ = w.write_all(format!("PART #{}\r\n", key).as_bytes()).await;
-            let _ = w.flush().await;
+            let _ = w.send_line(&format!("PART #{}\r\n", key)).await;
         }
 
         get_current_channels().lock().await.remove(key);
@@ -4334,8 +4335,9 @@ impl IrcService {
         get_message_broadcaster().lock().await.clone()
     }
 
-    /// Dev-only failure lever: force-FIN the live IRC socket so the full
-    /// drop-reconnect-rejoin-backfill path can be exercised on demand.
+    /// Dev-only failure lever: close the live IRC connection (FIN on TCP, Close
+    /// frame on WebSocket) so the full drop-reconnect-rejoin-backfill path can
+    /// be exercised on demand.
     pub async fn debug_shutdown_socket() -> Result<()> {
         let writer = get_irc_writer()
             .lock()
@@ -4358,8 +4360,7 @@ impl IrcService {
             .clone()
             .ok_or_else(|| anyhow::anyhow!("no IRC connection"))?;
         let mut w = writer.lock().await;
-        w.write_all(format!("PART #{}\r\n", key).as_bytes()).await?;
-        w.flush().await?;
+        w.send_line(&format!("PART #{}\r\n", key)).await?;
         record_lifecycle(&format!("debug: raw PART #{} sent (state untouched)", key));
         Ok(())
     }
@@ -4401,8 +4402,7 @@ impl IrcService {
                 refresh_join_hint(&t);
             }
             let mut w = writer.lock().await;
-            w.write_all(format!("JOIN #{}\r\n", key).as_bytes()).await?;
-            w.flush().await?;
+            w.send_line(&format!("JOIN #{}\r\n", key)).await?;
             nudged += 1;
         }
         record_lifecycle(&format!(
