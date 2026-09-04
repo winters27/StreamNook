@@ -68,6 +68,36 @@ const CLIENTS: &[PlayerClient] = &[
     },
 ];
 
+/// Clients tried WITH the user's YouTube session when the anonymous table is
+/// refused for an age gate. Order and versions follow yt-dlp's signed-in
+/// defaults (`tv_downgraded`, then `web_safari`). ANDROID and IOS are absent on
+/// purpose: they ignore account cookies, so retrying them signed in cannot help.
+struct AuthedClient {
+    name: &'static str,
+    client_name: &'static str,
+    client_version: &'static str,
+    /// The numeric id YouTube expects in `X-Youtube-Client-Name`.
+    client_id: &'static str,
+    user_agent: &'static str,
+}
+
+const AUTHED_CLIENTS: &[AuthedClient] = &[
+    AuthedClient {
+        name: "tv (authed)",
+        client_name: "TVHTML5",
+        client_version: "5.20260114",
+        client_id: "7",
+        user_agent: "Mozilla/5.0 (ChromiumStylePlatform) Cobalt/Version",
+    },
+    AuthedClient {
+        name: "web safari (authed)",
+        client_name: "WEB",
+        client_version: "2.20260114.01.00",
+        client_id: "1",
+        user_agent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15",
+    },
+];
+
 static HTTP: Lazy<reqwest::Client> = Lazy::new(|| {
     reqwest::Client::builder()
         .timeout(Duration::from_secs(15))
@@ -143,6 +173,66 @@ async fn player_response(video_id: &str, client: &PlayerClient) -> Result<Value>
         return Err(anyhow!("player returned {}", resp.status()));
     }
     Ok(resp.json::<Value>().await?)
+}
+
+/// POST `youtubei/v1/player` carrying the user's YouTube session, for a video
+/// the anonymous table was refused for. Mirrors `youtube::post_innertube_authed`
+/// (the chat send path): the harvested cookies plus the SAPISIDHASH header, and
+/// the channel's cached `visitorData` when there is one. No `key=`, like the
+/// VISIONOS call.
+async fn player_response_authed(
+    video_id: &str,
+    client: &AuthedClient,
+    visitor_data: Option<&str>,
+) -> Result<Value> {
+    let headers = crate::services::youtube_auth_service::auth_headers()
+        .ok_or_else(|| anyhow!("no YouTube session"))?;
+    let mut ctx = json!({
+        "clientName": client.client_name,
+        "clientVersion": client.client_version,
+        "userAgent": client.user_agent,
+        "hl": "en",
+        "gl": "US",
+    });
+    if let Some(vd) = visitor_data {
+        ctx["visitorData"] = json!(vd);
+    }
+    let body = json!({
+        "videoId": video_id,
+        "contentCheckOk": true,
+        "racyCheckOk": true,
+        "context": { "client": ctx }
+    });
+    let mut req = reqwest::Client::new()
+        .post(format!("{}/player?prettyPrint=false", INNERTUBE))
+        .header(reqwest::header::USER_AGENT, client.user_agent)
+        .header(reqwest::header::CONTENT_TYPE, "application/json")
+        .header("X-Youtube-Client-Name", client.client_id)
+        .header("X-Youtube-Client-Version", client.client_version);
+    if let Some(vd) = visitor_data {
+        req = req.header("X-Goog-Visitor-Id", vd);
+    }
+    for (k, v) in headers {
+        req = req.header(k, v);
+    }
+    let resp = req.json(&body).send().await?;
+    if !resp.status().is_success() {
+        return Err(anyhow!("{} player returned {}", client.name, resp.status()));
+    }
+    Ok(resp.json::<Value>().await?)
+}
+
+/// Whether a refusal is YouTube's age gate. Two wordings exist: the mobile
+/// clients say "inappropriate for some users", everything else says "confirm
+/// your age". Both mean the same thing and only a signed-in, of-age account
+/// clears either.
+fn is_age_gate(reason: &str) -> bool {
+    let r = reason.to_lowercase();
+    r.contains("confirm your age")
+        || r.contains("inappropriate")
+        || r.contains("age-restricted")
+        || r.contains("age_verification_required")
+        || r.contains("age_check_required")
 }
 
 // ---------------------------------------------------------------------------
@@ -839,6 +929,97 @@ fn is_content_refusal(reason: &str) -> bool {
         || r.contains("playback on other websites"))
 }
 
+/// Turn an `OK` player response into playback: fetch its HLS master, pick the
+/// variant `quality` asks for, remember the ladder. Shared by the anonymous and
+/// the signed-in resolves so the two cannot drift.
+async fn hls_playback(
+    channel: &str,
+    video_id: &str,
+    client_name: &str,
+    player: &Value,
+    quality: &str,
+) -> Result<ResolvedPlayback> {
+    let manifest = player
+        .pointer("/streamingData/hlsManifestUrl")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow!("{} returned no HLS manifest", client_name))?;
+    let master = HTTP.get(manifest).send().await?.text().await?;
+    let base = manifest.rsplit_once('/').map(|(b, _)| b).unwrap_or("");
+    let qualities = hls_master::parse(&master, base);
+    if qualities.is_empty() {
+        return Err(anyhow!("master playlist had no variants"));
+    }
+    let (idx, label) = hls_master::select(&qualities, quality)
+        .ok_or_else(|| anyhow!("no usable quality for this stream"))?;
+    report_ladder(channel, video_id, client_name, player, &qualities);
+    store_master(video_id, &qualities);
+    let url = qualities[idx].url.clone();
+    Ok(ResolvedPlayback {
+        kind: PlaybackKind::Hls,
+        url,
+        quality: label,
+        qualities: with_highs(video_id, qualities),
+    })
+}
+
+impl YouTubeSource {
+    /// Resolve an age-gated broadcast with the user's session. Same loop shape
+    /// as the anonymous one; the reason it reports is the LAST client's, because
+    /// by now every reason is about the account, not the video.
+    async fn resolve_authed(
+        &self,
+        channel: &str,
+        video_id: &str,
+        quality: &str,
+    ) -> Result<ResolvedPlayback> {
+        let visitor_data = youtube::channel_meta(channel).and_then(|m| m.visitor_data);
+        let mut last_error = None;
+        for client in AUTHED_CLIENTS {
+            let player =
+                match player_response_authed(video_id, client, visitor_data.as_deref()).await {
+                    Ok(p) => p,
+                    Err(e) => {
+                        log::warn!("[YouTube] {} failed for '{}': {}", client.name, video_id, e);
+                        last_error = Some(e.to_string());
+                        continue;
+                    }
+                };
+            if let Some(reason) = playability_error(&player) {
+                log::warn!(
+                    "[YouTube] {} refused '{}': {}",
+                    client.name,
+                    video_id,
+                    reason
+                );
+                last_error = Some(reason);
+                continue;
+            }
+            match hls_playback(channel, video_id, client.name, &player, quality).await {
+                Ok(resolved) => {
+                    log::info!(
+                        "[YouTube] {} unlocked age-gated '{}'",
+                        client.name,
+                        video_id
+                    );
+                    return Ok(resolved);
+                }
+                Err(e) => {
+                    log::warn!(
+                        "[YouTube] {} gave no playable manifest for '{}': {}",
+                        client.name,
+                        video_id,
+                        e
+                    );
+                    last_error = Some(e.to_string());
+                }
+            }
+        }
+        Err(anyhow!(last_error.unwrap_or_else(|| {
+            "no signed-in client answered".to_string()
+        })))
+    }
+}
+
 #[async_trait]
 impl StreamSource for YouTubeSource {
     fn id(&self) -> &'static str {
@@ -936,37 +1117,42 @@ impl StreamSource for YouTubeSource {
                 }
                 continue;
             }
-            let manifest = player
-                .pointer("/streamingData/hlsManifestUrl")
-                .and_then(|v| v.as_str());
-            let Some(manifest) = manifest else {
-                last_error = Some(format!("{} returned no HLS manifest", client.name));
-                continue;
-            };
-
-            let master = HTTP.get(manifest).send().await?.text().await?;
-            let base = manifest.rsplit_once('/').map(|(b, _)| b).unwrap_or("");
-            let qualities = hls_master::parse(&master, base);
-            if qualities.is_empty() {
-                last_error = Some("master playlist had no variants".to_string());
-                continue;
+            match hls_playback(channel, &video_id, client.name, &player, quality).await {
+                Ok(resolved) => return Ok(resolved),
+                Err(e) => {
+                    last_error = Some(e.to_string());
+                    continue;
+                }
             }
-            let (idx, label) = hls_master::select(&qualities, quality)
-                .ok_or_else(|| anyhow!("no usable quality for this stream"))?;
-            report_ladder(channel, &video_id, client.name, &player, &qualities);
-            store_master(&video_id, &qualities);
-            let url = qualities[idx].url.clone();
-            return Ok(ResolvedPlayback {
-                kind: PlaybackKind::Hls,
-                url,
-                quality: label,
-                qualities: with_highs(&video_id, qualities),
-            });
+        }
+        let reason = last_error.unwrap_or_else(|| "no client returned a manifest".to_string());
+
+        // An age gate is the one refusal a signed-in account can clear. The
+        // anonymous table above never carries the session (and its first two
+        // clients would ignore it anyway), so this is a second, smaller table
+        // tried only when the video is gated and there is a session to send.
+        if is_age_gate(&reason) {
+            if !crate::services::youtube_auth_service::is_connected() {
+                return Err(anyhow!(
+                    "'{}' is age-restricted. Connect YouTube in Settings → Profile → Accounts to watch it",
+                    channel
+                ));
+            }
+            return self
+                .resolve_authed(channel, &video_id, quality)
+                .await
+                .map_err(|e| {
+                    anyhow!(
+                        "'{}' is age-restricted and your YouTube account did not unlock it: {}",
+                        channel,
+                        e
+                    )
+                });
         }
         Err(anyhow!(
             "couldn't resolve a YouTube stream for '{}': {}",
             channel,
-            last_error.unwrap_or_else(|| "no client returned a manifest".to_string())
+            reason
         ))
     }
 
@@ -1994,6 +2180,24 @@ pub async fn sabr_session_for(video_id: &str) -> Result<SabrInputs> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn age_gate_reasons_are_recognised() {
+        // Both wordings YouTube uses, as measured 2026-09-03 on a gated broadcast.
+        assert!(super::is_age_gate(
+            "This video may be inappropriate for some users."
+        ));
+        assert!(super::is_age_gate("Sign in to confirm your age"));
+        assert!(super::is_age_gate("AGE_VERIFICATION_REQUIRED"));
+        // The bot check also says "sign in" and must NOT trigger a signed-in retry.
+        assert!(!super::is_age_gate(
+            "Sign in to confirm you\u{2019}re not a bot"
+        ));
+        assert!(!super::is_age_gate("This video is unavailable"));
+        assert!(!super::is_age_gate(
+            "Join this channel to get access to members-only content"
+        ));
+    }
+
     use super::*;
 
     /// A signed-OUT subscriptions request returns 200 WITH a `contents` tree, so
