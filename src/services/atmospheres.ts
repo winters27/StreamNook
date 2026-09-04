@@ -111,8 +111,10 @@ export interface AtmosphereUnlock {
   kind: 'subscriber' | 'accolade';
   // A secret challenge whose earn method must not be revealed.
   hidden: boolean;
-  // The badge name for a public accolade unlock (absent when hidden).
-  badgeName?: string;
+  // The accolade's display name for a public accolade unlock (absent when
+  // hidden). An accolade is an achievement medallion on the profile wall, not a
+  // chat badge; user-facing copy must say "accolade".
+  accoladeName?: string;
   // One-line status for the library / tooltips.
   label: string;
 }
@@ -121,9 +123,9 @@ export interface AtmosphereUnlock {
 // surface. Keeps the hidden-challenge rule in one place.
 export const getAtmosphereUnlock = (a: Atmosphere): AtmosphereUnlock => {
   if (a.unlock?.kind === 'accolade') {
-    const badgeName = PUBLIC_ATMOSPHERE_UNLOCKS[a.unlock.accoladeId];
-    return badgeName
-      ? { kind: 'accolade', hidden: false, badgeName, label: `Earned with the ${badgeName} badge` }
+    const accoladeName = PUBLIC_ATMOSPHERE_UNLOCKS[a.unlock.accoladeId];
+    return accoladeName
+      ? { kind: 'accolade', hidden: false, accoladeName, label: `Earned with the ${accoladeName} accolade` }
       : { kind: 'accolade', hidden: true, label: 'Hidden challenge' };
   }
   return { kind: 'subscriber', hidden: false, label: 'Subscriber reward' };

@@ -2446,7 +2446,7 @@ const BadgesOverlay = ({ onClose, onBadgeClick, initialPaintId, initialBadgeId, 
                             ) : (
                               <Tooltip content={unlock.label} side="top">
                                 <span className="flex-shrink-0 rounded-full bg-cyan-400/10 px-2 py-0.5 text-[10px] font-medium text-cyan-200 ring-1 ring-inset ring-cyan-400/20">
-                                  {unlock.badgeName} badge
+                                  {unlock.accoladeName} accolade
                                 </span>
                               </Tooltip>
                             )}

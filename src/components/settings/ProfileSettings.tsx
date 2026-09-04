@@ -988,15 +988,18 @@ const ProfileSettings = () => {
 
   // How an atmosphere is earned, shown as the picker tooltip. Accolade-gated
   // ones only appear once earned, so this reads as "here's how you got it";
-  // named per badge so it points at the right accolade on the wall.
+  // named per accolade so it points at the right medallion on the wall. These
+  // are accolades (achievements), never "badges" (the chat cosmetics).
   const atmosphereUnlockNote = (a: Atmosphere): string | null => {
     if (a.unlock?.kind === 'accolade') {
-      const badges: Record<string, string> = {
+      const accolades: Record<string, string> = {
         semiquincentennial_2026: 'Semiquincentennial',
-        insomniac: 'Insomniac',
+        // Stored id is the original codename; the player-facing name is Restless.
+        insomniac: 'Restless',
+        cs2_major_cologne_2026: 'CS2 Major Cologne 2026',
       };
-      const badge = badges[a.unlock.accoladeId];
-      return badge ? `Unlocked by the ${badge} badge` : 'Unlocked by an achievement badge';
+      const name = accolades[a.unlock.accoladeId];
+      return name ? `Unlocked by the ${name} accolade` : 'Unlocked by an accolade';
     }
     if (a.unlock?.kind === 'subscriber') return 'Subscriber atmosphere';
     return null;
