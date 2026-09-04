@@ -1,3 +1,10 @@
+## [8.5.4] - 2026-09-03
+
+### 🐛 Bug Fixes
+- **Chat now connects on networks that block the old chat port.** Some internet providers, routers and security suites drop the port Twitch chat has always used, which left chat showing older messages and never updating. Chat falls back to Twitch's secure connection on the standard web port, remembers that it had to, and goes straight there next time.
+- **Age-restricted YouTube streams play when you are signed in.** A stream the anonymous request was refused for is retried with your YouTube session instead of stopping at a warning.
+- **Accolades are called accolades on your profile.** Unlock text said "badge", which is the chat cosmetic, and Restless appeared under its internal codename.
+
 ## [8.5.3] - 2026-09-02
 
 ## 🎉 New: Prism, a theme made of light
