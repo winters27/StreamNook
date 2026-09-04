@@ -11,46 +11,15 @@
 // folder at the repo root, so nothing here reaches a bundle either.
 import type { CosmeticCatalogEntry } from './supabaseService';
 
-// asset_path must be an absolute http(s) URL: resolveCosmeticAsset drops
-// anything else (a cloud badge is always a CDN URL), and the badge would
-// silently never render. A not-yet-uploaded candidate can use
-// `${location.origin}/dev-preview/<file>` on the dev server.
-
-// The Prism set's two badges. Values mirror the intended `cosmetics` rows;
-// when they ship, the rows are these objects with CDN URLs. Both marks are
-// tall and thin and the chat badge is a square box, so the shipping cuts are
-// the art ROTATED (Lumen 45 degrees, Facet 52) to a near-square bounding box;
-// rotation keeps every proportion, so nothing is stretched.
-export const DEV_COSMETICS: CosmeticCatalogEntry[] = [
-  {
-    slug: 'streamnook-facet',
-    name: 'Facet',
-    description: 'One face of the prism. Supporter badge of the Prism set.',
-    kind: 'badge',
-    asset_path: 'https://cdn.streamnook.app/badges/streamnook-facet.webp',
-    animated: false,
-    payment_type: null,
-    ko_fi_url: null,
-    stripe_url: null,
-    sort_order: 40,
-    is_active: true,
-    is_default: false,
-  },
-  {
-    slug: 'streamnook-lumen',
-    name: 'Lumen',
-    description: 'The light itself. Subscriber badge of the Prism set.',
-    kind: 'badge',
-    asset_path: 'https://cdn.streamnook.app/badges/streamnook-lumen.webp',
-    animated: false,
-    payment_type: null,
-    ko_fi_url: null,
-    stripe_url: null,
-    sort_order: 41,
-    is_active: true,
-    is_default: false,
-  },
-];
+// Empty between candidates. A dev entry REPLACES a live row of the same slug
+// on dev builds and counts as owned, so remove an entry the moment its real
+// row exists (Facet and Lumen shipped 2026-09-02 and were removed here the
+// same day). Shape of an entry: the `CosmeticCatalogEntry` exactly as its
+// future `cosmetics` row. asset_path must be an absolute http(s) URL:
+// resolveCosmeticAsset drops anything else and the badge would silently never
+// render; a not-yet-uploaded candidate can use
+// `${location.origin}/dev-preview/<file>` served by the Vite dev server.
+export const DEV_COSMETICS: CosmeticCatalogEntry[] = [];
 
 const DEV_SLUGS = new Set(DEV_COSMETICS.map((c) => c.slug));
 
