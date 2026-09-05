@@ -3400,3 +3400,64 @@ if (typeof window !== 'undefined') {
     }
   }) as EventListener);
 }
+
+// --- Dev-only chat flood injector -------------------------------------------
+//
+// window.__snChatFlood(channel, perSecond = 400, seconds = 10) pushes synthetic
+// structured messages through the real ingestion path (queueMessage ->
+// flushPending), so the rAF coalescer, the buffer policy and the message list
+// are exercised exactly as a live burst would exercise them: no second
+// coalescer, no bypass. Each message is a clone of the newest structured
+// message in the slice with a fresh id, content and timestamp, so badges and
+// the row layout render realistically. Resolves with { sent } when the burst
+// ends. Stripped from production builds by the DEV guard.
+if (import.meta.env.DEV && typeof window !== 'undefined') {
+  const FLOOD_LINES = [
+    'oh wow, groundbreaking gameplay, truly never seen anything like it before',
+    'that was a diff so hard it should honestly be studied, throw of the century',
+    '7TV genuinely carries this entire chat, the emotes are elite',
+    'best stream on twitch no cap, the chat never misses',
+    'LOL',
+    'W',
+  ];
+  (window as unknown as Record<string, unknown>).__snChatFlood = (
+    channel: string,
+    perSecond = 400,
+    seconds = 10,
+  ): Promise<{ sent: number }> => {
+    const key = channel.toLowerCase();
+    const slice = useChatConnectionStore.getState().channels.get(key);
+    if (!slice) return Promise.reject(new Error(`no slice for ${key}`));
+    const template = [...slice.messages]
+      .reverse()
+      .find((m) => typeof m === 'object' && m !== null && Array.isArray((m as { segments?: unknown }).segments));
+    if (!template) return Promise.reject(new Error('no structured message to clone'));
+    const total = Math.max(1, Math.round(perSecond * seconds));
+    const tickMs = 20;
+    const perTick = Math.max(1, Math.round(perSecond * tickMs / 1000));
+    let sent = 0;
+    return new Promise((resolve) => {
+      const timer = setInterval(() => {
+        for (let i = 0; i < perTick && sent < total; i++) {
+          const text = FLOOD_LINES[sent % FLOOD_LINES.length];
+          const now = Date.now();
+          const id = `flood-${now}-${sent}`;
+          const t = template as Record<string, unknown>;
+          queueMessage(key, {
+            ...t,
+            id,
+            content: text,
+            segments: [{ type: 'text', content: text }],
+            timestamp: String(now),
+            tags: { ...(t.tags as Record<string, unknown>), id, 'tmi-sent-ts': String(now) },
+          });
+          sent++;
+        }
+        if (sent >= total) {
+          clearInterval(timer);
+          resolve({ sent });
+        }
+      }, tickMs);
+    });
+  };
+}
