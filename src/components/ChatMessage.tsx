@@ -54,6 +54,25 @@ import {
 } from '../utils/emoteModifiers';
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
+
+// Lazy module loaders, kept at module scope on purpose: the dynamic import()
+// is what keeps these modules out of the chat popout's eager graph, and the
+// React Compiler cannot lower an import() expression inside a compiled
+// component, so the expression lives here and the component calls a plain
+// function.
+const loadInvoke = () => import('@tauri-apps/api/core').then((m) => m.invoke);
+const loadShellOpen = () => import('@tauri-apps/plugin-shell').then((m) => m.open);
+
+// Owns the try/catch for the moderation and pin handlers below. The compiler
+// cannot lower a conditional inside a try/catch in a compiled component, and
+// those handlers only need "run this, report if it throws".
+async function attempt(fn: () => Promise<void>, onError: (err: unknown) => void): Promise<void> {
+  try {
+    await fn();
+  } catch (err) {
+    onError(err);
+  }
+}
 // 7TV cosmetics have complex dynamic structures that vary by API version
 // Using 'any' is pragmatic here given the API complexity
 type SevenTVPaintWithSelection = any;
@@ -513,6 +532,103 @@ const EMPTY_THIRD_PARTY: ThirdPartyBadgeType[] = [];
 
 // Memoized ChatMessage component to prevent unnecessary re-renders
 // This is critical for preventing animation restarts when new messages arrive
+// A username rendered with its own cosmetics (gift recipients, sub-message
+// names). Module-level so it is a stable component with its own hooks; it
+// used to be declared inside ChatMessage's render, which remounted it on
+// every render and put hook calls inside a nested function.
+function UsernameWithCosmetics({
+  username,
+  userIdProp,
+  displayName,
+  userOverrides,
+  paintShadowMode,
+  onUsernameClick,
+}: {
+  username: string;
+  userIdProp: string | null;
+  displayName?: string;
+  userOverrides: Parameters<typeof getDisplayedName>[2];
+  paintShadowMode: Parameters<typeof computePaintStyle>[2];
+  onUsernameClick: ChatMessageProps['onUsernameClick'];
+}) {
+  const [userCosmetics, setUserCosmetics] = useState<{ badges: any[]; paints: any[] } | null>(null);
+  const [userBadges] = useState<Array<{ key: string; info: any }>>([]);
+
+  useEffect(() => {
+    if (!userIdProp) return;
+
+    let cancelled = false;
+
+    // Fetch 7TV cosmetics (with cache fallback)
+    getCosmeticsWithFallback(userIdProp).then((cosmetics) => {
+      if (cancelled || !cosmetics) return;
+      setUserCosmetics(cosmetics);
+    });
+
+    // Fetch Twitch badges - we don't have badge string from recipient, so skip for now
+    // Recipients will just show their 7TV cosmetics
+
+    return () => {
+      cancelled = true;
+    };
+  }, [userIdProp]);
+
+  const userPaint = userCosmetics?.paints.find((p) => p.selected);
+  const userBadge = userCosmetics?.badges.find((b) => b.selected);
+
+  // Resolve a per-recipient color: a manual override wins, else the user's
+  // real Twitch name color (batched Helix lookup), else Twitch purple. This
+  // is why a gift recipient no longer inherits the gifter's color.
+  const fetchedColor = useUserColor(userIdProp);
+  const recipientBaseColor = getColorOverride(userIdProp, userOverrides) ?? fetchedColor ?? '#9147FF';
+
+  const userStyle = useMemo(() => {
+    if (!userPaint) {
+      return { color: recipientBaseColor };
+    }
+    return computePaintStyle(userPaint, recipientBaseColor, paintShadowMode);
+  }, [userPaint, recipientBaseColor, paintShadowMode]);
+
+  return (
+    <span className="inline-flex items-center align-middle">
+      {userBadge && (
+        <span className="inline-flex items-center align-middle gap-1 mr-1">
+          <Tooltip content={userBadge.description || userBadge.name} side="top">
+            <img
+              src={getBadgeImageUrl(userBadge)}
+              alt={userBadge.description || userBadge.name}
+              className="sn-chat-badge inline-block"
+              onError={(e) => {
+                e.currentTarget.style.display = 'none';
+              }}
+            />
+          </Tooltip>
+        </span>
+      )}
+      <Tooltip content="Click to view profile" side="top">
+        <span
+          className="font-bold cursor-pointer hover:underline"
+          style={userStyle}
+          onClick={(e) => {
+            if (userIdProp && onUsernameClick) {
+              onUsernameClick(
+                userIdProp,
+                username,
+                displayName || username,
+                userStyle.color as string || '#9147FF',
+                userBadges,
+                e
+              );
+            }
+          }}
+        >
+          {getDisplayedName(userIdProp, displayName || username, userOverrides)}
+        </span>
+      </Tooltip>
+    </span>
+  );
+}
+
 const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, onReplyClick, isHighlighted = false, moderationContext = null, onEmoteRightClick, onMessageCopy, onUsernameRightClick, onBadgeClick, emotes, isModerator = false, broadcasterId }: ChatMessageProps) {
   // Field selectors, NOT a whole-store subscription. This component is mounted
   // once per chat row, so subscribing to the entire store made every row
@@ -588,8 +704,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
 
   // PHASE 3.1 - THE ENDGAME: Use pre-formatted timestamps from Rust
   // Zero Date parsing on main thread!
-  // IMPORTANT: This useMemo MUST be at the top before any conditional returns
-  const formattedTimestamp = useMemo(() => {
+  const formattedTimestamp = (() => {
     if (!chatDesign?.show_timestamps) return null;
 
     // Use pre-computed timestamps from Rust metadata
@@ -603,20 +718,24 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
     const tmiSentTs = parsed.tags.get('tmi-sent-ts');
     if (!tmiSentTs) return null;
 
+    // Read the setting outside the try: the compiler cannot lower an optional
+    // chain inside a try/catch, and the value does not depend on the parse.
+    const withSeconds = !!chatDesign?.show_timestamp_seconds;
+    const locale = navigator.language || undefined;
     try {
       const date = new Date(parseInt(tmiSentTs, 10));
       const options: Intl.DateTimeFormatOptions = {
         hour: 'numeric',
         minute: '2-digit',
       };
-      if (chatDesign?.show_timestamp_seconds) {
+      if (withSeconds) {
         options.second = '2-digit';
       }
-      return date.toLocaleTimeString(navigator.language || undefined, options);
+      return date.toLocaleTimeString(locale, options);
     } catch {
       return null;
     }
-  }, [chatDesign?.show_timestamps, chatDesign?.show_timestamp_seconds, parsed.metadata, parsed.tags]);
+  })();
 
   // Computed in-render via useMemo rather than via useEffect+useState — the
   // previous useEffect pattern meant the FIRST render of a new message
@@ -752,8 +871,8 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
     // Falls back to the first saved reason, so the common case needs no typing.
     const saved = useAppStore.getState().settings.moderation?.saved_ban_reasons?.[0]?.trim();
     const reason = (reasonOverride ?? saved ?? '').trim() || null;
-    try {
-      const { invoke } = await import('@tauri-apps/api/core');
+    await attempt(async () => {
+      const invoke = await loadInvoke();
       if (parsed.provider === 'kick') {
         if (!providerUserId || !broadcasterId) return;
         const durationMinutes =
@@ -778,16 +897,16 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
         if (!targetUserId) return;
         await invoke('ban_user', { broadcasterId, targetUserId, duration: durationSeconds, reason });
       }
-    } catch (err) {
+    }, (err) => {
       Logger.error('[ChatMessage] mod ban/timeout failed:', err);
-    }
+    });
   };
 
   // Provider-aware delete. Twitch -> Helix `delete_chat_message`; Kick ->
   // `kick_delete_message` (DELETE /public/v1/chat/{id}).
   const modDelete = async (messageId: string) => {
-    try {
-      const { invoke } = await import('@tauri-apps/api/core');
+    await attempt(async () => {
+      const invoke = await loadInvoke();
       if (parsed.provider === 'kick') {
         await invoke('kick_delete_message', { messageId });
       } else if (parsed.provider === 'youtube') {
@@ -798,9 +917,9 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
       } else {
         await invoke('delete_chat_message', { broadcasterId, messageId });
       }
-    } catch (err) {
+    }, (err) => {
       Logger.error('[ChatMessage] delete failed:', err);
-    }
+    });
   };
 
   // Link preview cards. Allowlisted hosts (YouTube, Twitch, imgur, etc.) auto-
@@ -916,42 +1035,35 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
   // hovered. Keyboard and drag moderation don't need this DOM (verified:
   // ChatModController invokes commands directly; drags target data-message-id).
   const [hoverArmed, setHoverArmed] = useState(false);
-  const [isMentioned, setIsMentioned] = useState(false);
-  const [isReplyToMe, setIsReplyToMe] = useState(false);
   const highlightPhrases = chatHighlights?.phrases;
   const highlightUsers = chatHighlights?.users;
   const highlightBadges = chatHighlights?.badges;
 
-  // PHASE 3.1d - OPTIMIZED: Check if this message mentions the current user or is a reply to them
-  // NO REGEX - simple case-insensitive string check is much faster
-  useEffect(() => {
-    if (!currentUser) return;
-
-    // Optimized: Use case-insensitive indexOf instead of RegExp creation
-    // This avoids creating a new RegExp object for every message
+  // Does this message mention the current user, or reply to them? Derived
+  // during render (it is a pure function of the message and the user), so
+  // the first paint of a row already carries its highlight instead of
+  // flashing plain and then re-rendering once an effect had run. Simple
+  // case-insensitive indexOf: no RegExp allocation per message.
+  const { isMentioned, isReplyToMe } = useMemo(() => {
+    if (!currentUser) return { isMentioned: false, isReplyToMe: false };
     const mentionTarget = `@${currentUser.username.toLowerCase()}`;
     const contentLower = parsed.content.toLowerCase();
     const mentionIndex = contentLower.indexOf(mentionTarget);
-
-    // Check for word boundary after mention (space, punctuation, or end of string)
     let mentioned = false;
     if (mentionIndex !== -1) {
       const afterIndex = mentionIndex + mentionTarget.length;
       if (afterIndex >= contentLower.length) {
-        // Mention at end of string
         mentioned = true;
       } else {
         const charAfter = contentLower[afterIndex];
-        // Word boundary: space, punctuation, or non-alphanumeric
+        // Word boundary: space, punctuation, or non-alphanumeric.
         mentioned = /[\s.,!?:;'")\]}>]/.test(charAfter) || !/[a-z0-9_]/.test(charAfter);
       }
     }
-    setIsMentioned(mentioned);
-
-    // Check if this is a reply to the current user
-    const replyUserId = parsed.replyInfo?.parentUserId;
-    const isReply = replyUserId === currentUser.user_id;
-    setIsReplyToMe(isReply);
+    return {
+      isMentioned: mentioned,
+      isReplyToMe: parsed.replyInfo?.parentUserId === currentUser.user_id,
+    };
   }, [parsed.content, parsed.replyInfo, currentUser]);
 
   // User-defined highlight phrases. Computed synchronously so sound playback
@@ -999,10 +1111,9 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
       cooldownMs: phraseMatch.cooldown_ms,
       sentAtMs: Number.isFinite(sentTs) ? sentTs : null,
     });
-    // Only fire once per mount per match — phraseMatch is memoized so this
-    // effect only re-runs when the message itself changes.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [phraseMatch]);
+    // phraseMatch is memoized on the message and the highlight settings, and
+    // parsed.tags is fixed for the row, so this still fires once per match.
+  }, [phraseMatch, parsed.tags]);
 
   // Window-title flash. Fires on any highlight match (phrase/user/badge) when
   // the user has opted in globally AND the window is currently blurred.
@@ -1018,8 +1129,9 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
     if (Number.isFinite(sentTs) && Date.now() - sentTs > 5000) return;
     const who = parsed.tags.get('display-name') || parsed.tags.get('login') || 'chat';
     flashTitle(`${who}: highlight`);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [phraseMatch]);
+    // Toggling the setting can re-run this for a row under five seconds old;
+    // the backfill guard above bounds that to one flash.
+  }, [phraseMatch, parsed.tags, chatHighlights?.appearance?.flash_title_when_unfocused]);
 
   // All cosmetic resolution (paint, 7TV badge, third-party badges) lives in
   // chatUserStore.addUser. ChatMessage just subscribes via the selectors
@@ -1716,7 +1828,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
               e.preventDefault();
               try {
                 // Use Tauri's shell plugin to open URL in default browser
-                const { open } = await import('@tauri-apps/plugin-shell');
+                const open = await loadShellOpen();
                 await open(url);
               } catch (err) {
                 Logger.error('[ChatMessage] Failed to open URL:', err);
@@ -1902,26 +2014,14 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
   useEffect(() => {
     if (!isFromSharedChat || !sourceRoomId) return;
 
-    // Check if we already have it in cache
-    if (channelNameCache.has(sourceRoomId)) {
-      const cachedName = channelNameCache.get(sourceRoomId);
-      if (cachedName && cachedName !== fetchedChannelName) {
-        setFetchedChannelName(cachedName);
-      }
-    }
-
-    if (channelProfileImageCache.has(sourceRoomId)) {
-      const cachedImage = channelProfileImageCache.get(sourceRoomId);
-      if (cachedImage && cachedImage !== channelProfileImage) {
-        setChannelProfileImage(cachedImage);
-      }
-      return;
-    }
+    // Both caches were read by the state initializers (sourceRoomId is fixed
+    // for a row), so a cache hit means there is nothing to fetch.
+    if (channelProfileImageCache.has(sourceRoomId)) return;
 
     let isMounted = true;
 
     // Fetch the channel name and profile image
-    import('@tauri-apps/api/core').then(({ invoke }) => {
+    loadInvoke().then((invoke) => {
       invoke<any>('get_user_by_id', { userId: sourceRoomId })
         .then((user) => {
           if (!isMounted) return;
@@ -1950,7 +2050,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
   // Handle bits cheers
   if (isBitsCheer) {
     // Generate a unique key based on message ID to prevent animation restarts
-    const messageId = parsed.tags.get('id') || `bits-${parsed.username}-${Date.now()}`;
+    const messageId = parsed.tags.get('id') || `bits-${parsed.username}-${parsed.tags.get('tmi-sent-ts') ?? ''}`;
     const bitsCount = parseInt(bitsAmount!, 10);
 
     // Format bits count with commas for readability
@@ -2015,27 +2115,6 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
     const renderBadges = () => {
       const senderUserId = parsed.tags.get('user-id');
       const isSN = isStreamNookUser(senderUserId);
-      if (import.meta.env.DEV && typeof window !== 'undefined') {
-        const w = window as any;
-        if (!w.__snChatDebug) w.__snChatDebug = { totalCalls: 0, uniqueSenders: [], snHits: [], last10: [] };
-        w.__snChatDebug.totalCalls++;
-        w.__snChatDebug.last10.push({ senderUserId, isSN, displayName: parsed.tags.get('display-name') });
-        if (w.__snChatDebug.last10.length > 10) w.__snChatDebug.last10.shift();
-        if (!w.__snChatDebug.uniqueSenders.some((s: any) => s.senderUserId === senderUserId)) {
-          w.__snChatDebug.uniqueSenders.push({
-            senderUserId,
-            isSN,
-            displayName: parsed.tags.get('display-name'),
-          });
-        }
-        if (isSN) {
-          w.__snChatDebug.snHits.push({
-            senderUserId,
-            displayName: parsed.tags.get('display-name'),
-            at: new Date().toISOString(),
-          });
-        }
-      }
 
       if (parsed.badges.length === 0 && !seventvBadge && thirdPartyBadges.length === 0 && !isSN) return null;
 
@@ -2136,7 +2215,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
   // Handle charity donations
   if (isDonation) {
     // Generate a unique key based on message ID to prevent animation restarts
-    const messageId = parsed.tags.get('id') || `donation-${parsed.username}-${Date.now()}`;
+    const messageId = parsed.tags.get('id') || `donation-${parsed.username}-${parsed.tags.get('tmi-sent-ts') ?? ''}`;
 
     // Get donation details
     const charityName = parsed.tags.get('msg-param-charity-name')?.replace(/\\s/g, ' ');
@@ -2206,27 +2285,6 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
     const renderBadges = () => {
       const senderUserId = parsed.tags.get('user-id');
       const isSN = isStreamNookUser(senderUserId);
-      if (import.meta.env.DEV && typeof window !== 'undefined') {
-        const w = window as any;
-        if (!w.__snChatDebug) w.__snChatDebug = { totalCalls: 0, uniqueSenders: [], snHits: [], last10: [] };
-        w.__snChatDebug.totalCalls++;
-        w.__snChatDebug.last10.push({ senderUserId, isSN, displayName: parsed.tags.get('display-name') });
-        if (w.__snChatDebug.last10.length > 10) w.__snChatDebug.last10.shift();
-        if (!w.__snChatDebug.uniqueSenders.some((s: any) => s.senderUserId === senderUserId)) {
-          w.__snChatDebug.uniqueSenders.push({
-            senderUserId,
-            isSN,
-            displayName: parsed.tags.get('display-name'),
-          });
-        }
-        if (isSN) {
-          w.__snChatDebug.snHits.push({
-            senderUserId,
-            displayName: parsed.tags.get('display-name'),
-            at: new Date().toISOString(),
-          });
-        }
-      }
 
       if (parsed.badges.length === 0 && !seventvBadge && thirdPartyBadges.length === 0 && !isSN) return null;
 
@@ -2301,11 +2359,9 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
                   <button
                     onClick={async () => {
                       try {
-                        const { useAppStore } = await import('../stores/AppStore');
                         await useAppStore.getState().startStream(fetchedChannelName);
                       } catch (err) {
                         Logger.error('[ChatMessage] Failed to switch to shared channel:', err);
-                        const { useAppStore } = await import('../stores/AppStore');
                         useAppStore.getState().addToast(`Failed to switch to ${fetchedChannelName}'s stream`, 'error');
                       }
                     }}
@@ -2373,7 +2429,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
   // Handle watch streak milestone messages
   if (isWatchStreak) {
     // Generate a unique key based on message ID to prevent animation restarts
-    const messageId = parsed.tags.get('id') || `watchstreak-${parsed.username}-${Date.now()}`;
+    const messageId = parsed.tags.get('id') || `watchstreak-${parsed.username}-${parsed.tags.get('tmi-sent-ts') ?? ''}`;
 
     // Get watch streak details
     const streakValue = parsed.tags.get('msg-param-value'); // Number of consecutive streams
@@ -2412,27 +2468,6 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
     const renderBadges = () => {
       const senderUserId = parsed.tags.get('user-id');
       const isSN = isStreamNookUser(senderUserId);
-      if (import.meta.env.DEV && typeof window !== 'undefined') {
-        const w = window as any;
-        if (!w.__snChatDebug) w.__snChatDebug = { totalCalls: 0, uniqueSenders: [], snHits: [], last10: [] };
-        w.__snChatDebug.totalCalls++;
-        w.__snChatDebug.last10.push({ senderUserId, isSN, displayName: parsed.tags.get('display-name') });
-        if (w.__snChatDebug.last10.length > 10) w.__snChatDebug.last10.shift();
-        if (!w.__snChatDebug.uniqueSenders.some((s: any) => s.senderUserId === senderUserId)) {
-          w.__snChatDebug.uniqueSenders.push({
-            senderUserId,
-            isSN,
-            displayName: parsed.tags.get('display-name'),
-          });
-        }
-        if (isSN) {
-          w.__snChatDebug.snHits.push({
-            senderUserId,
-            displayName: parsed.tags.get('display-name'),
-            at: new Date().toISOString(),
-          });
-        }
-      }
 
       if (parsed.badges.length === 0 && !seventvBadge && thirdPartyBadges.length === 0 && !isSN) return null;
 
@@ -2533,7 +2568,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
 
   if (isSubscription) {
     // Generate a unique key based on message ID to prevent animation restarts
-    const messageId = parsed.tags.get('id') || `sub-${parsed.username}-${Date.now()}`;
+    const messageId = parsed.tags.get('id') || `sub-${parsed.username}-${parsed.tags.get('tmi-sent-ts') ?? ''}`;
 
     // Get subscription details
     const subMsgId = parsed.tags.get('msg-id');
@@ -2550,27 +2585,6 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
     const renderBadges = () => {
       const senderUserId = parsed.tags.get('user-id');
       const isSN = isStreamNookUser(senderUserId);
-      if (import.meta.env.DEV && typeof window !== 'undefined') {
-        const w = window as any;
-        if (!w.__snChatDebug) w.__snChatDebug = { totalCalls: 0, uniqueSenders: [], snHits: [], last10: [] };
-        w.__snChatDebug.totalCalls++;
-        w.__snChatDebug.last10.push({ senderUserId, isSN, displayName: parsed.tags.get('display-name') });
-        if (w.__snChatDebug.last10.length > 10) w.__snChatDebug.last10.shift();
-        if (!w.__snChatDebug.uniqueSenders.some((s: any) => s.senderUserId === senderUserId)) {
-          w.__snChatDebug.uniqueSenders.push({
-            senderUserId,
-            isSN,
-            displayName: parsed.tags.get('display-name'),
-          });
-        }
-        if (isSN) {
-          w.__snChatDebug.snHits.push({
-            senderUserId,
-            displayName: parsed.tags.get('display-name'),
-            at: new Date().toISOString(),
-          });
-        }
-      }
 
       if (parsed.badges.length === 0 && !seventvBadge && thirdPartyBadges.length === 0 && !isSN) return null;
 
@@ -2621,94 +2635,6 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
             </Tooltip>
           ))}
           {isSN && <StreamNookBadge userId={senderUserId} userNumber={getStreamNookUserNumber(senderUserId)} />}
-        </span>
-      );
-    };
-
-    // Component to render a username with its own cosmetics
-    const UsernameWithCosmetics = ({
-      username,
-      userIdProp,
-      displayName
-    }: {
-      username: string;
-      userIdProp: string | null;
-      displayName?: string;
-    }) => {
-      const [userCosmetics, setUserCosmetics] = useState<{ badges: any[]; paints: any[] } | null>(null);
-      const [userBadges] = useState<Array<{ key: string; info: any }>>([]);
-
-      useEffect(() => {
-        if (!userIdProp) return;
-
-        let cancelled = false;
-
-        // Fetch 7TV cosmetics (with cache fallback)
-        getCosmeticsWithFallback(userIdProp).then((cosmetics) => {
-          if (cancelled || !cosmetics) return;
-          setUserCosmetics(cosmetics);
-        });
-
-        // Fetch Twitch badges - we don't have badge string from recipient, so skip for now
-        // Recipients will just show their 7TV cosmetics
-
-        return () => {
-          cancelled = true;
-        };
-      }, [userIdProp]);
-
-      const userPaint = userCosmetics?.paints.find((p) => p.selected);
-      const userBadge = userCosmetics?.badges.find((b) => b.selected);
-
-      // Resolve a per-recipient color: a manual override wins, else the user's
-      // real Twitch name color (batched Helix lookup), else Twitch purple. This
-      // is why a gift recipient no longer inherits the gifter's color.
-      const fetchedColor = useUserColor(userIdProp);
-      const recipientBaseColor = getColorOverride(userIdProp, userOverrides) ?? fetchedColor ?? '#9147FF';
-
-      const userStyle = useMemo(() => {
-        if (!userPaint) {
-          return { color: recipientBaseColor };
-        }
-        return computePaintStyle(userPaint, recipientBaseColor, paintShadowMode);
-      }, [userPaint, recipientBaseColor, paintShadowMode]);
-
-      return (
-        <span className="inline-flex items-center align-middle">
-          {userBadge && (
-            <span className="inline-flex items-center align-middle gap-1 mr-1">
-              <Tooltip content={userBadge.description || userBadge.name} side="top">
-                <img
-                  src={getBadgeImageUrl(userBadge)}
-                  alt={userBadge.description || userBadge.name}
-                  className="sn-chat-badge inline-block"
-                  onError={(e) => {
-                    e.currentTarget.style.display = 'none';
-                  }}
-                />
-              </Tooltip>
-            </span>
-          )}
-          <Tooltip content="Click to view profile" side="top">
-            <span
-              className="font-bold cursor-pointer hover:underline"
-              style={userStyle}
-              onClick={(e) => {
-                if (userIdProp && onUsernameClick) {
-                  onUsernameClick(
-                    userIdProp,
-                    username,
-                    displayName || username,
-                    userStyle.color as string || '#9147FF',
-                    userBadges,
-                    e
-                  );
-                }
-              }}
-            >
-              {getDisplayedName(userIdProp, displayName || username, userOverrides)}
-            </span>
-          </Tooltip>
         </span>
       );
     };
@@ -2782,6 +2708,9 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
               username={recipientUserName}
               userIdProp={recipientUserId}
               displayName={recipientDisplayName}
+              userOverrides={userOverrides}
+              paintShadowMode={paintShadowMode}
+              onUsernameClick={onUsernameClick}
             />
           );
         } else {
@@ -2841,13 +2770,11 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
                 <button
                   onClick={async () => {
                     try {
-                      const { useAppStore } = await import('../stores/AppStore');
 
                       // Use the startStream method to switch to the shared channel
                       await useAppStore.getState().startStream(fetchedChannelName);
                     } catch (err) {
                       Logger.error('[ChatMessage] Failed to switch to shared channel:', err);
-                      const { useAppStore } = await import('../stores/AppStore');
                       useAppStore.getState().addToast(`Failed to switch to ${fetchedChannelName}'s stream`, 'error');
                     }
                   }}
@@ -2888,7 +2815,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
                 </span>
                 {(giftRecipientsExpanded ? giftRecipients : giftRecipients.slice(0, 8)).map((r, i, arr) => (
                   <span key={r.userId}>
-                    <UsernameWithCosmetics username={r.userName} userIdProp={r.userId} displayName={r.displayName} />
+                    <UsernameWithCosmetics username={r.userName} userIdProp={r.userId} displayName={r.displayName} userOverrides={userOverrides} paintShadowMode={paintShadowMode} onUsernameClick={onUsernameClick} />
                     {i < arr.length - 1 ? <span>, </span> : null}
                   </span>
                 ))}
@@ -2917,7 +2844,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
   // Handle system messages directly to apply strict yellow styling without username
   if (isSystemMessage) {
     const eventPadding = calculateHalfPadding(chatDesign?.message_spacing ?? 8);
-    const messageId = parsed.tags.get('id') || `system-${Date.now()}`;
+    const messageId = parsed.tags.get('id') || `system-${parsed.tags.get('tmi-sent-ts') ?? parsed.content.slice(0, 40)}`;
     
     return (
       <div 
@@ -3002,28 +2929,6 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
   // mentions, and the user's own outgoing messages) flows through the JSX below.
   const senderUserId = parsed.tags.get('user-id');
   const isSN = isStreamNookUser(senderUserId);
-  if (import.meta.env.DEV && typeof window !== 'undefined') {
-    const w = window as any;
-    if (!w.__snChatDebug) w.__snChatDebug = { totalCalls: 0, uniqueSenders: [], snHits: [], last10: [] };
-    w.__snChatDebug.totalCalls++;
-    w.__snChatDebug.last10.push({ senderUserId, isSN, displayName: parsed.tags.get('display-name'), path: 'regular' });
-    if (w.__snChatDebug.last10.length > 10) w.__snChatDebug.last10.shift();
-    if (!w.__snChatDebug.uniqueSenders.some((s: any) => s.senderUserId === senderUserId)) {
-      w.__snChatDebug.uniqueSenders.push({
-        senderUserId,
-        isSN,
-        displayName: parsed.tags.get('display-name'),
-      });
-    }
-    if (isSN) {
-      w.__snChatDebug.snHits.push({
-        senderUserId,
-        displayName: parsed.tags.get('display-name'),
-        at: new Date().toISOString(),
-        path: 'regular',
-      });
-    }
-  }
 
   // Global highlight appearance — applies to BOTH built-in event highlights
   // and the phrase/user/badge match (phraseMatch). Defaults preserve prior
@@ -3244,7 +3149,6 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
                     onClick={async () => {
                       if (fetchedChannelName) {
                         try {
-                          const { useAppStore } = await import('../stores/AppStore');
                           await useAppStore.getState().startStream(fetchedChannelName);
                         } catch (err) {
                           Logger.error('[ChatMessage] Failed to switch to shared channel:', err);
@@ -3494,8 +3398,8 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
                 onClick={async (e) => {
                   e.preventDefault();
                   if (!thisMessageId) return;
-                  try {
-                    const { invoke } = await import('@tauri-apps/api/core');
+                  await attempt(async () => {
+                    const invoke = await loadInvoke();
                     if (isThisPinned) {
                       await invoke('unpin_chat_message', { broadcasterId, messageId: thisMessageId });
                       useAppStore.getState().addToast('Unpinned message', 'success');
@@ -3504,10 +3408,10 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
                       useAppStore.getState().addToast('Pinned message', 'success');
                     }
                     usePinStore.getState().requestRefresh();
-                  } catch (err) {
+                  }, (err) => {
                     Logger.error('[ChatMessage] Pin/unpin failed:', err);
                     useAppStore.getState().addToast(isThisPinned ? "Couldn't unpin that message" : "Couldn't pin that message", 'error');
-                  }
+                  });
                 }}
                 className={`p-1.5 rounded-md transition-colors ${isThisPinned ? 'text-accent hover:text-error hover:bg-error/15' : 'text-white/50 hover:text-accent hover:bg-accent/15'}`}
               >

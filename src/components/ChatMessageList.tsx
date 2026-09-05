@@ -578,9 +578,9 @@ const ChatMessageList = memo(function ChatMessageList({
       onTouchMove={handleTouchMove}
       style={{
         overflowAnchor: 'auto',
-        ['--sn-emote-scale' as string]: emoteScale,
-        ['--sn-emote-margin' as string]: `${emoteMargin}rem`,
-      }}
+        '--sn-emote-scale': emoteScale,
+        '--sn-emote-margin': `${emoteMargin}rem`,
+      } as React.CSSProperties}
     >
       {/* Messages container with native virtualization - pt-10 for header */}
       <div ref={contentRef} className={`flex flex-col min-h-full justify-end pt-10${chatDesign?.alternating_backgrounds ? ' chat-striped' : ''}`}>
