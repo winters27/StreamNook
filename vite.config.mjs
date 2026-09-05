@@ -8,8 +8,11 @@ import { visualizer } from 'rollup-plugin-visualizer';
 const REACT_COMPILER_SOURCES = [
   '/src/components/ChatMessage.tsx',
   '/src/components/ChatMessageList.tsx',
+  '/src/components/PlayerStatsOverlay.tsx',
+  '/src/components/chat/',
+  '/src/components/multichat/',
   '/src/components/settings/',
-  '/src/components/ui/Toggle.tsx',
+  '/src/components/ui/',
 ];
 // Inside the list but not yet clean under eslint-plugin-react-hooks 7.1
 // (optimistic grants in effects, a DOM lookup after mount). Kept out until
@@ -18,6 +21,10 @@ const REACT_COMPILER_EXCLUDES = [
   '/src/components/settings/ProfileSettings.tsx',
   '/src/components/settings/ProfileOverview.tsx',
   '/src/components/settings/PluginsSettings.tsx',
+  // Incremental multi-channel merge kept in refs and mutated during render:
+  // a deliberate cache the compiler's rules forbid; moving it into the store
+  // is design work, not mechanics.
+  '/src/components/multichat/BlendedChatPane.tsx',
 ];
 
 // https://vitejs.dev/config/

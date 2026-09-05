@@ -1,4 +1,4 @@
-import React, { useRef, useEffect, useId } from "react";
+import React, { useEffect, useId } from "react";
 import { useTooltipStore } from "../../stores/TooltipStore";
 
 /** The props the tooltip reads from, and injects into, its single child. */
@@ -31,24 +31,31 @@ export const Tooltip: React.FC<TooltipProps> = ({
   disabled = false,
   containerClassName,
 }) => {
-  const showTooltip = useTooltipStore(state => state.showTooltip);
-  const hideTooltip = useTooltipStore(state => state.hideTooltip);
-  const timeoutRef = useRef<NodeJS.Timeout | null>(null);
+  // Actions are stable for the store's lifetime, so these selectors never
+  // re-render. (Reading them via useTooltipStore.getState() at render level
+  // reads as "passing a hook around" to the compiler, which then skips the
+  // component.) The hover-delay timer lives in the store, keyed by this id,
+  // so the component holds no ref and every handler below is a plain
+  // event handler.
+  const showTooltip = useTooltipStore((s) => s.showTooltip);
+  const hideTooltip = useTooltipStore((s) => s.hideTooltip);
+  const scheduleShow = useTooltipStore((s) => s.scheduleShow);
+  const cancelShow = useTooltipStore((s) => s.cancelShow);
   const tooltipId = useId();
 
   useEffect(() => {
     return () => {
-      if (timeoutRef.current) clearTimeout(timeoutRef.current);
+      cancelShow(tooltipId);
       hideTooltip(tooltipId);
     };
-  }, [hideTooltip, tooltipId]);
+  }, [cancelShow, hideTooltip, tooltipId]);
 
   useEffect(() => {
     if (disabled || !content) {
-      if (timeoutRef.current) clearTimeout(timeoutRef.current);
+      cancelShow(tooltipId);
       hideTooltip(tooltipId);
     }
-  }, [disabled, content, hideTooltip, tooltipId]);
+  }, [disabled, content, cancelShow, hideTooltip, tooltipId]);
 
   if (disabled || !content) {
     return children;
@@ -59,25 +66,23 @@ export const Tooltip: React.FC<TooltipProps> = ({
     if (children.props.onMouseEnter) {
       children.props.onMouseEnter(e);
     }
-    
-    if (timeoutRef.current) clearTimeout(timeoutRef.current);
-    
+
     // Store reference to element synchronously because e.currentTarget becomes null after event bubbling
     const targetElement = e.currentTarget as HTMLElement;
-    
-    timeoutRef.current = setTimeout(() => {
+
+    scheduleShow(tooltipId, delay, () => {
       const rect = targetElement.getBoundingClientRect();
       showTooltip(tooltipId, content, rect, side, containerClassName);
       // It's okay, if we hover over something else, the store overrides it.
-    }, delay);
+    });
   };
 
   const handleMouseLeave = (e: React.MouseEvent) => {
     if (children.props.onMouseLeave) {
       children.props.onMouseLeave(e);
     }
-    
-    if (timeoutRef.current) clearTimeout(timeoutRef.current);
+
+    cancelShow(tooltipId);
     hideTooltip(tooltipId);
   };
 
@@ -97,11 +102,6 @@ export const Tooltip: React.FC<TooltipProps> = ({
     hideTooltip(tooltipId);
   };
 
-  // The handlers below read timeoutRef only when a DOM event fires. The
-  // compiler cannot see through cloneElement, so passing them here looks like
-  // a render-time ref read; it is not. Nothing in this object runs during
-  // render.
-  // eslint-disable-next-line react-hooks/refs
   return React.cloneElement(children, {
     onMouseEnter: handleMouseEnter,
     onMouseLeave: handleMouseLeave,

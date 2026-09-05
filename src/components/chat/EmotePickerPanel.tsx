@@ -329,21 +329,24 @@ export function EmotePickerPanel({
   onManageEmotes,
   className,
 }: EmotePickerPanelProps) {
-  const [mounted, setMounted] = useState(false);
-  const [fullyClosed, setFullyClosed] = useState(true);
+  const [mounted, setMounted] = useState(open);
+  const [fullyClosed, setFullyClosed] = useState(!open);
+  // Opening mounts the panel and cancels "fully closed" during render
+  // (adjust-state-on-prop-change), so the first open frame already has it.
+  const [seenOpen, setSeenOpen] = useState(open);
+  if (open !== seenOpen) {
+    setSeenOpen(open);
+    if (open) {
+      setMounted(true);
+      setFullyClosed(false);
+    }
+  }
   const [selectedProvider, setSelectedProvider] = useState<ProviderTab>(
     isTwitch ? 'twitch' : isKick ? 'kick' : isYouTube ? 'youtube' : 'emoji',
   );
   const [searchQuery, setSearchQuery] = useState('');
   const [favoriteEmotes, setFavoriteEmotes] = useState<Emote[]>([]);
   const scrollRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (open) {
-      setMounted(true);
-      setFullyClosed(false);
-    }
-  }, [open]);
 
   // Aggressive disk caching while the picker is open; polite trickle on close.
   useEffect(() => {

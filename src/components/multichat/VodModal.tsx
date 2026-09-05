@@ -60,10 +60,18 @@ function VodModalInner({
 
   // Resolve the VOD to a localhost HLS URL via the shared relay. Stop the relay on
   // close — in chat-only mode it was ours (main is closed, no other consumer).
-  useEffect(() => {
-    let cancelled = false;
+  // A new url or quality is a new playback: clear the old source during
+  // render so a stale frame never paints under the new request.
+  const playbackKey = `${url}|${quality}`;
+  const [seenPlaybackKey, setSeenPlaybackKey] = useState(playbackKey);
+  if (playbackKey !== seenPlaybackKey) {
+    setSeenPlaybackKey(playbackKey);
     setSrc(null);
     setError(false);
+  }
+
+  useEffect(() => {
+    let cancelled = false;
     invoke<StreamStartResult>('start_stream', { url, quality })
       .then((r) => {
         if (!cancelled) setSrc(r.url);

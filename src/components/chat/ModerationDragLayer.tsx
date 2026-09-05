@@ -94,10 +94,9 @@ export default function ModerationDragLayer() {
   // horizontally just left of the chat panel when chat is right-docked (else
   // screen-centered). Measured in a layout effect so it never flashes elsewhere.
   useLayoutEffect(() => {
-    if (!dragged) {
-      setAnchorStyle(null);
-      return;
-    }
+    // Nothing to measure without a drag; the render below hides the stale
+    // anchor itself, and the next drag re-measures before paint.
+    if (!dragged) return;
     const panel = document.querySelector('[data-chat-panel]') as HTMLElement | null;
     const rect = panel?.getBoundingClientRect();
 
@@ -114,6 +113,11 @@ export default function ModerationDragLayer() {
         : null;
       const msgRect = msgEl?.getBoundingClientRect();
       const anchorY = msgRect && msgRect.height > 0 ? msgRect.top : origin.y;
+      // Layout measurement: read the message row's position after layout and
+      // commit the anchor before paint. The synchronous second render is the
+      // point of useLayoutEffect here. (This keeps the layer out of the
+      // compiler; it only renders while a message is being dragged.)
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setAnchorStyle({ top: Math.max(8, anchorY - 10), left: cx, transform: 'translate(-50%, -100%)' });
       return;
     }
@@ -479,7 +483,7 @@ export default function ModerationDragLayer() {
           bigger, translucent tiles, clamped to sit above the player controls.
           Above chat: a compact triangle of opaque tiles where room is tight. */}
       {buckets.length > 0 && (
-      <div className="fixed pointer-events-none" style={anchorStyle ?? undefined}>
+      <div className="fixed pointer-events-none" style={(dragged ? anchorStyle : null) ?? undefined}>
         <motion.div
           ref={columnRef}
           initial={{ scale: 0.92, opacity: 0 }}

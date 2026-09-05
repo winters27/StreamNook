@@ -43,8 +43,11 @@ export default tseslint.config(
     ignores: [
       'src/components/ChatMessage.tsx',
       'src/components/ChatMessageList.tsx',
+      'src/components/PlayerStatsOverlay.tsx',
+      'src/components/chat/**',
+      'src/components/multichat/**',
       'src/components/settings/**',
-      'src/components/ui/Toggle.tsx',
+      'src/components/ui/**',
     ],
     rules: {
       'react-hooks/static-components': 'warn',
@@ -66,10 +69,12 @@ export default tseslint.config(
       'src/components/settings/ProfileSettings.tsx',
       'src/components/settings/ProfileOverview.tsx',
       'src/components/settings/PluginsSettings.tsx',
+      'src/components/multichat/BlendedChatPane.tsx',
     ],
     rules: {
       'react-hooks/immutability': 'warn',
       'react-hooks/set-state-in-effect': 'warn',
+      'react-hooks/refs': 'warn',
     },
   },
   // Allow console in these specific files (they wrap console intentionally)

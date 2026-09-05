@@ -608,9 +608,9 @@ export default function MultiChatWindow() {
     [moderatedTwitch, modChannel, activeModEntry],
   );
   const modEmotes = useChannelEmotes(modChannelEntry?.channel ?? null, modChannelEntry?.channelId ?? null, 'twitch');
-  useEffect(() => {
-    if (modsMode && moderatedTwitch.length === 0) setModsMode(false);
-  }, [modsMode, moderatedTwitch.length]);
+  // Mods mode cannot outlive the last moderated channel; adjusted during
+  // render so the segmented control never paints a dead selection.
+  if (modsMode && moderatedTwitch.length === 0) setModsMode(false);
   // Keep every open moderated channel's room connected in the background so the
   // Mods toggle and the picker can show per-channel unread without opening them.
   const moderatedIdsKey = useMemo(
@@ -1688,13 +1688,15 @@ export default function MultiChatWindow() {
     showActivityFeed,
     showModLogs,
   });
-  goLiveSnapshotRef.current = {
-    sources: channels,
-    blended: isBlendedMode,
-    layoutMode,
-    showActivityFeed,
-    showModLogs,
-  };
+  useEffect(() => {
+    goLiveSnapshotRef.current = {
+      sources: channels,
+      blended: isBlendedMode,
+      layoutMode,
+      showActivityFeed,
+      showModLogs,
+    };
+  });
   // Going live makes MultiChat the standalone surface: fully CLOSE the main app
   // window to free its memory (its ~350MB webview shell + player), leaving only
   // this popout. Anything that later needs main (badge overlay, profile viewer,
