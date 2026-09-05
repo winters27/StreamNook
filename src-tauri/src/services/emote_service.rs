@@ -1,5 +1,5 @@
 use anyhow::Result;
-use log::{debug, error};
+use log::{debug, error, warn};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -1153,11 +1153,22 @@ impl EmoteService {
                 .await
             {
                 Some(response) => {
-                    // A 200 is a definitive answer for this channel unless the set
-                    // now has to be fetched separately and that fetch fails
-                    // (handled below).
-                    channel_ok = true;
-                    if let Ok(json) = response.json::<serde_json::Value>().await {
+                    // A 200 is a definitive answer for this channel only once its
+                    // body has parsed. A body that did not arrive or did not parse
+                    // is a failed fetch, not "no channel emotes": marking it ok
+                    // before parsing wrote a trending-plus-globals set to disk as
+                    // the authoritative dictionary (2026-09-05, ohnepixel: 295
+                    // cached of 950 live, every channel emote rendered as text).
+                    // The separate set fetch below can still demote it.
+                    let parsed = response.json::<serde_json::Value>().await;
+                    if let Err(e) = &parsed {
+                        warn!(
+                            "[EmoteService] 7TV user payload for {} did not parse: {}",
+                            channel_id, e
+                        );
+                    }
+                    channel_ok = parsed.is_ok();
+                    if let Ok(json) = parsed {
                         // Share the payload with the EventAPI's id resolution,
                         // which runs on the same join moments later.
                         let json = Arc::new(json);
