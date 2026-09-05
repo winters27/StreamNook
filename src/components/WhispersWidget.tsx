@@ -605,28 +605,35 @@ const WhispersWidget = ({ isOpen, onClose }: WhispersWidgetProps) => {
                 }
 
                 if (existing) {
-                    // Check for duplicate message before adding
+                    // Conversations live in React state: build a new object and a
+                    // new message array rather than pushing into the old ones, so
+                    // memoized consumers (and the compiler) see the change.
                     const messageExists = existing.messages.some(m => m.id === whisperMessage.id);
-                    if (!messageExists) {
-                        existing.messages.push(whisperMessage);
-                        existing.last_message_timestamp = Date.now();
-                        if (activeConversation !== existingKey && activeConversation !== data.from_user_id) {
-                            existing.unread_count += 1;
-                        }
-                    }
+                    const updated: WhisperConversation = messageExists
+                        ? { ...existing }
+                        : {
+                            ...existing,
+                            messages: [...existing.messages, whisperMessage],
+                            last_message_timestamp: Date.now(),
+                            unread_count:
+                                activeConversation !== existingKey && activeConversation !== data.from_user_id
+                                    ? existing.unread_count + 1
+                                    : existing.unread_count,
+                        };
 
                     // If the conversation was found by username key, migrate it to use numeric ID
                     if (existingKey !== data.from_user_id) {
-                        // Update the user_id in the conversation object
-                        existing.user_id = data.from_user_id;
+                        updated.user_id = data.from_user_id;
                         // Update profile image if we have it and they don't
-                        if (profileImageUrl && !existing.profile_image_url) {
-                            existing.profile_image_url = profileImageUrl;
+                        if (profileImageUrl && !updated.profile_image_url) {
+                            updated.profile_image_url = profileImageUrl;
                         }
                         // Remove old key and add with new numeric ID key
                         newConversations.delete(existingKey);
-                        newConversations.set(data.from_user_id, existing);
+                        newConversations.set(data.from_user_id, updated);
                         Logger.debug(`[Whispers] Migrated conversation key from "${existingKey}" to "${data.from_user_id}"`);
+                    } else {
+                        newConversations.set(existingKey, updated);
                     }
                 } else {
                     newConversations.set(data.from_user_id, {
@@ -952,8 +959,12 @@ const WhispersWidget = ({ isOpen, onClose }: WhispersWidgetProps) => {
                 const n = new Map(prev);
                 const existing = n.get(activeConversation);
                 if (existing && !existing.messages.some(m => m.id === messageId)) {
-                    existing.messages.push(sentMessage);
-                    existing.last_message_timestamp = Date.now();
+                    // New object + array: state is never mutated in place.
+                    n.set(activeConversation, {
+                        ...existing,
+                        messages: [...existing.messages, sentMessage],
+                        last_message_timestamp: Date.now(),
+                    });
                 }
                 return n;
             });
