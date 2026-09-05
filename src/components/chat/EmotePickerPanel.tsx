@@ -245,7 +245,7 @@ const LazyEmoteBlock = memo(
     onActivate,
     children,
   }: {
-    scrollRef: RefObject<HTMLDivElement>;
+    scrollRef: RefObject<HTMLDivElement | null>;
     estimatedHeight: number;
     gridClass: string;
     onActivate?: () => void;

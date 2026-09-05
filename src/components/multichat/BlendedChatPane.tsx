@@ -435,7 +435,7 @@ export function BlendedChatPane({ channels }: { channels: BlendedChannel[] }) {
   // surface. Clicking a reply scrolls the merged feed to the quoted message + flashes
   // it (the same `data-message-id` + `.overflow-y-auto` scroll the main pane uses).
   const [highlightedMessageId, setHighlightedMessageId] = useState<string | null>(null);
-  const highlightTimer = useRef<ReturnType<typeof setTimeout>>();
+  const highlightTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   useEffect(
     () => () => {
       if (highlightTimer.current) clearTimeout(highlightTimer.current);

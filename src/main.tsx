@@ -78,7 +78,26 @@ if (import.meta.env.DEV) {
   });
 }
 
-const root = container.__snRoot ?? (container.__snRoot = ReactDOM.createRoot(container));
+// React 19 no longer rethrows render errors. Caught ones are logged by React
+// itself and uncaught ones go to window.reportError, which nothing in this
+// app listens to, so without these handlers an uncaught render error would
+// reach the Rust log only as a bare console line with no component stack.
+// ErrorBoundary already writes the user-facing line for caught errors, so
+// that path stays quiet here.
+const rootOptions: ReactDOM.RootOptions = {
+  onUncaughtError: (error, info) => {
+    Logger.error('[React] Uncaught render error:', error);
+    Logger.error('[React] Component stack:', info.componentStack);
+  },
+  onCaughtError: (error) => {
+    Logger.debug('[React] Error caught by a boundary:', error);
+  },
+  onRecoverableError: (error, info) => {
+    Logger.warn('[React] Recovered from render error:', error);
+    Logger.warn('[React] Component stack:', info.componentStack);
+  },
+};
+const root = container.__snRoot ?? (container.__snRoot = ReactDOM.createRoot(container, rootOptions));
 root.render(
   <React.StrictMode>
     <MotionScope>

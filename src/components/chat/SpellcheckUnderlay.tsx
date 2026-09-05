@@ -29,7 +29,7 @@ interface SpellcheckUnderlayProps {
   /** Any geometry the textarea carries via inline style instead of classes. */
   style?: React.CSSProperties;
   /** Scroll sync target — the caller mirrors the textarea's scroll position. */
-  innerRef?: React.RefObject<HTMLDivElement>;
+  innerRef?: React.RefObject<HTMLDivElement | null>;
 }
 
 const underlineStyle: React.CSSProperties = {

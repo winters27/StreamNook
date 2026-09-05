@@ -1,11 +1,21 @@
 import React, { useRef, useEffect, useId } from "react";
 import { useTooltipStore } from "../../stores/TooltipStore";
 
+/** The props the tooltip reads from, and injects into, its single child. */
+export interface TooltipChildProps {
+  onMouseEnter?: (e: React.MouseEvent) => void;
+  onMouseLeave?: (e: React.MouseEvent) => void;
+  onFocus?: (e: React.FocusEvent) => void;
+  onBlur?: (e: React.FocusEvent) => void;
+  "aria-label"?: string;
+  title?: string;
+}
+
 export interface TooltipProps {
   content: React.ReactNode | string;
   side?: "top" | "bottom" | "left" | "right";
   delay?: number;
-  children: React.ReactElement;
+  children: React.ReactElement<TooltipChildProps>;
   disabled?: boolean;
   // Optional override for the tooltip container's class list. When provided,
   // replaces the default chrome entirely (rounded-md, bg-black/80, border…).

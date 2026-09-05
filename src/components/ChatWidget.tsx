@@ -113,7 +113,7 @@ import { kickAppliedSeconds, kickTimeoutMinutes } from '../utils/kickTimeout';
 
 // Channel Points hover tooltip — portalled to document.body to escape overflow-hidden
 const ChannelPointsTooltip = ({ anchorRef, customPointsIconUrl, customPointsName, isLoadingChannelPoints, channelPoints }: {
-  anchorRef: React.RefObject<HTMLDivElement>;
+  anchorRef: React.RefObject<HTMLDivElement | null>;
   customPointsIconUrl: string | null;
   customPointsName: string | null;
   isLoadingChannelPoints: boolean;
@@ -306,10 +306,10 @@ interface ChatMessagesPanelProps {
   kickAccountName: string | null;
   onKickModeratorDetected: () => void;
   setIsSharedChat: (v: boolean) => void;
-  userMessageHistoryRef: React.MutableRefObject<Map<string, ParsedMessage[]>>;
-  sharedRoomsRef: React.MutableRefObject<Set<string>>;
-  processedIdsRef: React.MutableRefObject<Set<string>>;
-  messagesRef: React.MutableRefObject<(string | BackendChatMessage)[]>;
+  userMessageHistoryRef: React.RefObject<Map<string, ParsedMessage[]>>;
+  sharedRoomsRef: React.RefObject<Set<string>>;
+  processedIdsRef: React.RefObject<Set<string>>;
+  messagesRef: React.RefObject<(string | BackendChatMessage)[]>;
   /** Replay-mode snapshot; null in live mode. */
   override: ChatMessagesPanelSource | null;
   isPaused: boolean;
@@ -328,7 +328,7 @@ interface ChatMessagesPanelProps {
   getMessageId: (message: string | BackendChatMessage) => string | null;
   isModerator?: boolean;
   broadcasterId?: string;
-  hoveringRef: React.MutableRefObject<boolean>;
+  hoveringRef: React.RefObject<boolean>;
 }
 
 /** How many consecutive untagged messages end the shared-chat indicator. */
