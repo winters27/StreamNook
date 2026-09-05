@@ -57,6 +57,7 @@
     "@types/react-dom": "^19.2.7",
     "@types/react-window": "^1.8.8",
     "@vitejs/plugin-react": "^4.7.0",
+    "babel-plugin-react-compiler": "1.0.0",
     "baseline-browser-mapping": "^2.10.37",
     "bgutils-js": "^4.0.3",
     "concurrently": "^9.2.1",

@@ -5,7 +5,17 @@ import { visualizer } from 'rollup-plugin-visualizer';
 // https://vitejs.dev/config/
 export default defineConfig({
   plugins: [
-    react(),
+    react({
+      babel: {
+        plugins: [
+          // React Compiler, opt-in only: a function compiles when it carries a
+          // "use memo" directive. Nothing else changes shape, so this can ride
+          // the build while the rollout widens component by component. The
+          // rules it depends on are already enforced by eslint-plugin-react-hooks.
+          ['babel-plugin-react-compiler', { compilationMode: 'annotation' }],
+        ],
+      },
+    }),
     // Bundle breakdown on demand: ANALYZE=1 npm run build writes stats.html.
     ...(process.env.ANALYZE ? [visualizer({ filename: 'stats.html', gzipSize: true })] : []),
   ],
