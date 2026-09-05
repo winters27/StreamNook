@@ -38,7 +38,10 @@ export default defineConfig({
     rollupOptions: {
       output: {
         manualChunks: {
-          'vendor-core': ['react', 'react-dom', 'zustand'],
+          // React 19 moved the DOM renderer out of react-dom's main entry into
+          // react-dom/client; without listing the subpath the 180 KB renderer
+          // lands in the entry chunk and vendor-core shrinks to a 4 KB shim.
+          'vendor-core': ['react', 'react-dom', 'react-dom/client', 'zustand'],
           'vendor-hls': ['hls.js', 'plyr'],
           'vendor-motion': ['framer-motion'],
           'vendor-tauri': [
