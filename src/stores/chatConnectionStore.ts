@@ -429,7 +429,11 @@ function foldBufferedGiftChildren(slice: ChannelSlice, origin: string): number {
       }
     }
   };
-  scrub(slice.messages);
+  // The live buffer is copied before scrubbing so its identity changes only
+  // when rows were actually removed; the pending queue is never rendered.
+  const live = slice.messages.slice();
+  scrub(live);
+  if (live.length !== slice.messages.length) slice.messages = live;
   const pending = pendingByChannel.get(slice.channel);
   if (pending) scrub(pending);
   return removed;
@@ -717,9 +721,10 @@ function flushPending(): void {
     // Push everything received this frame, then trim event-aware so a burst can't
     // evict recent subs/redemptions/raids from the shared buffer. liveMessageCount
     // still counts every message (drives the accurate "N new since paused" badge).
-    for (const m of queued) slice.messages.push(m);
     slice.liveMessageCount += queued.length;
-    slice.messages = trimWithEventRetention(slice.messages, limit, slice.liveMessageCount);
+    // Copy-on-write (see the helpers above pushMessage): the array identity
+    // changes with its content, so consumers can memoize on it.
+    slice.messages = trimWithEventRetention(slice.messages.concat(queued), limit, slice.liveMessageCount);
     pruneModerationMarks(slice);
   }
   const touched = Array.from(pendingByChannel.keys());
@@ -937,13 +942,34 @@ function insertChronological(slice: ChannelSlice, incoming: any[]): void {
   slice.messages = out;
 }
 
+// --- Copy-on-write for slice.messages ---------------------------------------
+//
+// React treats array identity as the change signal, and so does React
+// Compiler's automatic memoization. This store used to mutate the row array in
+// place and lean on renderToken to compensate, which is exactly the shape the
+// compiler cannot see through: a compiled consumer caches derived values by
+// identity and goes stale (chat "dead on join" all over again). Every write to
+// slice.messages now produces a new array: a copy of at most cap + 30
+// references, microseconds, on paths that already run at most once per frame.
+// Identity is a truthful signal again; renderToken stays as a second one.
+function replaceMessageAt(slice: ChannelSlice, index: number, msg: any): void {
+  const next = slice.messages.slice();
+  next[index] = msg;
+  slice.messages = next;
+}
+
+function removeMessageAt(slice: ChannelSlice, index: number): void {
+  const next = slice.messages.slice();
+  next.splice(index, 1);
+  slice.messages = next;
+}
+
 function pushMessage(slice: ChannelSlice, msg: any) {
   const limit = liveAppendLimit(slice, getActiveHistoryMax());
-  slice.messages.push(msg);
   // Monotonic — counts the append regardless of any trim below. Drives the
   // accurate "N new since paused" badge.
   slice.liveMessageCount++;
-  slice.messages = trimWithEventRetention(slice.messages, limit, slice.liveMessageCount);
+  slice.messages = trimWithEventRetention(slice.messages.concat([msg]), limit, slice.liveMessageCount);
 }
 
 /**
@@ -965,16 +991,18 @@ function pushMessage(slice: ChannelSlice, msg: any) {
 function repaintOwnBadges(slice: ChannelSlice, badges: string): boolean {
   if (!currentUserId) return false;
   const ownTag = `user-id=${currentUserId}`;
-  let changed = false;
+  let next: any[] | null = null;
   for (let i = 0; i < slice.messages.length; i++) {
     const m = slice.messages[i];
     if (typeof m !== 'string' || !m.includes(ownTag)) continue;
     const current = m.match(/(?:^|;)badges=([^;]*)/)?.[1] ?? '';
     if (current === badges) continue;
-    slice.messages[i] = m.replace(/(^|;)badges=[^;]*/, (_full, sep) => `${sep}badges=${badges}`);
-    changed = true;
+    next ??= slice.messages.slice();
+    next[i] = m.replace(/(^|;)badges=[^;]*/, (_full, sep) => `${sep}badges=${badges}`);
   }
-  return changed;
+  if (!next) return false;
+  slice.messages = next;
+  return true;
 }
 
 /**
@@ -988,16 +1016,18 @@ function repaintOwnBadges(slice: ChannelSlice, badges: string): boolean {
 function repaintOwnColor(slice: ChannelSlice, color: string): boolean {
   if (!currentUserId) return false;
   const ownTag = `user-id=${currentUserId}`;
-  let changed = false;
+  let next: any[] | null = null;
   for (let i = 0; i < slice.messages.length; i++) {
     const m = slice.messages[i];
     if (typeof m !== 'string' || !m.includes(ownTag)) continue;
     const current = m.match(/(?:^|;)color=([^;]*)/)?.[1] ?? '';
     if (current === color) continue;
-    slice.messages[i] = m.replace(/(^|;)color=[^;]*/, (_full, sep) => `${sep}color=${color}`);
-    changed = true;
+    next ??= slice.messages.slice();
+    next[i] = m.replace(/(^|;)color=[^;]*/, (_full, sep) => `${sep}color=${color}`);
   }
-  return changed;
+  if (!next) return false;
+  slice.messages = next;
+  return true;
 }
 
 function setAllChannelsConnected(connected: boolean) {
@@ -1846,7 +1876,7 @@ function handleWsMessage(raw: string) {
         const ignoreClear = modSettings?.ignore_clear_chat ?? false;
         const showModMsgs = modSettings?.show_mod_messages ?? false;
         const apply = (slice: ChannelSlice) => {
-          if (!ignoreClear) slice.deletedMessageIds.add(parsed.target_msg_id);
+          if (!ignoreClear) slice.deletedMessageIds = new Set(slice.deletedMessageIds).add(parsed.target_msg_id);
         };
         if (ch) withSlice(ch, apply);
         else for (const s of useChatConnectionStore.getState().channels.values()) apply(s);
@@ -1924,7 +1954,7 @@ function handleWsMessage(raw: string) {
               typeof msg !== 'string' ? msg.id : msg.match?.(/(?:^|;)id=([^;]+)/)?.[1];
             if (msgUserId === parsed.target_user_id && msgId) affected.add(msgId);
           }
-          slice.clearedUserContexts.set(parsed.target_user_id, {
+          slice.clearedUserContexts = new Map(slice.clearedUserContexts).set(parsed.target_user_id, {
             context: {
               type: modType,
               duration: parsed.ban_duration,
@@ -2186,7 +2216,7 @@ function handleNotice(parsed: any) {
         const tsMatch = m.match(/tmi-sent-ts=(\d+)/);
         const ts = tsMatch ? parseInt(tsMatch[1], 10) : 0;
         if (ts >= cutoff) {
-          slice.messages.splice(i, 1);
+          removeMessageAt(slice, i);
           break;
         }
       }
@@ -2264,7 +2294,7 @@ function appendStructuredMessage(slice: ChannelSlice, parsed: any) {
       (m) => typeof m === 'string' && m.match(/(?:^|;)id=([^;]+)/)?.[1] === messageId,
     );
     if (idMatchIdx !== -1) {
-      slice.messages[idMatchIdx] = parsed;
+      replaceMessageAt(slice, idMatchIdx, parsed);
       slice.seenMessageIds.add(messageId);
       scheduleFlush();
       return;
@@ -2292,7 +2322,7 @@ function appendStructuredMessage(slice: ChannelSlice, parsed: any) {
       return contentMatch ? contentMatch[1] === parsed.content : false;
     });
     if (optimisticIdx !== -1) {
-      slice.messages[optimisticIdx] = parsed;
+      replaceMessageAt(slice, optimisticIdx, parsed);
       slice.seenMessageIds.add(messageId);
       scheduleFlush();
       return;
@@ -2626,7 +2656,7 @@ function handleRawIrcString(raw: string) {
       (m) => typeof m === 'string' && m.match(/(?:^|;)id=([^;]+)/)?.[1] === messageId,
     );
     if (idMatchIdx !== -1) {
-      slice.messages[idMatchIdx] = raw;
+      replaceMessageAt(slice, idMatchIdx, raw);
       slice.seenMessageIds.add(messageId);
       scheduleFlush();
       return;
@@ -2650,7 +2680,7 @@ function handleRawIrcString(raw: string) {
         return localMatch ? localMatch[1] === serverContent : false;
       });
       if (optimisticIdx !== -1) {
-        slice.messages[optimisticIdx] = raw;
+        replaceMessageAt(slice, optimisticIdx, raw);
         if (messageId) slice.seenMessageIds.add(messageId);
         scheduleFlush();
         return;
@@ -3002,7 +3032,7 @@ export async function sendChannelMessage(
         (m) => typeof m === 'string' && m.includes(`id=${tempId}`),
       );
       if (idx !== -1) {
-        slice.messages[idx] = (slice.messages[idx] as string).replace(`id=${tempId}`, `id=${realId}`);
+        replaceMessageAt(slice, idx, (slice.messages[idx] as string).replace(`id=${tempId}`, `id=${realId}`));
         slice.seenMessageIds.delete(tempId);
         // Arm the echo-upgrade fast path for this id. Defensive cap: a stamped
         // row whose echo never arrives costs one stale entry, never growth.
@@ -3168,16 +3198,15 @@ export interface ChannelChatSnapshot {
   pinnedMessage: any | null;
   /**
    * Changes whenever anything about this channel's chat changed. Pass it to the
-   * memoized message list so it has an honest re-render trigger.
+   * memoized message list as its re-render trigger.
    *
-   * REQUIRED, not an optimization. `messages` is NOT safe to rely on for change
-   * detection: `flushPending` appends in place and `trimWithEventRetention`
-   * returns the SAME array reference while the buffer is under its cap, so the
-   * array identity does not change for roughly the first 100 messages after
-   * joining a channel. Several paths (CLEARMSG/CLEARCHAT strikethrough, the
-   * own-echo upgrade, repaintOwnBadges) also mutate messages in place and never
-   * touch array identity at all. Without this token a memoized list silently
-   * stops updating and chat looks dead on join.
+   * Since the copy-on-write change in the store, `messages`,
+   * `deletedMessageIds` and `clearedUserContexts` also change identity with
+   * their content (flushPending, pushMessage, the own-echo upgrades, the
+   * repaints and the moderation marks all write a fresh container), so array
+   * identity is a truthful signal again. The token is kept as the second,
+   * channel-wide signal: it also covers changes to the fields above that are
+   * not part of the list's props. Keep passing it.
    */
   renderToken: number;
 }

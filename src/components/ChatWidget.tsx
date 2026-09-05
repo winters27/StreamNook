@@ -545,13 +545,11 @@ const ChatMessagesPanel = ({
     for (const id of seen) {
       if (!currentIds.has(id)) seen.delete(id);
     }
-    // `renderToken` is load-bearing, NOT redundant with `messages`. The provider
-    // snapshot hands over its message array BY REFERENCE and mutates it in place
-    // (the memo above says so: re-renders ride `renderToken`, not array identity).
-    // With `messages` alone this effect ran exactly once, on whatever was buffered
-    // at channel join, and never again — so every chatter who spoke after that was
-    // never added to the chat-user store and never resolved 7TV cosmetics. That is
-    // why paints and badges were missing on Kick and YouTube, including your own.
+    // `renderToken` stays in the deps alongside `messages`. The store now writes
+    // a fresh array per change (copy-on-write), so identity would do on its own
+    // for the Twitch path; the token also covers provider snapshots and any
+    // future in-place writer, and a missed run here means chatters never reach
+    // the chat-user store and never resolve 7TV cosmetics (the original bug).
     // Re-running per flush is cheap: `processedMessageIdsRef` skips every message
     // already handled, so each new message is parsed exactly once.
     // eslint-disable-next-line react-hooks/exhaustive-deps
