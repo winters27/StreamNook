@@ -87,6 +87,11 @@ export const Tooltip: React.FC<TooltipProps> = ({
     hideTooltip(tooltipId);
   };
 
+  // The handlers below read timeoutRef only when a DOM event fires. The
+  // compiler cannot see through cloneElement, so passing them here looks like
+  // a render-time ref read; it is not. Nothing in this object runs during
+  // render.
+  // eslint-disable-next-line react-hooks/refs
   return React.cloneElement(children, {
     onMouseEnter: handleMouseEnter,
     onMouseLeave: handleMouseLeave,

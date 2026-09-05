@@ -2,6 +2,7 @@ import { Plug } from 'lucide-react';
 import { useAppStore } from '../../stores/AppStore';
 import { usePluginUiRegistry, selectSlot } from '../../plugins-ui/registry';
 import { DiscordGlyph } from '../ui/DiscordGlyph';
+import { Toggle } from '../ui/Toggle';
 import streamnookLogo from '../../assets/streamnook-logo-128.webp';
 
 const IntegrationsSettings = () => {
@@ -11,21 +12,6 @@ const IntegrationsSettings = () => {
   // whatever is contributed and names none of it; with no such plugin installed
   // the slot is empty and only the built-in integrations show.
   const pluginPanels = usePluginUiRegistry(selectSlot('integrations.settings'));
-
-  const Toggle = ({ enabled, onChange }: { enabled: boolean; onChange: () => void }) => (
-    <button
-      onClick={onChange}
-      className={`relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors ${
-        enabled ? 'bg-accent' : 'bg-gray-600'
-      }`}
-    >
-      <span
-        className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
-          enabled ? 'translate-x-6' : 'translate-x-1'
-        }`}
-      />
-    </button>
-  );
 
   return (
     <div className="flex min-h-full flex-col items-center py-6">
@@ -80,14 +66,13 @@ const IntegrationsSettings = () => {
           </div>
         </div>
         {pluginPanels.map((c) => {
-          const Icon = c.Icon;
           return (
             <div
               key={`${c.pluginId}:${c.id}`}
               className="space-y-2 border-t border-white/[0.06] pt-3"
             >
               <div className="flex items-center gap-2 px-1">
-                <Icon size={14} className="text-accent" />
+                <c.Icon size={14} className="text-accent" />
                 <span className="text-[11px] uppercase tracking-[0.12em] text-textMuted">
                   {c.label}
                 </span>

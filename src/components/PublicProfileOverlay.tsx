@@ -221,17 +221,27 @@ const PublicProfileOverlay = () => {
   useSyncExternalStore(subscribeStreamNookRegistryVersion, getStreamNookRegistryVersion, getStreamNookRegistryVersion);
   useSyncExternalStore(subscribeCosmeticsVersion, getCosmeticsVersion, getCosmeticsVersion);
 
+  // Reset the viewed-profile state the moment the target changes, during
+  // render rather than in an effect (React's adjust-state-on-prop-change
+  // pattern), so the previous member's profile never paints under the new id.
+  const [renderedUserId, setRenderedUserId] = useState(userId);
+  if (userId !== renderedUserId) {
+    setRenderedUserId(userId);
+    if (userId) {
+      setLoading(true);
+      setError(false);
+      setInfo(null);
+      setCounts({ paints: 0, badges: 0, sn: 0 });
+      setNamePaint(null);
+      setTheme(null);
+      setHiddenSections([]);
+      setWornBadges({ seventv: null, twitch: null, thirdParty: [], bttvPro: null });
+    }
+  }
+
   useEffect(() => {
     if (!userId) return;
     let alive = true;
-    setLoading(true);
-    setError(false);
-    setInfo(null);
-    setCounts({ paints: 0, badges: 0, sn: 0 });
-    setNamePaint(null);
-    setTheme(null);
-    setHiddenSections([]);
-    setWornBadges({ seventv: null, twitch: null, thirdParty: [], bttvPro: null });
 
     (async () => {
       try {

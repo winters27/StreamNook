@@ -1,5 +1,5 @@
 import { X, Gift, ArrowLeft, AlertTriangle, Calendar, ChevronRight, Users, Clock, ArrowUpRight } from 'lucide-react';
-import { useEffect, useState, useMemo, useCallback } from 'react';
+import { useEffect, useState, useMemo, useCallback, type JSX } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { useAppStore } from '../stores/AppStore';

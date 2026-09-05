@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, type JSX } from 'react';
 import PenroseMarch from './PenroseMarch';
 import { Tooltip } from './ui/Tooltip';
 

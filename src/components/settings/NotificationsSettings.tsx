@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Dropdown } from '../ui/Dropdown';
 import { Tooltip } from '../ui/Tooltip';
+import { Toggle } from '../ui/Toggle';
 import { useAppStore } from '../../stores/AppStore';
 import {
   ToastPosition,
@@ -156,20 +157,6 @@ const NotificationsSettings = () => {
       Logger.error('Failed to send test notification:', error);
     }
   };
-
-  const Toggle = ({ enabled, onChange, disabled = false }: { enabled: boolean; onChange: () => void; disabled?: boolean }) => (
-    <button
-      onClick={onChange}
-      disabled={disabled}
-      className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors flex-shrink-0 ${disabled ? 'opacity-50 cursor-not-allowed' : ''
-        } ${enabled && !disabled ? 'bg-accent' : 'bg-gray-600'}`}
-    >
-      <span
-        className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${enabled ? 'translate-x-6' : 'translate-x-1'
-          }`}
-      />
-    </button>
-  );
 
   return (
     <div className="space-y-8">

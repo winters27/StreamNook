@@ -9,13 +9,15 @@ import { useEffect, useRef } from 'react';
  * Don't use it for things that need to run regardless of visibility (e.g.
  * background heartbeats Twitch needs to see — those should stay in Rust).
  *
- * `fn` is captured by ref so its identity doesn't need to be stable across
- * renders, which lets callers pass an inline async function without forcing
- * a wrapping useCallback.
+ * `fn` is captured by ref (synced in an effect, never on the render path) so
+ * its identity doesn't need to be stable across renders, which lets callers
+ * pass an inline async function without forcing a wrapping useCallback.
  */
 export function useVisibleInterval(fn: () => void | Promise<void>, ms: number) {
   const fnRef = useRef(fn);
-  fnRef.current = fn;
+  useEffect(() => {
+    fnRef.current = fn;
+  });
 
   useEffect(() => {
     let cancelled = false;

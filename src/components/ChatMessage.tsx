@@ -1,4 +1,4 @@
-import React, { useMemo, useState, useEffect, useRef, memo, useSyncExternalStore } from 'react';
+import React, { useMemo, useState, useEffect, useRef, memo, useSyncExternalStore, type JSX } from 'react';
 import { Gift } from 'lucide-react';
 import { Tooltip } from './ui/Tooltip';
 import { parseMessage } from '../services/twitchChat';
