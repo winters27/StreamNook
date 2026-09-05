@@ -2,17 +2,44 @@ import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import { visualizer } from 'rollup-plugin-visualizer';
 
+// Paths (substring match on the module path) the React Compiler compiles.
+// Kept deliberately explicit: the chat row and list, the settings panels,
+// and the shared switch. See the compiler entry in plugins below.
+const REACT_COMPILER_SOURCES = [
+  '/src/components/ChatMessage.tsx',
+  '/src/components/ChatMessageList.tsx',
+  '/src/components/settings/',
+  '/src/components/ui/Toggle.tsx',
+];
+// Inside the list but not yet clean under eslint-plugin-react-hooks 7.1
+// (optimistic grants in effects, a DOM lookup after mount). Kept out until
+// those are reworked; eslint.config.js mirrors this boundary.
+const REACT_COMPILER_EXCLUDES = [
+  '/src/components/settings/ProfileSettings.tsx',
+  '/src/components/settings/ProfileOverview.tsx',
+  '/src/components/settings/PluginsSettings.tsx',
+];
+
 // https://vitejs.dev/config/
 export default defineConfig({
   plugins: [
     react({
       babel: {
         plugins: [
-          // React Compiler, opt-in only: a function compiles when it carries a
-          // "use memo" directive. Nothing else changes shape, so this can ride
-          // the build while the rollout widens component by component. The
-          // rules it depends on are already enforced by eslint-plugin-react-hooks.
-          ['babel-plugin-react-compiler', { compilationMode: 'annotation' }],
+          // React Compiler, scoped to the rollout allowlist below. Inside it the
+          // compiler infers components and hooks and memoizes what it can prove;
+          // anything it cannot (dynamic import(), try/finally, a disabled React
+          // lint rule) is skipped, never a build error. Files outside the list
+          // are untouched. Widen the list as files clear
+          // eslint-plugin-react-hooks 7.1.1, which enforces the same rules.
+          ['babel-plugin-react-compiler', {
+            compilationMode: 'infer',
+            panicThreshold: 'none',
+            sources: (filename) => {
+              const f = filename.replace(/\\/g, '/');
+              return REACT_COMPILER_SOURCES.some((p) => f.includes(p)) && !REACT_COMPILER_EXCLUDES.some((p) => f.includes(p));
+            },
+          }],
         ],
       },
     }),

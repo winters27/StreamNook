@@ -1,23 +1,11 @@
 import { useAppStore } from '../../stores/AppStore';
 import { SettingsSection, SettingsRow } from './_primitives';
+import { Toggle } from '../ui/Toggle';
 import EmotePrefetchSection from './EmotePrefetchSection';
 
 import { Logger } from '../../utils/logger';
 const CacheSettings = () => {
   const { settings, updateSettings } = useAppStore();
-
-  const Toggle = ({ enabled, onChange }: { enabled: boolean; onChange: () => void }) => (
-    <button
-      onClick={onChange}
-      className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors flex-shrink-0 ${enabled ? 'bg-accent' : 'bg-gray-600'
-        }`}
-    >
-      <span
-        className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${enabled ? 'translate-x-6' : 'translate-x-1'
-          }`}
-      />
-    </button>
-  );
 
   return (
     <div className="space-y-8">

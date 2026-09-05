@@ -14,10 +14,6 @@ interface ToggleProps {
 }
 
 export const Toggle = ({ enabled, onChange, ariaLabel, disabled = false }: ToggleProps) => {
-  // First component under React Compiler (annotation mode): stateless, no
-  // refs, no effects, rendered in every settings row. The directive is the
-  // opt-in; remove it and the component is plain again.
-  'use memo';
   return (
   <button
     type="button"

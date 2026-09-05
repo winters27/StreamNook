@@ -153,9 +153,13 @@ const ThemeSettings = () => {
     // persisted value only catches up on release, so we mirror it here for the
     // controlled input and pick up any changes made from another window.
     const [liveGlass, setLiveGlass] = useState(glassTransparency);
-    useEffect(() => {
+    // Adopt a persisted change (a release here, or another window) during
+    // render so the thumb never shows a stale value for a commit.
+    const [seenGlass, setSeenGlass] = useState(glassTransparency);
+    if (glassTransparency !== seenGlass) {
+        setSeenGlass(glassTransparency);
         setLiveGlass(glassTransparency);
-    }, [glassTransparency]);
+    }
 
     // While dragging: only move the thumb and repaint via the CSS variable (cheap).
     // No disk write — persisting on every tick is what made the slider stutter.
@@ -176,9 +180,11 @@ const ThemeSettings = () => {
     // while the persist is deferred (same approach as the Glassiness slider).
     const oledAccent = settings.oled_accent ?? DEFAULT_OLED_ACCENT;
     const [liveOledAccent, setLiveOledAccent] = useState(oledAccent);
-    useEffect(() => {
+    const [seenOledAccent, setSeenOledAccent] = useState(oledAccent);
+    if (oledAccent !== seenOledAccent) {
+        setSeenOledAccent(oledAccent);
         setLiveOledAccent(oledAccent);
-    }, [oledAccent]);
+    }
     const oledPersistTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
     // Get current theme (could be custom or built-in). For OLED, fold in the
