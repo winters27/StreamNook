@@ -60,6 +60,20 @@ const container = document.getElementById('root') as HTMLElement & {
 // hand rather than opening the whole API surface to any script in the window.
 // Stripped from production builds by the DEV guard.
 if (import.meta.env.DEV) {
+  // React 19.2 development builds emit a performance.measure() entry for
+  // every render, commit and effect (the DevTools performance tracks), and
+  // the User Timing buffer keeps them for the page's lifetime: 12,500
+  // entries after one minute of busy chat, about 570 MB of renderer memory
+  // after ninety seconds, all released by clearMeasures() (measured
+  // 2026-09-05). Production builds emit none. Drain the buffer so dev soak
+  // numbers mean something; PerformanceObserver subscribers still receive
+  // every entry, so profiling is unaffected. Set window.__snKeepMeasures =
+  // true to inspect the buffer directly.
+  window.setInterval(() => {
+    if ((window as unknown as { __snKeepMeasures?: boolean }).__snKeepMeasures) return;
+    performance.clearMeasures();
+    performance.clearMarks();
+  }, 15_000);
   // React devtools bridge. This used to live in index.html gated on hostname,
   // but tauri.localhost is the PRODUCTION origin on Windows, so shipped builds
   // were loading a script from a local port any process could bind. The DEV
