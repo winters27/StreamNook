@@ -37,7 +37,7 @@
     "framer-motion": "^13.2.0",
     "gifenc": "^1.0.3",
     "hls.js": "^1.5.17",
-    "lucide-react": "^0.563.0",
+    "lucide-react": "^1.40.0",
     "nspell": "^2.1.5",
     "phosphor-react": "^1.4.1",
     "plyr": "^3.7.8",
