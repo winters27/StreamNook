@@ -18,6 +18,7 @@
 // upstream callers using mixed case still resolve correctly via `.toLowerCase()`
 // at the API boundary.
 
+import { sameSentContent } from '../utils/sentContent';
 import { useEffect, useState } from 'react';
 import {
   CHAT_BUFFER_SIZE,
@@ -2316,10 +2317,13 @@ function appendStructuredMessage(slice: ChannelSlice, parsed: any) {
   // optimistic; without it, the echo (a non-primary user-id) would be pushed as
   // a duplicate.
   if (isOwnUserId(parsed.user_id)) {
+    // Whitespace-tolerant on both sides: the server never echoes trailing
+    // whitespace, and callers other than sendChannelMessage may still hand
+    // us an untrimmed optimistic line.
     const optimisticIdx = slice.messages.findIndex((m) => {
       if (typeof m !== 'string' || !m.includes('id=local-')) return false;
       const contentMatch = m.match(/PRIVMSG #\w+ :(.+)$/);
-      return contentMatch ? contentMatch[1] === parsed.content : false;
+      return contentMatch ? sameSentContent(contentMatch[1], parsed.content) : false;
     });
     if (optimisticIdx !== -1) {
       replaceMessageAt(slice, optimisticIdx, parsed);
@@ -2672,12 +2676,13 @@ function handleRawIrcString(raw: string) {
       }
     }
     const contentMatch = raw.match(/PRIVMSG #\w+ :(.+)$/);
+    // Whitespace-tolerant, same reason as the structured path above.
     const serverContent = contentMatch?.[1];
     if (serverContent) {
       const optimisticIdx = slice.messages.findIndex((m) => {
         if (typeof m !== 'string' || !m.includes('id=local-')) return false;
         const localMatch = m.match(/PRIVMSG #\w+ :(.+)$/);
-        return localMatch ? localMatch[1] === serverContent : false;
+        return localMatch ? sameSentContent(localMatch[1], serverContent) : false;
       });
       if (optimisticIdx !== -1) {
         replaceMessageAt(slice, optimisticIdx, raw);
@@ -2908,11 +2913,21 @@ export async function releaseChannel(
  *  channel-correct room-id and badge metadata. */
 export async function sendChannelMessage(
   channel: string,
-  text: string,
+  rawText: string,
   userInfo: SendUserInfo,
   replyParentMsgId?: string,
   senderAccount?: SendAsAccount | null,
 ): Promise<void> {
+  // Trailing whitespace never survives the round trip: Twitch's echo comes
+  // back without it (and the Rust parser trim_end()s the payload), while the
+  // emote picker always leaves "name " in the compose box. An optimistic row
+  // carrying that space failed the content match whenever the IRC echo beat
+  // the Helix id stamp, so the echo was appended as a second copy of your own
+  // message until the stamp landed and the duplicate id got collapsed: two
+  // identical rows on screen for a beat, then one vanished. Send what Twitch
+  // will echo. (The duplicate-bypass suffix ends in U+E0000, which is not
+  // whitespace, so it is untouched.)
+  const text = rawText.trimEnd();
   if (!text.trim()) return;
   const key = channel.toLowerCase();
   const slice = useChatConnectionStore.getState().channels.get(key);
