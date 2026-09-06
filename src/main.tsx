@@ -1,3 +1,6 @@
+// FIRST import on purpose: turns off React 19's dev-only per-element
+// instrumentation before react-dom evaluates (see the file for numbers).
+import './devReactInstrumentation';
 import React, { lazy, Suspense } from 'react';
 import ReactDOM from 'react-dom/client';
 import { MotionScope } from './components/MotionScope.tsx';
@@ -68,7 +71,10 @@ if (import.meta.env.DEV) {
   // 2026-09-05). Production builds emit none. Drain the buffer so dev soak
   // numbers mean something; PerformanceObserver subscribers still receive
   // every entry, so profiling is unaffected. Set window.__snKeepMeasures =
-  // true to inspect the buffer directly.
+  // true to inspect the buffer directly. Since devReactInstrumentation.ts the
+  // tracks are off by default (localStorage 'sn-react-devtracks' = '1' turns
+  // them back on), so this drain only has work when a profiling session
+  // opted in.
   window.setInterval(() => {
     if ((window as unknown as { __snKeepMeasures?: boolean }).__snKeepMeasures) return;
     performance.clearMeasures();
@@ -112,6 +118,15 @@ const rootOptions: ReactDOM.RootOptions = {
   },
 };
 const root = container.__snRoot ?? (container.__snRoot = ReactDOM.createRoot(container, rootOptions));
+
+// Dev-only: expose the app store for CDP-driven test recipes (scratchpad
+// cdp.mjs). Dynamic import keeps AppStore out of the entry chunk and the
+// DEV guard strips it from production.
+if (import.meta.env.DEV) {
+  void import('./stores/AppStore').then((m) => {
+    (window as unknown as { __snStore?: unknown }).__snStore = m.useAppStore;
+  });
+}
 root.render(
   <React.StrictMode>
     <MotionScope>
