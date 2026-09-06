@@ -1,3 +1,28 @@
+## [8.5.5] - 2026-09-06
+
+## 🎉 StreamNook Community Month is on
+> Two new animated badges. Kindred, the cube heart, goes to anyone who brings a friend into the StreamNook Discord during Community Month, which runs through the end of September. Uplift, the rocket, is the standing thank-you for boosting the Discord, any time. Both appear in chat and on your profile the moment they are granted.
+
+![Kindred and Uplift](https://raw.githubusercontent.com/winters27/StreamNook/main/.github/assets/release-8.5.5-community-month.webp)
+
+---
+
+### ✨ Features
+- **Scrub back through any live stream.** The progress bar under a live stream now spans the whole broadcast, not just the part you have watched. Hover to see the time you would land at and how long ago that was, drop anywhere to go there in the stream's recording, and drag to the end to return to live. The scale is finer near live and coarser further back, so both are easy to hit. Channels that keep no VODs get a note instead of a dead scrub.
+- **VODs remember where you left off.** Reopen a past broadcast and it resumes at your last position, with the chat replay following. Video cards show how far you got. A player setting turns resume off if you prefer starting from the top.
+- **Badge details list the exact categories a badge can be earned in**, as real category cards you can jump to, instead of a line of prose.
+
+### 🐛 Bug Fixes
+- **VODs of a stream that is still live now play and seek properly.** They were being treated as a live stream, which snapped playback back to the end and broke seeking. (#216)
+- **Badges and accolades no longer vanish from profiles when a lookup fails.** A Twitch change that removed the old badge query, or a brief network hiccup, wiped every badge until the next refresh; the last good set is kept instead.
+- **The Drops channel picker only offers channels that are actually earning the drop right now**, per Twitch, instead of guessing from the allow list or category.
+- **Your own chat message no longer shows twice for a moment** after sending an emote from the picker.
+- **StreamNook stays in the tray under "Always minimize" when its last window closes**, instead of quitting and taking the tray icon with it.
+- **7TV channel emotes are not marked as loaded before they actually parse.**
+
+### ⚡ Performance
+- **Chat rendering runs under the React Compiler**, with chat state written copy-on-write, so heavy chat costs less per message and the player keeps its frames.
+
 ## [8.5.4] - 2026-09-03
 
 ### 🐛 Bug Fixes
