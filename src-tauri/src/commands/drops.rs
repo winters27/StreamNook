@@ -97,6 +97,22 @@ pub async fn get_drop_progress(state: State<'_, AppState>) -> Result<Vec<DropPro
     Ok(drops_service.get_drop_progress().await)
 }
 
+/// Which of these channels are currently offering the campaign, straight from
+/// Twitch. The channel picker uses it so an allow-listed streamer is offered
+/// when Twitch says the drop is earnable there and hidden when it isn't.
+#[tauri::command]
+pub async fn get_campaign_eligible_channels(
+    campaign_id: String,
+    channel_ids: Vec<String>,
+    state: State<'_, AppState>,
+) -> Result<Vec<String>, String> {
+    let drops_service = state.drops_service.lock().await;
+    drops_service
+        .campaign_eligible_channels(&campaign_id, &channel_ids)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub async fn claim_drop(
     drop_id: String,
