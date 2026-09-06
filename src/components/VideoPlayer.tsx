@@ -6,7 +6,7 @@ import Plyr from 'plyr';
 // Plyr's CSS ships once, layered, via globals.css (@import ... layer(vendor));
 // a second unlayered copy here would beat the app's control-bar overrides.
 import { motion, AnimatePresence } from 'framer-motion';
-import { Loader2, RefreshCcw, Home, LayoutGrid, Shield, ShieldCheck, ShieldAlert, Clapperboard, Music, Share2, Check } from 'lucide-react';
+import { Loader2, RefreshCcw, Home, LayoutGrid, Shield, ShieldCheck, ShieldAlert, Clapperboard, Music, Share2, Check, Radio } from 'lucide-react';
 import { Heart, HeartBreak, ArrowLeft, X as XIcon } from 'phosphor-react';
 import { useAppStore } from '../stores/AppStore';
 import { streamProvider } from '../utils/streamProvider';
@@ -20,6 +20,9 @@ import { usemultiNookStore } from '../stores/multiNookStore';
 import { useChannelSocial } from '../hooks/useChannelSocial';
 import StreamTitleWithEmojis from './StreamTitleWithEmojis';
 import PlayerStatsOverlay from './PlayerStatsOverlay';
+import { useVodProgressReporter } from '../hooks/useVodProgressReporter';
+import { formatVodTime } from '../utils/vodProgress';
+import BroadcastTimeline from './BroadcastTimeline';
 import { Tooltip } from './ui/Tooltip';
 import { TwitchVerifiedMark } from './ui/TwitchGlyph';
 import { registerPlayerControls, type PlayerControls } from '../keybindings';
@@ -38,6 +41,15 @@ import {
 } from '../utils/audioBoost';
 import type { AudioBoostSettings } from '../types';
 import { Fader, Toggle } from './AudioBoostFaders';
+
+/** A backward scrub on a live stream smaller than this is treated as a
+ *  nudge, not a rewind request. */
+const LIVE_SCRUB_HANDOFF_SECS = 3;
+/** Past this far behind the edge the whole-segment path is force-seeked
+ *  forward by hls.js (liveMaxLatencyDuration), so a scrub that lands beyond
+ *  it cannot be served live and hands off to the recording. */
+const LIVE_DVR_MAX_BEHIND_SECS = 55;
+
 import { open as openExternalUrl } from '@tauri-apps/plugin-shell';
 import { setActiveVideo } from '../utils/activeVideo';
 import { recognizeNowPlaying, announceSong } from '../utils/songId';
@@ -156,7 +168,7 @@ const VideoPlayer = () => {
   // is mounted for the whole session, and a bare `useAppStore()` re-rendered it
   // on every unrelated store tick (toasts, mod logs, drops polling).
   const { getAvailableQualities, changeStreamQuality, handleStreamOffline, reloadStreamAndChat, restartStream, exitStream, toggleHome, setHomeActiveTab, setHomeSelectedCategory, createClip, openStreamerMedia } = useAppStore.getState();
-  const { streamUrl, settings, activeQuality, adSource, isAutoSwitching, currentStream, isRestartingStream, isHomeActive, streamOriginCategory, isAuthenticated, currentMediaType, isCreatingClip, originalMediaUrl } = useAppStore(
+  const { streamUrl, settings, activeQuality, adSource, isAutoSwitching, currentStream, isRestartingStream, isHomeActive, streamOriginCategory, isAuthenticated, currentMediaType, isCreatingClip, originalMediaUrl, vodPlayback, liveRewind, liveRewindAvailable, liveRewindAnchor } = useAppStore(
     useShallow((s) => ({
       streamUrl: s.streamUrl,
       settings: s.settings,
@@ -171,6 +183,10 @@ const VideoPlayer = () => {
       currentMediaType: s.currentMediaType,
       isCreatingClip: s.isCreatingClip,
       originalMediaUrl: s.originalMediaUrl,
+      vodPlayback: s.vodPlayback,
+      liveRewind: s.liveRewind,
+      liveRewindAvailable: s.liveRewindAvailable,
+      liveRewindAnchor: s.liveRewindAnchor,
     })),
   );
   // Which platform is playing. Twitch runs the full path below; the ad-source
@@ -400,6 +416,11 @@ const VideoPlayer = () => {
   const bufferGateTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const onPlayingRef = useRef<(() => void) | null>(null);
   const onLoadedMetadataRef = useRef<(() => void) | null>(null);
+  // Live-only: a backward scrub past what the live window can serve hands
+  // off into the broadcast recording (see the seeking handler in createPlayer).
+  const onSeekingRef = useRef<(() => void) | null>(null);
+  const onTimeUpdateRef = useRef<(() => void) | null>(null);
+  const lastPlayheadRef = useRef<number>(0);
 
   // Follow + subscribe state and actions for the current channel. Shared with
   // the focused MultiNook tile via useChannelSocial so both overlays behave
@@ -788,6 +809,8 @@ const VideoPlayer = () => {
     // Clear previously attached video listeners to prevent memory leaks from stacking closures
     if (onPlayingRef.current) video.removeEventListener('playing', onPlayingRef.current);
     if (onLoadedMetadataRef.current) video.removeEventListener('loadedmetadata', onLoadedMetadataRef.current);
+    if (onSeekingRef.current) video.removeEventListener('seeking', onSeekingRef.current);
+    if (onTimeUpdateRef.current) video.removeEventListener('timeupdate', onTimeUpdateRef.current);
     
     // Clear pending timeouts
     if (bufferGateTimeoutRef.current) {
@@ -907,7 +930,14 @@ const VideoPlayer = () => {
       // cost a round trip to reach the same answer. Read at call time (not from
       // the render closure) so this can never act on a stale platform.
       let isLowLatencyChannel = false;
-      if (streamProvider(useAppStore.getState().currentStream) === 'twitch') {
+      // VOD playback (finished, still recording, or a live rewind) as Rust
+      // reported it via start_stream's `vod`. A recording VOD is a growing
+      // EVENT playlist that hls.js reads as live, so every live mechanism
+      // below is gated off this: otherwise it forced the playhead back to the
+      // tail and killed seeking (GitHub #216).
+      const vodStart = useAppStore.getState().vodPlayback;
+      const isVodPlayback = !!vodStart;
+      if (!isVodPlayback && streamProvider(useAppStore.getState().currentStream) === 'twitch') {
         try {
           isLowLatencyChannel = await invoke<boolean>('get_stream_low_latency');
         } catch { /* command unavailable / stream gone */ }
@@ -919,6 +949,7 @@ const VideoPlayer = () => {
         return;
       }
       Logger.debug(`[HLS] LL-HLS origin active=${isLowLatencyChannel}`);
+      setIsLowLatencyPath(isLowLatencyChannel);
 
       // The viewer's preferred behind-live target (displayed seconds), converted to the
       // real cushion/governor value PER PATH so the displayed number tracks the setting
@@ -1036,14 +1067,17 @@ const VideoPlayer = () => {
         // LL path: liveSyncPosition is clamped to `edge - partTarget`, which on this relay
         // is content the origin has promoted but not published, and seeking there
         // mid-playback is the documented freeze. Must stay > liveSyncDuration.
-        liveMaxLatencyDuration: 60,
+        liveMaxLatencyDuration: isVodPlayback ? undefined : 60,
         // 1 = hls.js's latency controller is fully inert on EVERY path (its rate is
         // quantized to 0.05 steps — dist ~32618 — and each abrupt step is audible
         // through the pitch corrector as a pop/warble, obvious on music, and reads
         // as a micro-hitch; 86 steps in one capture). liveLatencyGovernor owns
         // catch-up on both paths instead, with a smooth ramp.
         maxLiveSyncPlaybackRate: 1,
-        liveDurationInfinity: true, // Live stream has infinite duration
+        liveDurationInfinity: !isVodPlayback, // Live is endless; a VOD (even one still recording) has a real, growing duration
+        // Where a VOD begins: the stored resume position or a live rewind's
+        // mapped broadcast position. -1 (live) lets hls.js pick the edge.
+        startPosition: isVodPlayback ? (vodStart?.start_position_secs ?? 0) : -1,
         manifestLoadingTimeOut: 10000, // 10s timeout for manifest
         manifestLoadingMaxRetry: 3, // Retry manifest 3 times
         manifestLoadingRetryDelay: 1000, // Wait 1s between retries
@@ -1099,7 +1133,9 @@ const VideoPlayer = () => {
       // Real segment length, learned from the first media playlist. Zero until
       // then, which keeps the governor on its default band.
       let segmentSeconds = 0;
-      latencyGovernorStopRef.current = isLowLatencyChannel
+      latencyGovernorStopRef.current = isVodPlayback
+        ? null
+        : isLowLatencyChannel
         ? startLatencyGovernor(hls, video, {
             label: 'solo-ll',
             // Drive BEHIND-LIVE (the playhead's distance from the live edge) toward the
@@ -1342,6 +1378,7 @@ const VideoPlayer = () => {
               'play',
               'progress',
               'current-time',
+              ...(isVodPlayback ? ['duration'] : []),
               'mute',
               'volume',
               'settings',
@@ -1379,13 +1416,14 @@ const VideoPlayer = () => {
           });
 
           playerRef.current = player;
+          setTimelineHost(containerRef.current?.querySelector<HTMLElement>('.plyr__progress') ?? null);
           setPlayerReady(true);
 
           player.on('enterfullscreen', () => syncTauriWindowFullscreen(true));
           player.on('exitfullscreen', () => syncTauriWindowFullscreen(false));
 
           // Set up live stream overrides
-          isLiveRef.current = useAppStore.getState().currentMediaType === 'live';
+          isLiveRef.current = useAppStore.getState().currentMediaType === 'live' && !isVodPlayback;
 
           // Override duration for live stream progress bar
           if (isLiveRef.current) {
@@ -1758,7 +1796,7 @@ const VideoPlayer = () => {
         // low-latency controller owns positioning there, and a manual seek would fight it.
         const syncDur = hls.config.liveSyncDuration ?? 4;
         const target = Math.max(bufStart, bufEnd - syncDur);
-        if (!isLowLatencyChannel && target > video.currentTime + 0.5) {
+        if (!isLowLatencyChannel && !isVodPlayback && target > video.currentTime + 0.5) {
           video.currentTime = target;
         }
 
@@ -1815,6 +1853,52 @@ const VideoPlayer = () => {
       video.addEventListener('loadedmetadata', onLoadedMetadata);
       video.addEventListener('playing', onPlaying);
 
+      // Scrubbing BACK on a live Twitch stream. The live window cannot hold a
+      // position: the low-latency origin serves ~12 s and its watchdog snaps
+      // a lagging playhead to the edge within seconds, and the whole-segment
+      // path is force-seeked by hls.js past 60 s behind. So a deliberate
+      // backward scrub past what the buffer already holds becomes a rewind
+      // into the broadcast recording (Rust maps "this far behind live" onto
+      // the VOD), with "Back to live" to return. Every programmatic seek in
+      // this file moves FORWARD (edge snaps, stall nudges, Go Live), so
+      // "backward by more than a few seconds" is the user's own intent.
+      lastPlayheadRef.current = 0;
+      const onTimeUpdate = () => {
+        if (!video.seeking) lastPlayheadRef.current = video.currentTime;
+      };
+      const onSeeking = () => {
+        if (isVodPlayback || !isTwitchPlayback) return;
+        const store = useAppStore.getState();
+        if (store.currentMediaType !== 'live' || store.liveRewind || store.isRestartingStream) return;
+        const from = lastPlayheadRef.current;
+        const to = video.currentTime;
+        if (!(from > 0) || to > from - LIVE_SCRUB_HANDOFF_SECS) return;
+        const b = video.buffered;
+        const edge = b.length > 0 ? b.end(b.length - 1) : from;
+        const held = b.length > 0 ? b.start(0) : from;
+        // Inside what is already buffered (and, off the LL path, inside the
+        // 60 s hls.js tolerates) the live player can serve the scrub itself.
+        if (to >= held && (isLowLatencyChannel ? false : edge - to < LIVE_DVR_MAX_BEHIND_SECS)) return;
+        const behind = Math.max(0, edge - to);
+        if (store.liveRewindAvailable === false) {
+          // Nothing to rewind into: keep the live position and say why, once
+          // per scrub, instead of silently snapping back to the edge.
+          video.currentTime = from;
+          store.addToast(`${store.currentStream?.user_name || 'This channel'} has VODs turned off, so the broadcast can't be rewound`, 'info');
+          return;
+        }
+        Logger.debug(`[player] live scrub back ${behind.toFixed(0)}s past the live window; rewinding into the recording`);
+        // Hold the playhead where it was so nothing plays from the dead spot
+        // while Rust resolves the recording (~1 s); the relay swap recreates
+        // the player at the mapped position.
+        video.currentTime = from;
+        void store.rewindLive({ behindSecs: behind });
+      };
+      onTimeUpdateRef.current = onTimeUpdate;
+      onSeekingRef.current = onSeeking;
+      video.addEventListener('timeupdate', onTimeUpdate);
+      video.addEventListener('seeking', onSeeking);
+
     } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
       // Native HLS support (Safari)
       Logger.debug('[HLS] Using native HLS support');
@@ -1853,6 +1937,7 @@ const VideoPlayer = () => {
       });
 
       playerRef.current = player;
+      setTimelineHost(containerRef.current?.querySelector<HTMLElement>('.plyr__progress') ?? null);
       playerRef.current.volume = currentSettings.volume;
       playerRef.current.muted = currentSettings.muted;
 
@@ -2011,6 +2096,7 @@ const VideoPlayer = () => {
         }
         playerRef.current.destroy();
         playerRef.current = null;
+        setTimelineHost(null);
       }
 
       // Reset state
@@ -2021,8 +2107,12 @@ const VideoPlayer = () => {
       if (videoElement) {
         const playingHandler = onPlayingRef.current;
         const metadataHandler = onLoadedMetadataRef.current;
+        const seekingHandler = onSeekingRef.current;
+        const timeUpdateHandler = onTimeUpdateRef.current;
         if (playingHandler) videoElement.removeEventListener('playing', playingHandler);
         if (metadataHandler) videoElement.removeEventListener('loadedmetadata', metadataHandler);
+        if (seekingHandler) videoElement.removeEventListener('seeking', seekingHandler);
+        if (timeUpdateHandler) videoElement.removeEventListener('timeupdate', timeUpdateHandler);
       }
       const debouncer = volumeDebounceRef.current;
       const gateTimeout = bufferGateTimeoutRef.current;
@@ -2321,6 +2411,42 @@ const VideoPlayer = () => {
   // that, so restart the stream, which cold-starts at the edge. The threshold is 5
   // because a healthy promotion playlist legitimately declares ~2-4s the player
   // cannot fetch yet; only a gap beyond that means the pipeline is actually stuck.
+  // VOD position checkpoints to Rust, the owner of the resume store. Null
+  // (live, clips, idle) attaches nothing.
+  useVodProgressReporter(
+    videoRef,
+    vodPlayback
+      ? {
+          videoId: vodPlayback.video_id,
+          channelLogin: vodPlayback.channel_login ?? currentStream?.user_login,
+          title: vodPlayback.title ?? currentStream?.title,
+          thumbnailUrl: vodPlayback.thumbnail_url ?? currentStream?.thumbnail_url,
+        }
+      : null,
+  );
+  // One toast when a VOD reopens where the viewer left off.
+  useEffect(() => {
+    if (!vodPlayback || vodPlayback.rewound_from_live) return;
+    const at = vodPlayback.start_position_secs;
+    if (!at || at < 1) return;
+    if (resumeToastedRef.current === vodPlayback.video_id) return;
+    resumeToastedRef.current = vodPlayback.video_id;
+    useAppStore.getState().addToast(`Resumed from ${formatVodTime(at)}`, 'info');
+  }, [vodPlayback]);
+  const rewindLive = useAppStore((s) => s.rewindLive);
+  const returnToLive = useAppStore((s) => s.returnToLive);
+  // Which delivery path the current hls.js instance rides; the broadcast
+  // timeline uses it to decide how far a live seek can go before it must
+  // hand off to the recording. State, not a ref, because it is read in
+  // render (a ref read there is what the React Compiler refuses).
+  const [isLowLatencyPath, setIsLowLatencyPath] = useState(false);
+  // Plyr's `.plyr__progress` element, captured right after Plyr builds its
+  // controls and cleared when it is destroyed; the timeline portals into it.
+  const [timelineHost, setTimelineHost] = useState<HTMLElement | null>(null);
+  // One "Resumed from" toast per VOD: StrictMode runs mount effects twice.
+  const resumeToastedRef = useRef<string | null>(null);
+  const timelineAnchor = liveRewindAnchor ?? currentStream?.started_at ?? null;
+
   const goLive = useCallback(() => {
     const hls = hlsRef.current;
     const video = videoRef.current;
@@ -2741,9 +2867,44 @@ const VideoPlayer = () => {
         )}
       </AnimatePresence>
 
+      {/* The broadcast timeline: spans recording start to the live edge in
+          Plyr's progress slot, so a viewer who joined hours in can drag back
+          hours. Only when the channel keeps a recording (or we are already in
+          it); a VODs-off channel keeps Plyr's session bar. */}
+      {isTwitchStream && currentMediaType === 'live' && streamUrl && streamUrl !== 'offline' && timelineAnchor && (liveRewindAvailable || !!liveRewind) && (
+        <BroadcastTimeline
+          host={timelineHost}
+          videoRef={videoRef}
+          anchorIso={timelineAnchor}
+          rewound={!!liveRewind}
+          liveSeekWindowSecs={isLowLatencyPath ? 5 : LIVE_DVR_MAX_BEHIND_SECS}
+          visible={showOverlay}
+          onSeekLive={(t) => {
+            const v = videoRef.current;
+            if (v) v.currentTime = t;
+          }}
+          onGoLive={goLive}
+          onRewindTo={(pos) => void rewindLive({ positionSecs: pos })}
+          onReturnToLive={() => void returnToLive()}
+        />
+      )}
+
+      {/* Rewound into the broadcast recording: a persistent way back to the
+          live edge (a normal live start on the same channel). */}
+      {liveRewind && (
+        <button
+          onClick={() => void returnToLive()}
+          className="absolute left-1/2 top-3 z-30 flex -translate-x-1/2 items-center gap-2 rounded-full glass-button px-3 py-1.5 text-[12px] font-semibold text-white"
+          style={{ backdropFilter: 'blur(16px)' }}
+        >
+          <Radio className="h-3.5 w-3.5 text-red-400" />
+          Back to live
+        </button>
+      )}
+
       {/* Live telemetry panel, bottom-left. Collapsed toggle rides the hover
           overlay; the panel itself persists once opened. Live streams only. */}
-      {currentMediaType === 'live' && streamUrl && streamUrl !== 'offline' && (
+      {currentMediaType === 'live' && !liveRewind && streamUrl && streamUrl !== 'offline' && (
         <PlayerStatsOverlay
           hlsRef={hlsRef}
           videoRef={videoRef}

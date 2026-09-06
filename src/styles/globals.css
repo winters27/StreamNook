@@ -3757,3 +3757,130 @@ html[data-motion="reduced"] .sn-ffz-anim-leave {
     animation: none;
   }
 }
+
+/* Broadcast timeline (BroadcastTimeline.tsx) portals into Plyr's progress
+   slot; hide Plyr's own session-relative range, buffer bar and tooltip there.
+   Unlayered, at the end, so it wins the (0,2,1) tie with plyr.css by order. */
+.plyr__progress.sn-timeline-host > input[type=range],
+.plyr__progress.sn-timeline-host > progress,
+.plyr__progress.sn-timeline-host > .plyr__tooltip {
+  display: none;
+}
+
+/* The timeline itself, on Plyr's own variables so it matches the range it
+   replaces: 4px track that grows to 6px on hover, the theme's fill gradient,
+   the info-colored thumb with its glow, and the player's tooltip look. */
+.sn-timeline {
+  position: relative;
+  width: 100%;
+  height: 20px;
+  cursor: pointer;
+  user-select: none;
+  touch-action: none;
+}
+.sn-timeline__track {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: var(--plyr-range-track-height, 4px);
+  transform: translateY(-50%);
+  border-radius: 999px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.16);
+  transition: height 0.2s ease;
+}
+.sn-timeline:hover .sn-timeline__track,
+.sn-timeline--dragging .sn-timeline__track {
+  height: 6px;
+}
+.sn-timeline__available {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  background: var(--plyr-video-progress-buffered-background, var(--color-accent-muted));
+}
+.sn-timeline__fill {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  background: var(--plyr-range-fill-background, var(--plyr-color-main));
+}
+.sn-timeline__thumb {
+  position: absolute;
+  top: 50%;
+  width: var(--plyr-range-thumb-height, 13px);
+  height: var(--plyr-range-thumb-height, 13px);
+  transform: translate(-50%, -50%) scale(0);
+  border-radius: 50%;
+  background: var(--plyr-range-thumb-background, var(--plyr-color-main));
+  box-shadow: var(--plyr-range-thumb-shadow, none);
+  transition: transform 0.15s ease;
+  pointer-events: none;
+}
+.sn-timeline:hover .sn-timeline__thumb,
+.sn-timeline--dragging .sn-timeline__thumb {
+  transform: translate(-50%, -50%) scale(1);
+}
+/* Section boundaries of the compressed scale: a hairline always, its
+   "-1h 02m" label only while the bar is hovered or dragged. */
+.sn-timeline__band {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  pointer-events: none;
+}
+.sn-timeline__band--alt {
+  background: rgba(0, 0, 0, 0.28);
+}
+.sn-timeline__tick {
+  position: absolute;
+  top: 50%;
+  width: 2px;
+  height: 14px;
+  transform: translate(-50%, -50%);
+  border-radius: 1px;
+  background: rgba(255, 255, 255, 0.85);
+  box-shadow: 0 0 4px rgba(0, 0, 0, 0.6);
+  pointer-events: none;
+}
+.sn-timeline__tick-label {
+  position: absolute;
+  top: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  margin-top: 1px;
+  font-size: 10px;
+  line-height: 1;
+  white-space: nowrap;
+  color: rgba(255, 255, 255, 0.85);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
+  font-variant-numeric: tabular-nums;
+  opacity: 0.75;
+  transition: opacity 0.15s ease;
+}
+.sn-timeline:hover .sn-timeline__tick-label,
+.sn-timeline--dragging .sn-timeline__tick-label {
+  opacity: 1;
+}
+.sn-timeline__tip {
+  position: absolute;
+  bottom: 100%;
+  margin-bottom: 10px;
+  transform: translateX(-50%);
+  padding: 4px 8px;
+  white-space: nowrap;
+  pointer-events: none;
+  background: var(--plyr-tooltip-background, rgba(0, 0, 0, 0.85));
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border: 1px solid var(--color-border-light);
+  border-radius: var(--plyr-tooltip-radius, 4px);
+  color: var(--plyr-tooltip-color, #fff);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.3;
+  z-index: 3;
+}

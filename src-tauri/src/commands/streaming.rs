@@ -122,6 +122,40 @@ pub struct StreamStartResult {
     /// Absent for every Twitch path, so existing consumers are unaffected.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub kind: Option<String>,
+    /// VOD starts only: status, length, timeline anchor, where to begin, and
+    /// whether this VOD is standing in for a live broadcast the viewer
+    /// rewound. Absent for live and clips.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vod: Option<VodStartInfo>,
+}
+
+/// What the player needs to run a VOD correctly (a recording VOD is a growing
+/// EVENT playlist that must not be treated as live) and where to start it.
+#[derive(Debug, Clone, Serialize)]
+pub struct VodStartInfo {
+    pub video_id: String,
+    /// "recording" while the broadcast is live, "recorded" when finished,
+    /// "unknown" when the metadata lookup failed (the player then sniffs the
+    /// playlist itself).
+    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub length_seconds: Option<u32>,
+    /// Broadcast time at VOD position 0 (ISO 8601).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recorded_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub channel_login: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thumbnail_url: Option<String>,
+    /// Where playback should begin: the stored resume position, or the mapped
+    /// broadcast position for a live rewind. None = from the top.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub start_position_secs: Option<f64>,
+    /// True when the viewer rewound a live broadcast into this recording; the
+    /// live session stays up and the player offers "Back to live".
+    pub rewound_from_live: bool,
 }
 
 /// What we actually KNOW about a channel's liveness.
@@ -339,6 +373,7 @@ async fn start_provider_stream(
                 proxy_region: None,
                 available: hls_master::quality_names(&resolved.qualities),
                 clip_source: None,
+                vod: None,
                 kind: Some("hls".to_string()),
             })
         }
@@ -354,6 +389,7 @@ async fn start_provider_stream(
             proxy_region: None,
             available: hls_master::quality_names(&resolved.qualities),
             clip_source: None,
+            vod: None,
             kind: Some("hls".to_string()),
         }),
         // FLV/MP4 platforms land here once their adapters ship (TikTok).
@@ -410,6 +446,7 @@ pub async fn resolve_clip_media(
         proxy_region: None,
         available: r.available,
         clip_source: r.clip_source,
+        vod: None,
         kind: None,
     })
 }
@@ -457,29 +494,14 @@ pub async fn start_stream(
             proxy_region: None,
             available: r.available,
             clip_source: r.clip_source,
+            vod: None,
             kind: None,
         });
     }
 
     // VOD → HLS media playlist, relayed through the local stream server.
     if let Some(vod_id) = tr::vod_id_from_url(&url) {
-        let r = tr::resolve_vod(&vod_id, oauth.as_deref(), &quality)
-            .await
-            .map_err(|e| e.to_string())?;
-        let port = StreamServer::start_proxy_server(r.url)
-            .await
-            .map_err(|e| e.to_string())?;
-        debug!("[Streaming] vod {} → '{}'", vod_id, r.quality);
-        return Ok(StreamStartResult {
-            url: local_player_url(port),
-            quality: r.quality,
-            mode: None,
-            entitled: false,
-            proxy_region: None,
-            available: r.available,
-            clip_source: None,
-            kind: None,
-        });
+        return start_vod(&vod_id, oauth.as_deref(), &quality, &state, None).await;
     }
 
     // Live channel.
@@ -535,8 +557,195 @@ pub async fn start_stream(
         proxy_region: r.status.proxy_region,
         available: r.available,
         clip_source: None,
+        vod: None,
         kind: None,
     })
+}
+
+/// Resolve a VOD, relay it, and decide where it starts. `start_override`
+/// (a live rewind's mapped position) wins over the stored resume position;
+/// otherwise the progress store answers, when the resume setting is on.
+async fn start_vod(
+    vod_id: &str,
+    oauth: Option<&str>,
+    quality: &str,
+    state: &State<'_, AppState>,
+    start_override: Option<f64>,
+) -> Result<StreamStartResult, String> {
+    let (resolved, info) = tokio::join!(
+        tr::resolve_vod(vod_id, oauth, quality),
+        tr::fetch_vod_info(vod_id)
+    );
+    let r = resolved.map_err(|e| e.to_string())?;
+    let port = StreamServer::start_proxy_server_with(r.url, false)
+        .await
+        .map_err(|e| e.to_string())?;
+    let resume_enabled = state.settings.lock().unwrap().video_player.resume_vod_playback;
+    let start_position = match start_override {
+        Some(p) => Some(p),
+        None if resume_enabled => {
+            let id = vod_id.to_string();
+            tokio::task::spawn_blocking(move || {
+                crate::services::vod_progress_service::resume_position(&id)
+            })
+            .await
+            .ok()
+            .flatten()
+        }
+        None => None,
+    };
+    debug!(
+        "[Streaming] vod {} → '{}' status={} len={:?} start={:?}",
+        vod_id, r.quality, info.status, info.length_seconds, start_position
+    );
+    Ok(StreamStartResult {
+        url: local_player_url(port),
+        quality: r.quality,
+        mode: None,
+        entitled: false,
+        proxy_region: None,
+        available: r.available,
+        clip_source: None,
+        kind: None,
+        vod: Some(VodStartInfo {
+            video_id: vod_id.to_string(),
+            status: info.status,
+            length_seconds: info.length_seconds,
+            recorded_at: info.recorded_at,
+            channel_login: info.owner_login,
+            title: info.title,
+            thumbnail_url: info.thumbnail_url,
+            start_position_secs: start_position,
+            rewound_from_live: false,
+        }),
+    })
+}
+
+/// Whether a live broadcast can be rewound: Twitch only keeps a recording
+/// while the channel has VODs enabled, and `archiveVideo` is absent otherwise.
+#[derive(Debug, Clone, Serialize)]
+pub struct LiveRewindInfo {
+    pub available: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub video_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recorded_at: Option<String>,
+}
+
+/// Per-channel answer cache so the player can ask at every live start
+/// without a GQL round trip each time. A channel that has just gone live can
+/// take a little while to get its recording, so a negative answer expires
+/// sooner than a positive one.
+static LIVE_REWIND_CACHE: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<String, (LiveRewindInfo, std::time::Instant)>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+const LIVE_REWIND_CACHE_POSITIVE: std::time::Duration = std::time::Duration::from_secs(30 * 60);
+const LIVE_REWIND_CACHE_NEGATIVE: std::time::Duration = std::time::Duration::from_secs(2 * 60);
+
+/// Can this live channel be rewound into its recording? Cached; a lookup
+/// failure reports `available: false` without caching, so the next ask
+/// retries.
+#[tauri::command]
+pub async fn get_live_rewind_info(channel: String) -> Result<LiveRewindInfo, String> {
+    let channel = channel.trim().trim_start_matches('#').to_lowercase();
+    if channel.is_empty() {
+        return Err("No channel".to_string());
+    }
+    if let Ok(cache) = LIVE_REWIND_CACHE.lock() {
+        if let Some((info, at)) = cache.get(&channel) {
+            let ttl = if info.available {
+                LIVE_REWIND_CACHE_POSITIVE
+            } else {
+                LIVE_REWIND_CACHE_NEGATIVE
+            };
+            if at.elapsed() < ttl {
+                return Ok(info.clone());
+            }
+        }
+    }
+    let info = match tr::fetch_live_archive(&channel).await {
+        Ok(Some(archive)) => LiveRewindInfo {
+            available: true,
+            video_id: Some(archive.video_id),
+            recorded_at: archive.recorded_at,
+        },
+        Ok(None) => LiveRewindInfo {
+            available: false,
+            video_id: None,
+            recorded_at: None,
+        },
+        Err(e) => {
+            debug!("[Streaming] live rewind lookup for {} failed: {}", channel, e);
+            return Ok(LiveRewindInfo {
+                available: false,
+                video_id: None,
+                recorded_at: None,
+            });
+        }
+    };
+    if let Ok(mut cache) = LIVE_REWIND_CACHE.lock() {
+        cache.insert(channel, (info.clone(), std::time::Instant::now()));
+    }
+    Ok(info)
+}
+
+/// Rewind a live broadcast: switch the solo relay onto the channel's
+/// recording VOD, either at an absolute broadcast position (`position_secs`,
+/// what the timeline scrubber sends) or `behind_secs` behind now (None =
+/// from the start). The live chat session is untouched; the drops heartbeat
+/// target is cleared because watching the recording is not watching live,
+/// and "Back to live" (a normal live start) re-registers it.
+#[tauri::command]
+pub async fn rewind_live_stream(
+    channel: String,
+    behind_secs: Option<f64>,
+    position_secs: Option<f64>,
+    quality: String,
+    state: State<'_, AppState>,
+) -> Result<StreamStartResult, String> {
+    let channel = channel.trim().trim_start_matches('#').to_lowercase();
+    if channel.is_empty() {
+        return Err("No channel to rewind".to_string());
+    }
+    let archive = tr::fetch_live_archive(&channel)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| {
+            format!(
+                "{} has no recording of this broadcast to rewind into (VODs may be disabled)",
+                channel
+            )
+        })?;
+    let position = match position_secs {
+        Some(p) => archive.clamp_position(p),
+        None => archive.position_for(chrono::Utc::now(), behind_secs),
+    };
+    state.watch_heartbeat.clear_target().await;
+    crate::services::stream_server::set_solo_session(None);
+    crate::services::stream_server::set_upstream_profile(
+        crate::services::stream_server::UpstreamProfile::Twitch,
+    );
+    let oauth = state.twitch_auth.get_token().await.ok();
+    let mut result = start_vod(
+        &archive.video_id,
+        oauth.as_deref(),
+        &quality,
+        &state,
+        Some(position),
+    )
+    .await?;
+    if let Some(v) = result.vod.as_mut() {
+        v.rewound_from_live = true;
+    }
+    log::info!(
+        "[Streaming] rewind {} → vod {} at {:.0}s (behind={:?}, position={:?})",
+        channel,
+        archive.video_id,
+        position,
+        behind_secs,
+        position_secs
+    );
+    Ok(result)
 }
 
 #[tauri::command]

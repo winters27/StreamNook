@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import { invoke } from '@tauri-apps/api/core';
 import { listen, emit } from '@tauri-apps/api/event';
-import type { Settings, TwitchUser, TwitchStream, UserInfo, TwitchCategory, HypeTrainData, TwitchVideo, ModLogEvent, DropProgressStatus, FavoriteChannel } from '../types';
+import type { Settings, TwitchUser, TwitchStream, UserInfo, TwitchCategory, HypeTrainData, TwitchVideo, ModLogEvent, DropProgressStatus, FavoriteChannel, VodStartInfo, LiveRewindInfo } from '../types';
 import { trackActivity } from '../services/logService';
 import { Logger, setDiagnosticsEnabled } from '../utils/logger';
 // Direct import (not via the keybindings index) to avoid a storecommands cycle.
@@ -32,6 +32,9 @@ type StreamStartResult = {
   clip_source?: ClipSource;
   /** How the player should ingest `url`. Absent (every Twitch path) means HLS. */
   kind?: 'hls' | 'flv' | 'mp4';
+  /** VOD starts only: status, length, where to begin, and whether this VOD is
+   *  standing in for a live broadcast the viewer rewound. */
+  vod?: VodStartInfo;
 };
 
 /** Chat-replay coordinates for a clip. Every field is optional: a clip whose parent VOD
@@ -218,6 +221,27 @@ interface AppState {
   channelsInPopouts: Set<string>;
   currentMediaType: 'live' | 'clip' | 'video' | 'offline_chat' | null;
   originalMediaUrl: string | null;
+  /** Rust's description of the VOD the player is running (status, length,
+   *  start position), from `start_stream`'s `vod`. Null for live, clips and
+   *  idle. The player gates every live-only mechanism off this. */
+  vodPlayback: VodStartInfo | null;
+  /** The live channel the viewer rewound into its recording. `currentStream`,
+   *  chat and `currentMediaType: 'live'` stay on the live channel; only the
+   *  relay plays the VOD, and the player offers "Back to live". */
+  liveRewind: { channel: string; videoId: string } | null;
+  /** Whether the current live broadcast can be rewound (the channel keeps
+   *  VODs). null while unknown or not live; Rust answers once per live start
+   *  from a cached lookup, so the player can say "VODs are off" up front. */
+  liveRewindAvailable: boolean | null;
+  /** Broadcast time at recording position 0 (ISO), from the same lookup. The
+   *  player's broadcast timeline is anchored on it. */
+  liveRewindAnchor: string | null;
+  /** Rewind the live broadcast into its recording VOD at an absolute
+   *  broadcast position, or `behindSecs` behind now (null = from the start).
+   *  No-op unless a Twitch live stream is playing. */
+  rewindLive: (target: { positionSecs?: number; behindSecs?: number | null }) => Promise<void>;
+  /** Leave a rewind and rejoin the live edge. */
+  returnToLive: () => Promise<void>;
   /** A Twitch clip playing in the centered overlay modal, or null. The modal is
    *  independent of the main stream pipeline (a clip is a direct MP4), so the
    *  current stream/chat stays mounted underneath and resumes on close — the
@@ -576,6 +600,9 @@ let providerStartSeq = 0;
 // take up to a minute to give up) must not clobber whatever the user switched
 // to in the meantime.
 let twitchStartSeq = 0;
+/** The most recent rewind / back-to-live swap, so a superseded swap only
+ *  releases the loader freeze it set itself. */
+let lastSwapSeq = 0;
 
 /**
  * Watch a stream on a non-Twitch platform.
@@ -822,6 +849,10 @@ export const useAppStore = create<AppState>((set, get) => ({
   channelsInPopouts: new Set<string>(),
   currentMediaType: null,
   originalMediaUrl: null,
+  vodPlayback: null,
+  liveRewind: null,
+  liveRewindAvailable: null,
+  liveRewindAnchor: null,
   clipModal: null,
   vodModal: null,
   clipEditor: null,
@@ -1024,7 +1055,24 @@ export const useAppStore = create<AppState>((set, get) => ({
           newMap.set(result.channel_id, { level: result.level, isGolden: result.is_golden_kappa });
         }
       }
-      set({ activeHypeTrainChannels: newMap });
+      // Publish only when the content changed. Sidebar polls this every 30 s
+      // and both Sidebar and Home re-poll on every followed-streams refresh;
+      // storing a fresh Map each time re-rendered Sidebar, Home's LayoutGroup,
+      // every stream card and its tooltips (about 220 component renders and a
+      // dozen popLayout re-measures per poll, measured 2026-09-05) while no
+      // hype train existed at all, which is the common case.
+      const current = get().activeHypeTrainChannels;
+      let same = current.size === newMap.size;
+      if (same) {
+        for (const [id, next] of newMap) {
+          const prev = current.get(id);
+          if (!prev || prev.level !== next.level || prev.isGolden !== next.isGolden) {
+            same = false;
+            break;
+          }
+        }
+      }
+      if (!same) set({ activeHypeTrainChannels: newMap });
     } catch (e) {
       // Silently fail - Hype Train badges are non-critical
       Logger.warn('[HypeTrain] Failed to refresh bulk status:', e);
@@ -1787,6 +1835,10 @@ export const useAppStore = create<AppState>((set, get) => ({
         currentStream: parsedInfo,
         currentMediaType: type,
         originalMediaUrl: url,
+        vodPlayback: type === 'video' ? (result.vod ?? null) : null,
+        liveRewind: null,
+        liveRewindAvailable: null,
+        liveRewindAnchor: null,
         isHomeActive: false,
         // Preserve the origin category so the back button works for clips/VODs.
         // stopStream() clears this, so we re-set it here from the current navigation context.
@@ -1842,9 +1894,103 @@ export const useAppStore = create<AppState>((set, get) => ({
     } catch (e: unknown) {
       Logger.error(`Failed to start ${type}:`, e);
       get().addToast(`Failed to load ${type}: ${String(e)}`, 'error');
-      set({ isHomeActive: true, currentMediaType: null, currentStream: null, streamUrl: null, activeQuality: null });
+      set({ isHomeActive: true, currentMediaType: null, currentStream: null, streamUrl: null, activeQuality: null, vodPlayback: null, liveRewind: null, liveRewindAvailable: null, liveRewindAnchor: null });
     } finally {
       set({ isLoading: false });
+    }
+  },
+  rewindLive: async (target) => {
+    const { currentStream, currentMediaType, settings } = get();
+    if (!currentStream || currentMediaType !== 'live') return;
+    if (streamProvider(currentStream) !== 'twitch') return;
+    const channel = currentStream.user_login;
+    if (!channel) return;
+    if (get().liveRewindAvailable === false) {
+      get().addToast(`${currentStream.user_name || channel} has VODs turned off, so this broadcast can't be rewound`, 'info');
+      return;
+    }
+    // A relay swap is a playback start: it takes a turn in the same sequence
+    // as startStream, so two quick drags, or a drag racing a channel switch,
+    // can never land out of order (the older result is dropped).
+    const seq = ++twitchStartSeq;
+    lastSwapSeq = seq;
+    try {
+      // Freeze the player's loader while the relay swaps onto the VOD, exactly
+      // as a restart does, so the old hls.js instance does not churn errors
+      // against the changing upstream.
+      set({ isRestartingStream: true });
+      const result = await invoke<StreamStartResult>('rewind_live_stream', {
+        channel,
+        behindSecs: target.behindSecs ?? null,
+        positionSecs: target.positionSecs ?? null,
+        quality: settings.quality,
+      });
+      const s = get();
+      // Superseded (a newer swap or start) or switched away while resolving:
+      // the relay now serves something else, drop this result.
+      if (seq !== twitchStartSeq || s.currentStream?.user_login !== channel || s.currentMediaType !== 'live') {
+        if (seq === lastSwapSeq) set({ isRestartingStream: false });
+        return;
+      }
+      set({
+        streamUrl: result.url,
+        activeQuality: result.quality,
+        availableQualities: result.available ?? [],
+        playbackKind: 'hls',
+        adSource: null,
+        vodPlayback: result.vod ?? null,
+        liveRewind: result.vod ? { channel, videoId: result.vod.video_id } : null,
+        isRestartingStream: false,
+      });
+      trackActivity(`Rewound ${channel} into the broadcast recording`);
+    } catch (e) {
+      set({ isRestartingStream: false });
+      Logger.warn('[Rewind] failed:', e);
+      get().addToast(`Could not rewind: ${String(e)}`, 'error');
+    }
+  },
+  returnToLive: async () => {
+    const { currentStream, liveRewind, settings } = get();
+    if (!liveRewind || !currentStream) return;
+    const channel = liveRewind.channel;
+    const seq = ++twitchStartSeq;
+    lastSwapSeq = seq;
+    try {
+      set({ isRestartingStream: true });
+      const result = await invoke<StreamStartResult>('start_stream', {
+        url: `https://twitch.tv/${channel}`,
+        quality: settings.quality,
+      });
+      const s = get();
+      if (seq !== twitchStartSeq || s.liveRewind?.channel !== channel) {
+        if (seq === lastSwapSeq) set({ isRestartingStream: false });
+        return;
+      }
+      set({
+        streamUrl: result.url,
+        activeQuality: result.quality,
+        adSource: adSourceFrom(result),
+        availableQualities: result.available ?? [],
+        playbackKind: 'hls',
+        vodPlayback: null,
+        liveRewind: null,
+        isRestartingStream: false,
+      });
+      // The rewind cleared the watch-heartbeat target (a recording is not the
+      // live broadcast); re-arm it the way a fresh live start does.
+      const channelId = currentStream.user_id;
+      if (channelId) {
+        invoke('start_drops_monitoring', { channelId, channelName: channel }).catch(() => {});
+      }
+    } catch (e) {
+      set({ isRestartingStream: false });
+      Logger.error('[Rewind] back to live failed:', e);
+      // The live resolve carries its own retry budget, so failing here means
+      // the broadcast ended while we were in the recording. Run the normal
+      // offline flow (auto-switch / offline chat) instead of leaving a
+      // finished recording labelled live with no way back.
+      get().addToast('The broadcast has ended', 'info');
+      void get().handleStreamOffline();
     }
   },
   stopStream: async (options) => {
@@ -1873,6 +2019,16 @@ export const useAppStore = create<AppState>((set, get) => ({
       // Tearing the chat bridge down here would race MultiNook's re-acquire of
       // the same channel and leave chat stuck "connecting" (the IRC connection
       // would already be gone — hence the "IRC connection not established" PART).
+      // Handing a rewound session to MultiNook: the rewind cleared the watch
+      // heartbeat target (a recording is not the live broadcast) and the grid
+      // inherits drops monitoring as-is, so re-arm it for the live channel.
+      if (preserveBackend && get().liveRewind) {
+        const cs = get().currentStream;
+        if (cs?.user_id && cs.user_login) {
+          invoke('start_drops_monitoring', { channelId: cs.user_id, channelName: cs.user_login }).catch(() => {});
+        }
+      }
+
       if (!preserveBackend) {
         await invoke('stop_chat');
 
@@ -1916,7 +2072,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         }
       }
 
-      set({ streamUrl: null, activeQuality: null, availableQualities: [], adSource: null, playbackKind: null, currentStream: null, currentMediaType: null, currentHypeTrain: null, streamOriginCategory: null });
+      set({ streamUrl: null, activeQuality: null, availableQualities: [], adSource: null, playbackKind: null, currentStream: null, currentMediaType: null, currentHypeTrain: null, streamOriginCategory: null, vodPlayback: null, liveRewind: null, liveRewindAvailable: null, liveRewindAnchor: null });
 
       // Set idle Discord presence when not watching (skip during a MultiNook
       // handoff — MultiNook publishes its own presence for the grid).
@@ -2031,7 +2187,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       Logger.debug('[Stream] Restarted successfully:', result.url);
       logQualityFallback(quality, result.quality);
 
-      set({ streamUrl: result.url, activeQuality: result.quality, adSource: adSourceFrom(result), availableQualities: result.available ?? [], playbackKind: 'hls', currentStream: streamInfo, isRestartingStream: false });
+      set({ streamUrl: result.url, activeQuality: result.quality, adSource: adSourceFrom(result), availableQualities: result.available ?? [], playbackKind: 'hls', currentStream: streamInfo, vodPlayback: null, liveRewind: null, isRestartingStream: false });
 
       // Show toast notification
       get().addToast('Stream restarted with new settings', 'success');
@@ -2313,7 +2469,16 @@ export const useAppStore = create<AppState>((set, get) => ({
       // Same guard on the success path: a slow start that finally resolves
       // must not replace the stream the user has since switched to.
       if (superseded()) return;
-      set({ streamUrl: result.url, activeQuality: result.quality, adSource: adSourceFrom(result), availableQualities: result.available ?? [], playbackKind: 'hls', currentStream: info, currentMediaType: 'live', originalMediaUrl: null, isHomeActive: false });
+      set({ streamUrl: result.url, activeQuality: result.quality, adSource: adSourceFrom(result), availableQualities: result.available ?? [], playbackKind: 'hls', currentStream: info, currentMediaType: 'live', originalMediaUrl: null, vodPlayback: null, liveRewind: null, liveRewindAvailable: null, liveRewindAnchor: null, isHomeActive: false });
+
+      // Can this broadcast be rewound? One cached Rust lookup per live start;
+      // the player disables Rewind (with the reason) on a channel that keeps
+      // no VODs instead of letting the viewer find out from a failure.
+      void invoke<LiveRewindInfo>('get_live_rewind_info', { channel })
+        .then((r) => {
+          if (!superseded()) set({ liveRewindAvailable: r.available, liveRewindAnchor: r.recorded_at ?? null });
+        })
+        .catch(() => {});
 
       // Start drops and channel points monitoring
       try {
@@ -2713,6 +2878,10 @@ export const useAppStore = create<AppState>((set, get) => ({
       let latestVideoUrl: string | null = null;
       let resolvedStreamUrl: string | null = null;
       let resolvedQuality: string | null = null;
+      // Rust's VOD description (status, length, resume position) for the
+      // auto-played latest broadcast; the player keys its VOD config and the
+      // position reporter on it exactly as for a VOD opened from a card.
+      let resolvedVod: VodStartInfo | null = null;
       let streamContextForUI = { ...info };
 
       // chatOnly: the channel is live and only playback broke, so there is no
@@ -2743,6 +2912,7 @@ export const useAppStore = create<AppState>((set, get) => ({
               const result = await invoke<StreamStartResult>('start_stream', { url: latestVideoUrl, quality: requestedQuality });
               resolvedStreamUrl = result.url;
               resolvedQuality = result.quality;
+              resolvedVod = result.vod ?? null;
               logQualityFallback(requestedQuality, result.quality);
               Logger.debug(`[Offline Chat] Resolved VOD playback URL: ${resolvedStreamUrl}`);
             } catch (resolveError) {
@@ -2761,6 +2931,10 @@ export const useAppStore = create<AppState>((set, get) => ({
         currentStream: streamContextForUI,
         currentMediaType: 'offline_chat',
         originalMediaUrl: latestVideoUrl,
+        vodPlayback: resolvedVod,
+        liveRewind: null,
+        liveRewindAvailable: null,
+        liveRewindAnchor: null,
         isHomeActive: false
       });
 
