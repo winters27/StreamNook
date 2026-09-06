@@ -37,7 +37,7 @@ use commands::{
     seventv_cosmetics_fetch::*, song_id::*, streamnook_api::*, streaming::*, subscriptions::*,
     twitch::*,
     universal_cache::*,
-    user_profile::*, watch_streak::*, whisper_storage::*,
+    user_profile::*, vod_progress::*, watch_streak::*, whisper_storage::*,
 };
 use log::{debug, error, info, warn};
 use models::settings::{AppState, CloseToTrayMode, Settings};
@@ -931,6 +931,7 @@ fn main() {
             get_streams_by_game,
             search_channels,
             search_categories,
+            get_categories_by_name,
             get_category_info,
             get_user_by_id,
             get_user_by_login,
@@ -977,6 +978,12 @@ fn main() {
             stop_ll_diag,
             get_stream_qualities,
             change_stream_quality,
+            rewind_live_stream,
+            get_live_rewind_info,
+            // VOD watch position
+            report_vod_position,
+            get_vod_progress,
+            clear_vod_progress,
             // Song recognition
             identify_song,
             // Multi-stream commands
@@ -1194,6 +1201,7 @@ fn main() {
             refresh_drops_connection_status,
             get_drops_inventory,
             get_drop_progress,
+            get_campaign_eligible_channels,
             claim_drop,
             check_channel_points,
             claim_channel_points,
@@ -1382,7 +1390,10 @@ fn main() {
         //    user's Close button preference. The default only hides while
         //    MultiChat popouts are open (quitting would take them with it);
         //    Always hides every time, Never always exits. When we hide, the
-        //    process keeps running and popouts stay alive.
+        //    process keeps running and popouts stay alive. The JS side then
+        //    destroys the hidden main to free its memory, which under Always
+        //    with no popouts leaves ZERO windows; the ExitRequested arm in
+        //    `.run()` below keeps the process alive for that case.
         //
         // 2. Popout destroyed: when a popout closes, if it was the last
         //    popout AND the main window is currently hidden (i.e. the user
@@ -1474,12 +1485,14 @@ fn main() {
                         // here, so treat None as "gone"; otherwise the process would
                         // linger with no windows.
                         //
-                        // A hidden-but-alive main is only a reason to exit when the
-                        // user hasn't asked to always live in the tray. Under
-                        // `Always` they expect to quit from the tray menu, so
-                        // closing their last popout must not take the app with it.
-                        // A destroyed main still exits in every mode: there is no
-                        // window left to restore.
+                        // Neither is a reason to exit when the user asked to
+                        // always live in the tray. Under `Always` they expect to
+                        // quit from the tray menu, so closing their last popout
+                        // must not take the app with it. That covers a destroyed
+                        // main too: closing main under `Always` hides it and then
+                        // the JS listener destroys it to free memory, so "main is
+                        // None" is the ordinary Always tray state, not a stranded
+                        // process. The tray recreates it on demand.
                         let always_tray = app_handle
                             .try_state::<AppState>()
                             .and_then(|s| s.settings.lock().ok().map(|g| g.close_to_tray))
@@ -1487,7 +1500,7 @@ fn main() {
                             == CloseToTrayMode::Always;
                         let should_exit = match app_handle.get_webview_window("main") {
                             Some(main_win) => !main_win.is_visible().unwrap_or(true) && !always_tray,
-                            None => true,
+                            None => !always_tray,
                         };
                         if should_exit {
                             debug!("[Main] Last MultiChat closed while main hidden/closed — exiting");
@@ -1500,6 +1513,27 @@ fn main() {
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app_handle, event| {
+            // Last window gone. The runtime fires this with `code: None` when
+            // the final window is destroyed (as opposed to `app.exit()`, which
+            // carries `Some(code)`) and exits unless we object. Under the
+            // "Always minimize" close mode that is the NORMAL tray state: the
+            // CloseRequested interception hides main, then the JS
+            // `main-hiding-to-tray` listener destroys it to free its ~350 MB,
+            // and with no popouts open nothing else is left. Keep the process
+            // (and with it the tray icon) alive; the tray recreates main on
+            // demand via `show_main_window`. Tray Quit and the updater still
+            // exit because they pass an exit code.
+            if let tauri::RunEvent::ExitRequested { code: None, api, .. } = &event {
+                let always_tray = app_handle
+                    .try_state::<AppState>()
+                    .and_then(|s| s.settings.lock().ok().map(|g| g.close_to_tray))
+                    .unwrap_or_default()
+                    == CloseToTrayMode::Always;
+                if always_tray {
+                    debug!("[Main] Last window closed under Always close mode — staying in the tray");
+                    api.prevent_exit();
+                }
+            }
             if let tauri::RunEvent::Exit = event {
                 // Flush every debounced store before the process dies; each is
                 // a no-op when nothing is dirty.
@@ -1507,6 +1541,7 @@ fn main() {
                 let _ = services::universal_cache_service::flush_manifest_now();
                 let _ = services::mod_log_storage_service::ModLogStorageService::flush_now();
                 let _ = services::whisper_storage_service::WhisperStorageService::flush_now();
+                let _ = services::vod_progress_service::flush_now();
             let _ = services::chat_logger_service::ChatLoggerService::flush_all();
                 // Ask running plugin processes to shut down before the app
                 // process dies, waiting briefly so well-behaved plugins exit
