@@ -45,7 +45,7 @@
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
     "react-virtualized-auto-sizer": "^1.0.26",
-    "react-window": "^1.8.11",
+    "react-window": "^2.3.0",
     "zustand": "^5.0.9"
   },
   "devDependencies": {
@@ -55,7 +55,7 @@
     "@types/node": "^24.10.1",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.7",
-    "@types/react-window": "^1.8.8",
+    "@types/react-window": "^2.0.0",
     "@vitejs/plugin-react": "^4.7.0",
     "babel-plugin-react-compiler": "1.0.0",
     "baseline-browser-mapping": "^2.10.37",
