@@ -459,7 +459,16 @@ pub async fn swap_upstream(playlist_url: String) -> Result<()> {
 }
 
 impl StreamServer {
+    /// Serve `stream_url` through the relay, probing the low-latency origin
+    /// (the live default).
     pub async fn start_proxy_server(stream_url: String) -> Result<u16> {
+        Self::start_proxy_server_with(stream_url, true).await
+    }
+
+    /// `probe_ll: false` for VOD playlists: they never carry the prefetch
+    /// tags the origin keys on, and a recording VOD playlist is thousands of
+    /// lines, so the probe would only pay one big fetch to learn "inactive".
+    pub async fn start_proxy_server_with(stream_url: String, probe_ll: bool) -> Result<u16> {
         // The upstream media-playlist URL the LL-HLS origin will poll. `reset_ad_state`
         // (below) stops any prior origin; `ll_origin::start` probes this URL and, if it's
         // a low-latency broadcast, builds the live edge before we return — so the player
@@ -485,7 +494,7 @@ impl StreamServer {
             // `#EXT-X-TWITCH-PREFETCH`, which they never emit (Kick ships plain
             // `#EXT-X-PREFETCH`), so probing only costs a multi-second backfill
             // fetch to reach the same "inactive" answer.
-            if upstream_profile() == UpstreamProfile::Twitch {
+            if probe_ll && upstream_profile() == UpstreamProfile::Twitch {
                 let outcome = crate::services::ll_origin::start(upstream).await;
                 log::debug!(
                     "[StreamServer] LL origin start (reuse): active={}",
@@ -503,7 +512,7 @@ impl StreamServer {
 
         *PROXY_URL.lock().await = Some(stream_url);
         reset_ad_state();
-        if upstream_profile() == UpstreamProfile::Twitch {
+        if probe_ll && upstream_profile() == UpstreamProfile::Twitch {
             let outcome = crate::services::ll_origin::start(upstream).await;
             log::debug!("[StreamServer] LL origin start: active={}", outcome.active);
         }
@@ -852,7 +861,12 @@ impl StreamServer {
                 // would hand the player two URLs for one media sequence and trip the
                 // exact refresh-mismatch we fix, so we only stabilize when the engine
                 // is off (the whole-segment path).
-                let is_live = !text.contains("#EXT-X-ENDLIST");
+                // `hls_kind` tells a recording VOD (`PLAYLIST-TYPE:EVENT`, no
+                // ENDLIST, only grows) apart from a live window: it is a VOD
+                // for the relay's purposes, and stabilizing it broke seeking
+                // past the projection's retention window (GitHub #216).
+                let is_live = crate::services::hls_kind::classify(text)
+                    == crate::services::hls_kind::PlaylistKind::Live;
                 let stabilize_ok = is_live && crate::services::ll_origin::engine_disabled();
                 let work: String = crate::services::ad_detect::retarget_playlist(text)
                     .unwrap_or_else(|| text.to_string());

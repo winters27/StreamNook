@@ -488,7 +488,8 @@ impl MultiNookServer {
             // solo path: only on a live playlist (not VOD/#EXT-X-ENDLIST) and only when
             // the experimental low-latency engine is off, so our `vseg/` rewrite never
             // races the per-tile origin's `seg/` scheme for the same media sequence.
-            let is_live = !text.contains("#EXT-X-ENDLIST");
+            let is_live = crate::services::hls_kind::classify(text)
+                == crate::services::hls_kind::PlaylistKind::Live;
             // Segment projection is part of the Twitch profile too (it exists to
             // survive Twitch's ad-stitched sequence rewrites).
             let stabilize_ok = profile == TileProfile::Twitch
