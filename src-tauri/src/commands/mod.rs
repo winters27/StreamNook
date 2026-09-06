@@ -46,5 +46,6 @@ pub mod subscriptions;
 pub mod twitch;
 pub mod universal_cache;
 pub mod user_profile;
+pub mod vod_progress;
 pub mod watch_streak;
 pub mod whisper_storage;

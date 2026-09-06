@@ -105,6 +105,10 @@ pub struct VideoPlayerSettings {
     /// How much one wheel notch moves the volume (0.01-0.25). Default 5%.
     #[serde(default = "default_wheel_volume_step")]
     pub wheel_volume_step: f32,
+    /// Reopen a VOD where the viewer left off. On by default; off starts every
+    /// VOD from the top (positions are still recorded for the cards).
+    #[serde(default = "default_true")]
+    pub resume_vod_playback: bool,
 }
 
 fn default_ll_target_latency() -> f32 {
@@ -132,6 +136,7 @@ impl Default for VideoPlayerSettings {
             scroll_about_reveal: true,
             middle_click_mute: true,
             wheel_volume_step: 0.05,
+            resume_vod_playback: true,
         }
     }
 }

@@ -3,6 +3,8 @@ import { useShallow } from 'zustand/react/shallow';
 import { useAppStore, clipSourceOf, HomeTab } from '../stores/AppStore';
 import { createPortal } from 'react-dom';
 import { Search, ArrowLeft, Heart, X, Gift, Pickaxe, LayoutGrid, Flame, ArrowUpRight, Undo2, Users, User, Loader2, Clock, Play, Check, Plus } from 'lucide-react';
+import { VodProgressBar, VodRecordingBadge } from './VodCardMarks';
+import { vodProgressLabel } from '../utils/vodProgress';
 import { motion, LayoutGroup, AnimatePresence } from 'framer-motion';
 import { usemultiNookStore } from '../stores/multiNookStore';
 
@@ -2793,6 +2795,8 @@ const Home = () => {
                         <Users size={10} />
                         {video.view_count.toLocaleString()}
                     </div>
+                    <VodRecordingBadge status={video.status} />
+                    <VodProgressBar progress={video.progress} lengthSeconds={video.length_seconds} />
                 </div>
                 <div className="px-1 py-2 space-y-0.5">
                     <h3 className="text-textPrimary font-medium text-[13px] leading-tight line-clamp-2 group-hover:text-accent transition-colors">
@@ -2800,7 +2804,7 @@ const Home = () => {
                     </h3>
                     <div className="flex items-center justify-between text-[11px] text-textSecondary mt-1 pt-1 border-t border-white/5">
                         <span className="truncate max-w-[50%]">{video.user_name}</span>
-                        <span className="shrink-0">{new Date(video.created_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}</span>
+                        <span className="shrink-0">{vodProgressLabel(video.progress) ?? new Date(video.created_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}</span>
                     </div>
                 </div>
             </div>

@@ -3155,6 +3155,44 @@ impl TwitchService {
         Ok(data)
     }
 
+    /// Look up categories by EXACT name, many at a time.
+    ///
+    /// `search/categories` is a fuzzy search, so it answers "something like
+    /// this" and cannot tell a caller whether a given string is genuinely a
+    /// category. This one can: Helix `games?name=` matches exactly and takes up
+    /// to 100 names per request, which is what makes it affordable to test a
+    /// whole list of candidate names at once. Names Twitch doesn't know are
+    /// simply absent from the response.
+    pub async fn categories_by_name(names: &[String]) -> Result<Vec<serde_json::Value>> {
+        if names.is_empty() {
+            return Ok(Vec::new());
+        }
+        let token = Self::get_token().await.ok();
+        let client = crate::services::http::client().clone();
+
+        let mut found = Vec::new();
+        for chunk in names.chunks(100) {
+            let query = chunk
+                .iter()
+                .map(|n| format!("name={}", urlencoding::encode(n)))
+                .collect::<Vec<_>>()
+                .join("&");
+            let url = format!("https://api.twitch.tv/helix/games?{}", query);
+
+            let mut request = client.get(&url).header("Client-Id", CLIENT_ID);
+            if let Some(token) = &token {
+                request = request.header(AUTHORIZATION, format!("Bearer {}", token));
+            }
+
+            let response = request.send().await?.json::<serde_json::Value>().await?;
+            if let Some(data) = response.get("data").and_then(|d| d.as_array()) {
+                found.extend(data.iter().cloned());
+            }
+        }
+
+        Ok(found)
+    }
+
     /// Send a whisper message to another user
     /// Requires user:manage:whispers scope
     pub async fn send_whisper(to_user_id: &str, message: &str) -> Result<()> {
@@ -3940,8 +3978,15 @@ impl TwitchService {
 
         match data {
             Some(arr) => {
-                let videos: Vec<crate::models::stream::TwitchVideo> =
+                let mut videos: Vec<crate::models::stream::TwitchVideo> =
                     serde_json::from_value(serde_json::Value::Array(arr.clone()))?;
+                // Helix only formats the length ("3h21m4s"); recover the seconds
+                // so the card's progress bar has a denominator.
+                for v in videos.iter_mut() {
+                    if v.length_seconds.is_none() {
+                        v.length_seconds = Self::parse_duration_str(&v.duration);
+                    }
+                }
 
                 let pagination_cursor = response
                     .get("pagination")
@@ -3990,6 +4035,7 @@ impl TwitchService {
                             publishedAt
                             createdAt
                             lengthSeconds
+                            status
                             viewCount
                             previewThumbnailURL(width: 440, height: 248)
                             broadcastType
@@ -4081,6 +4127,13 @@ impl TwitchService {
                 language: String::new(),
                 video_type,
                 duration: Self::fmt_duration_secs(length_secs),
+                // GQL Video.status is RECORDING while the broadcast is live.
+                status: node
+                    .get("status")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_lowercase()),
+                length_seconds: Some(length_secs.min(u32::MAX as u64) as u32),
+                progress: None,
                 stream_id: None,
                 id,
             });
@@ -4097,6 +4150,43 @@ impl TwitchService {
     }
 
     /// Format a second count as a Helix-style duration string ("3h21m4s").
+    /// Inverse of `fmt_duration_secs` for Helix's "1h2m3s" strings. None for
+    /// anything that is not that shape.
+    pub fn parse_duration_str(s: &str) -> Option<u32> {
+        let s = s.trim();
+        if s.is_empty() {
+            return None;
+        }
+        let mut total: u64 = 0;
+        let mut num: u64 = 0;
+        let mut saw_digit = false;
+        for c in s.chars() {
+            match c {
+                '0'..='9' => {
+                    num = num.checked_mul(10)?.checked_add(c as u64 - '0' as u64)?;
+                    saw_digit = true;
+                }
+                'h' => {
+                    total = total.checked_add(num.checked_mul(3600)?)?;
+                    num = 0;
+                }
+                'm' => {
+                    total = total.checked_add(num.checked_mul(60)?)?;
+                    num = 0;
+                }
+                's' => {
+                    total = total.checked_add(num)?;
+                    num = 0;
+                }
+                _ => return None,
+            }
+        }
+        if !saw_digit || num != 0 {
+            return None;
+        }
+        Some(total.min(u32::MAX as u64) as u32)
+    }
+
     fn fmt_duration_secs(total: u64) -> String {
         let h = total / 3600;
         let m = (total % 3600) / 60;

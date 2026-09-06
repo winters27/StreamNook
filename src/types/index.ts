@@ -60,6 +60,8 @@ export interface VideoPlayerSettings {
   middle_click_mute?: boolean;
   /** Volume moved per wheel notch, 0.01-0.25. Default 0.05. */
   wheel_volume_step?: number;
+  /** Reopen a VOD where you left off. Default true. Typed in Rust. */
+  resume_vod_playback?: boolean;
 }
 
 export interface CacheSettings {
@@ -1055,6 +1057,46 @@ export interface TwitchVideo {
   language: string;
   type: string;
   duration: string;
+  /** "recording" while the broadcast is still live, "recorded" when finished.
+   *  Only the GQL user-videos path fills it. */
+  status?: string;
+  /** Length in whole seconds (the number `duration` is formatted from). */
+  length_seconds?: number;
+  /** The viewer's stored watch position, joined on by Rust. Absent when never
+   *  watched. */
+  progress?: VodProgressSummary;
+}
+
+/** Rust-owned VOD watch state, the slice a card needs for its bar. */
+export interface VodProgressSummary {
+  position_secs: number;
+  duration_secs: number;
+  completed: boolean;
+}
+
+/** What `start_stream` returns alongside the proxy URL for a VOD: how to run
+ *  it (a "recording" VOD is a growing EVENT playlist, not live) and where to
+ *  begin. */
+export interface VodStartInfo {
+  video_id: string;
+  status: 'recording' | 'recorded' | 'unknown' | string;
+  length_seconds?: number;
+  recorded_at?: string;
+  channel_login?: string;
+  title?: string;
+  thumbnail_url?: string;
+  /** Resume position, or the mapped broadcast position for a live rewind. */
+  start_position_secs?: number;
+  /** The viewer rewound a live broadcast into this recording. */
+  rewound_from_live: boolean;
+}
+
+/** Rust's answer to "can this live broadcast be rewound": Twitch keeps a
+ *  recording only while the channel has VODs enabled. */
+export interface LiveRewindInfo {
+  available: boolean;
+  video_id?: string;
+  recorded_at?: string;
 }
 
 export interface TwitchUser {

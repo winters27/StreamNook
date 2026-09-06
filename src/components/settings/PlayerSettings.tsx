@@ -63,6 +63,7 @@ const PlayerSettings = () => {
   const scrollVolume = videoPlayer?.scroll_volume ?? true;
   const scrollAboutReveal = videoPlayer?.scroll_about_reveal ?? true;
   const middleClickMute = videoPlayer?.middle_click_mute ?? true;
+  const resumeVodPlayback = videoPlayer?.resume_vod_playback ?? true;
   const wheelVolumeStep = videoPlayer?.wheel_volume_step ?? 0.05;
   // Both gestures want the wheel, so with both on the reveal moves to Shift.
   // The row description says so rather than leaving it to be discovered.
@@ -311,6 +312,17 @@ const PlayerSettings = () => {
             <Toggle
               enabled={middleClickMute}
               onChange={() => setVideoPlayer({ middle_click_mute: !middleClickMute })}
+            />
+          }
+        />
+
+        <SettingsRow
+          title="Resume VODs where you left off"
+          description="Reopening a past broadcast picks up at your last position. Off starts every VOD from the beginning; positions are still remembered for the video cards."
+          control={
+            <Toggle
+              enabled={resumeVodPlayback}
+              onChange={() => setVideoPlayer({ resume_vod_playback: !resumeVodPlayback })}
             />
           }
         />

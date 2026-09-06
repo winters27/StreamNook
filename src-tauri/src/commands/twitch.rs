@@ -1551,6 +1551,18 @@ pub async fn search_categories(
         .map_err(|e| e.to_string())
 }
 
+/// Which of these names are real categories, matched exactly, in one round trip.
+/// Unknown names are simply missing from the result, so a caller can use it to
+/// test a list of candidates rather than to guess at one.
+#[tauri::command]
+pub async fn get_categories_by_name(
+    names: Vec<String>,
+) -> Result<Vec<serde_json::Value>, String> {
+    TwitchService::categories_by_name(&names)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub async fn get_clips_by_game(
     _state: State<'_, AppState>,
@@ -1611,9 +1623,12 @@ pub async fn get_videos_by_game(
     cursor: Option<String>,
     period: Option<String>,
 ) -> Result<(Vec<TwitchVideo>, Option<String>), String> {
-    TwitchService::get_videos_by_game(&game_id, &sort, period.as_deref(), limit, cursor.as_deref())
-        .await
-        .map_err(|e| e.to_string())
+    let (mut videos, cursor) =
+        TwitchService::get_videos_by_game(&game_id, &sort, period.as_deref(), limit, cursor.as_deref())
+            .await
+            .map_err(|e| e.to_string())?;
+    crate::services::vod_progress_service::attach(&mut videos);
+    Ok((videos, cursor))
 }
 
 #[tauri::command]
@@ -1625,7 +1640,7 @@ pub async fn get_user_videos(
     limit: u32,
     cursor: Option<String>,
 ) -> Result<(Vec<TwitchVideo>, Option<String>), String> {
-    TwitchService::get_user_videos(
+    let (mut videos, cursor) = TwitchService::get_user_videos(
         &user_id,
         &sort,
         video_type.as_deref(),
@@ -1633,7 +1648,9 @@ pub async fn get_user_videos(
         cursor.as_deref(),
     )
     .await
-    .map_err(|e| e.to_string())
+    .map_err(|e| e.to_string())?;
+    crate::services::vod_progress_service::attach(&mut videos);
+    Ok((videos, cursor))
 }
 
 // --- VOD chat replay (synced historical comments) ---------------------------

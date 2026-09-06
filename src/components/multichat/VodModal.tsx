@@ -6,6 +6,8 @@ import { X, ExternalLink, Loader2 } from 'lucide-react';
 import type Hls from 'hls.js';
 import { useAppStore } from '../../stores/AppStore';
 import type { MediaInfo } from '../../stores/AppStore';
+import type { VodStartInfo } from '../../types';
+import { useVodProgressReporter } from '../../hooks/useVodProgressReporter';
 import { Logger } from '../../utils/logger';
 
 // A centered overlay player for a Twitch VOD posted in chat — the in-popout
@@ -21,6 +23,7 @@ interface StreamStartResult {
   url: string;
   quality: string;
   available?: string[];
+  vod?: VodStartInfo;
 }
 
 export default function VodModal() {
@@ -55,8 +58,24 @@ function VodModalInner({
   onClose: () => void;
 }) {
   const [src, setSrc] = useState<string | null>(null);
+  const [vod, setVod] = useState<VodStartInfo | null>(null);
   const [error, setError] = useState(false);
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  // Read by the hls.js construction effect (keyed on `src`) without making it
+  // re-run: both land in the same start_stream response.
+  const vodRef = useRef<VodStartInfo | null>(null);
+
+  useVodProgressReporter(
+    videoRef,
+    vod
+      ? {
+          videoId: vod.video_id,
+          channelLogin: vod.channel_login ?? info.user_login,
+          title: vod.title ?? info.title,
+          thumbnailUrl: vod.thumbnail_url ?? info.thumbnail_url,
+        }
+      : null,
+  );
 
   // Resolve the VOD to a localhost HLS URL via the shared relay. Stop the relay on
   // close — in chat-only mode it was ours (main is closed, no other consumer).
@@ -67,6 +86,7 @@ function VodModalInner({
   if (playbackKey !== seenPlaybackKey) {
     setSeenPlaybackKey(playbackKey);
     setSrc(null);
+    setVod(null);
     setError(false);
   }
 
@@ -74,7 +94,10 @@ function VodModalInner({
     let cancelled = false;
     invoke<StreamStartResult>('start_stream', { url, quality })
       .then((r) => {
-        if (!cancelled) setSrc(r.url);
+        if (cancelled) return;
+        vodRef.current = r.vod ?? null;
+        setVod(r.vod ?? null);
+        setSrc(r.url);
       })
       .catch((e) => {
         if (cancelled) return;
@@ -101,7 +124,13 @@ function VodModalInner({
         const { default: HlsCtor } = await import('hls.js');
         if (cancelled || !videoRef.current) return;
         if (HlsCtor.isSupported()) {
-          hls = new HlsCtor();
+          // A VOD, never live: a still-recording VOD is a growing EVENT
+          // playlist hls.js would otherwise pin to its tail. Start at the
+          // stored resume position when Rust supplied one.
+          hls = new HlsCtor({
+            liveDurationInfinity: false,
+            startPosition: vodRef.current?.start_position_secs ?? -1,
+          });
           hls.loadSource(src);
           hls.attachMedia(video);
           hls.on(HlsCtor.Events.ERROR, (_evt, data) => {
