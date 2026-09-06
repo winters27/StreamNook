@@ -214,11 +214,13 @@ pub async fn clear_channel_badge_cache_unified(channel_id: String) -> Result<(),
 
 /// Get the current user's global badge collection (all earned global badges)
 /// Returns a list of badge IDs in "set_id/version" format (e.g., "bungie_ally_badge/1")
-/// Used for cross-referencing badge drop ownership
+/// Used for cross-referencing badge drop ownership. Only answers for the
+/// signed-in user (the Drops token's owner); errors for anyone else.
 #[tauri::command]
-pub async fn get_global_badge_collection(username: String) -> Result<Vec<String>, String> {
-    use crate::services::drops_auth_service::DropsAuthService;
-
+pub async fn get_global_badge_collection(
+    user_id: String,
+    username: String,
+) -> Result<Vec<String>, String> {
     let service_lock = get_service().await?;
 
     // Auto-initialize if not ready yet
@@ -235,13 +237,8 @@ pub async fn get_global_badge_collection(username: String) -> Result<Vec<String>
         .as_ref()
         .ok_or_else(|| "Badge service not initialized".to_string())?;
 
-    // Get OAuth token from DropsAuthService (same as drops.rs uses for internal GQL)
-    let token = DropsAuthService::get_token()
-        .await
-        .map_err(|e| format!("Failed to get drops auth token: {}", e))?;
-
     service
-        .fetch_global_badge_collection_from_gql(&username, &token)
+        .fetch_current_user_global_collection(&user_id, &username)
         .await
 }
 

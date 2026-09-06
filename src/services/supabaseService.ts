@@ -792,22 +792,24 @@ export const getProfileViews = async (userId: string): Promise<number | null> =>
  * Returns [] when Supabase is unconfigured or the table is missing, so the UI
  * shows everything locked rather than breaking.
  */
+/**
+ * Earned accolade ids for a member. REJECTS on a failed read instead of
+ * resolving to []: both callers (ProfileOverview, ProfileSettings) apply the
+ * result as the new earned set, so an empty answer on a flaky Supabase moment
+ * un-lit every seasonal, event and secret medallion until the next window
+ * focus. A rejection leaves whatever was on screen alone; callers catch it.
+ */
 export const getAccolades = async (userId: string): Promise<string[]> => {
     if (!supabase || !userId) return [];
-    try {
-        const { data, error } = await supabase
-            .from('user_accolades')
-            .select('accolade_id')
-            .eq('twitch_user_id', userId);
-        if (error) {
-            Logger.error('[Supabase] Failed to get award badges:', error.message);
-            return [];
-        }
-        return (data || []).map((r: { accolade_id: string }) => r.accolade_id);
-    } catch (error) {
-        Logger.error('[Supabase] Failed to get award badges:', error);
-        return [];
+    const { data, error } = await supabase
+        .from('user_accolades')
+        .select('accolade_id')
+        .eq('twitch_user_id', userId);
+    if (error) {
+        Logger.warn('[Supabase] Failed to get accolades (keeping the current set):', error.message);
+        throw new Error(error.message);
     }
+    return (data || []).map((r: { accolade_id: string }) => r.accolade_id);
 };
 
 /**

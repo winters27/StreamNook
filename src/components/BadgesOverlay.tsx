@@ -412,6 +412,15 @@ const BadgesOverlay = ({ onClose, onBadgeClick, initialPaintId, initialBadgeId, 
         }
       });
       
+      // An empty result is far more likely a failed lookup (Twitch GQL drift,
+      // no Drops token yet, offline) than a user with zero badges, and the
+      // Rust side reports those failures as an empty list. Keep the last good
+      // set on screen and in localStorage rather than wiping it.
+      if (keys.size === 0) {
+        Logger.warn('[BadgesOverlay] Badge lookup returned no badges; keeping the cached collection');
+        return;
+      }
+
       setCollectedBadgeKeys(keys);
       try {
         localStorage.setItem(

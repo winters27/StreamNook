@@ -493,7 +493,18 @@ const ProfileSettings = () => {
 
   const applyProfileData = (profile: CachedProfile) => {
     setTwitchBadges(profile.twitchBadges);
-    setThirdPartyBadges(profile.thirdPartyBadges);
+    // A fresh EMPTY third-party set is a failed resolve (every provider down,
+    // or the Rust cache not warm yet), not a member with no badges: the
+    // write-through below persists whatever is set here, so applying an empty
+    // list would wipe the snapshot the next cold open paints from. Keep the
+    // last good set until a non-empty answer arrives.
+    setThirdPartyBadges((prev) => {
+      if (profile.thirdPartyBadges.length === 0 && prev.length > 0) {
+        Logger.warn('[ProfileSettings] Third-party badge resolve returned nothing; keeping the previous set');
+        return prev;
+      }
+      return profile.thirdPartyBadges;
+    });
     setSeventvUserId(profile.seventvCosmetics.seventvUserId || null);
     setHas7TVAccountChecked(true);
 

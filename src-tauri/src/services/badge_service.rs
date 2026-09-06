@@ -7,92 +7,75 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::RwLock;
 
 // ============================================================================
-// GQL STRUCTS (for fetching user's displayBadges when no IRC data available)
+// GQL STRUCTS (per-user badge lookup)
 // ============================================================================
+//
+// Inline query, not a persisted hash. Twitch rotates persisted-query hashes
+// without notice (the old `ViewerCard` hash died 2026-09 with
+// `PersistedQueryNotFound`), and an inline query keeps working as long as the
+// fields exist. Anonymous with the web client id: `user.displayBadges` and
+// `channelViewer.earnedBadges` are both public.
+
+const BADGE_LOOKUP_QUERY: &str = r#"
+query StreamNookBadgeLookup($id: ID!, $login: String!, $channelID: ID!, $channelLogin: String!) {
+    user(id: $id) {
+        displayBadges(channelID: $channelID) { setID version }
+    }
+    channelViewer(userLogin: $login, channelLogin: $channelLogin) {
+        earnedBadges { setID version }
+    }
+}
+"#;
 
 #[derive(Debug, Serialize)]
-struct GQLRequest {
-    #[serde(rename = "operationName")]
-    operation_name: String,
-    variables: GQLVariables,
-    extensions: GQLExtensions,
+struct BadgeLookupRequest {
+    query: &'static str,
+    variables: BadgeLookupVariables,
 }
 
-#[derive(Debug, Serialize, Clone)]
-struct GQLVariables {
+#[derive(Debug, Serialize)]
+struct BadgeLookupVariables {
+    id: String,
+    login: String,
     #[serde(rename = "channelID")]
     channel_id: String,
     #[serde(rename = "channelLogin")]
     channel_login: String,
-    #[serde(rename = "hasChannelID")]
-    has_channel_id: bool,
-    #[serde(rename = "targetUserID")]
-    target_user_id: Option<String>,
-    #[serde(rename = "targetLogin")]
-    target_login: String,
-    #[serde(rename = "giftRecipientLogin")]
-    gift_recipient_login: String,
-    #[serde(rename = "isViewerBadgeCollectionEnabled")]
-    is_viewer_badge_collection_enabled: bool,
-    #[serde(rename = "withStandardGifting")]
-    with_standard_gifting: bool,
-    #[serde(rename = "badgeSourceChannelID")]
-    badge_source_channel_id: String,
-    #[serde(rename = "badgeSourceChannelLogin")]
-    badge_source_channel_login: String,
-}
-
-#[derive(Debug, Serialize, Clone)]
-struct GQLExtensions {
-    #[serde(rename = "persistedQuery")]
-    persisted_query: PersistedQuery,
-}
-
-#[derive(Debug, Serialize, Clone)]
-struct PersistedQuery {
-    version: i32,
-    #[serde(rename = "sha256Hash")]
-    sha256_hash: String,
 }
 
 #[derive(Debug, Deserialize)]
 struct GQLResponse {
     data: Option<GQLData>,
+    #[serde(default)]
+    errors: Vec<GQLError>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GQLError {
+    #[serde(default)]
+    message: String,
 }
 
 #[derive(Debug, Deserialize)]
 struct GQLData {
-    #[serde(rename = "targetUser", default)]
-    target_user: Option<TargetUser>,
+    #[serde(default)]
+    user: Option<TargetUser>,
     #[serde(rename = "channelViewer", default)]
     channel_viewer: Option<ChannelViewer>,
 }
 
+// Twitch answers `null` (not `[]`) for an empty badge list, so these are
+// Option<Vec>: `#[serde(default)]` alone only covers a MISSING field.
 #[derive(Debug, Deserialize)]
 struct TargetUser {
     #[serde(rename = "displayBadges", default)]
-    display_badges: Vec<GQLBadge>,
+    display_badges: Option<Vec<GQLBadge>>,
 }
 
 #[derive(Debug, Deserialize)]
 struct ChannelViewer {
     #[serde(rename = "earnedBadges", default)]
-    earned_badges: Vec<EarnedBadge>,
-}
-
-#[derive(Debug, Deserialize)]
-struct EarnedBadge {
-    #[serde(rename = "setID")]
-    set_id: String,
-    version: String,
-    #[serde(default)]
-    title: Option<String>,
-    #[serde(rename = "image1x", default)]
-    image_1x: Option<String>,
-    #[serde(rename = "image2x", default)]
-    image_2x: Option<String>,
-    #[serde(rename = "image4x", default)]
-    image_4x: Option<String>,
+    earned_badges: Option<Vec<GQLBadge>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -102,51 +85,12 @@ struct GQLBadge {
     version: String,
 }
 
-// ============================================================================
-// GQL STRUCTS (for fetching user's global badge collection)
-// ============================================================================
-
-#[derive(Debug, Serialize)]
-struct BadgeCollectionGQLRequest {
-    #[serde(rename = "operationName")]
-    operation_name: String,
-    variables: BadgeCollectionVariables,
-    extensions: GQLExtensions,
-}
-
-#[derive(Debug, Serialize, Clone)]
-struct BadgeCollectionVariables {
-    login: String,
-}
-
+/// `id.twitch.tv/oauth2/validate` body: the subset we need to learn which
+/// Twitch user a Drops token belongs to.
 #[derive(Debug, Deserialize)]
-struct BadgeCollectionGQLResponse {
-    data: Option<BadgeCollectionGQLData>,
-}
-
-#[derive(Debug, Deserialize)]
-struct BadgeCollectionGQLData {
-    user: Option<BadgeCollectionUser>,
-}
-
-#[derive(Debug, Deserialize)]
-struct BadgeCollectionUser {
-    #[serde(rename = "globalBadgeCollection", default)]
-    global_badge_collection: Vec<BadgeCollectionItem>,
-}
-
-#[derive(Debug, Deserialize)]
-struct BadgeCollectionItem {
-    badge: BadgeCollectionBadge,
-}
-
-#[derive(Debug, Deserialize)]
-struct BadgeCollectionBadge {
-    #[serde(rename = "setID")]
-    set_id: String,
-    version: String,
+struct TokenValidation {
     #[serde(default)]
-    title: Option<String>,
+    user_id: String,
 }
 
 // ============================================================================
@@ -654,6 +598,12 @@ pub struct BadgeService {
     cache: Arc<RwLock<BadgeCache>>,
     client_id: String,
     http_client: reqwest::Client,
+    /// (drops token, Twitch user id that token belongs to). The global badge
+    /// collection query (`ChatSettings_Badges`) only ever answers for the
+    /// token's OWN user, so before attributing its result to a profile we
+    /// confirm the profile is that user. Cached per token: one validate call
+    /// per login, not one per profile open.
+    drops_identity: RwLock<Option<(String, String)>>,
 }
 
 impl BadgeService {
@@ -661,6 +611,7 @@ impl BadgeService {
         Self {
             cache: Arc::new(RwLock::new(BadgeCache::new())),
             client_id,
+            drops_identity: RwLock::new(None),
             http_client: reqwest::Client::builder()
                 .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
                 .timeout(Duration::from_secs(30))
@@ -887,20 +838,52 @@ impl BadgeService {
             None
         };
 
-        // Update cache
+        // Update cache. A provider that failed this round (network, 5xx, a
+        // body that no longer parses) keeps its LAST GOOD list instead of being
+        // wiped to None: overwriting it made every badge from that provider
+        // vanish from profiles and the picker for the whole cache window, with
+        // nothing in the log to say why (seen 2026-09-05 as "not all my
+        // third-party badges are there to select").
         let mut cache = self.cache.write().await;
-        cache.third_party.ffz = ffz_badges;
-        cache.third_party.bttv = bttv_badges;
-        cache.third_party.chatterino = chatterino_badges;
-        cache.third_party.homies = homies_badges;
-        cache.third_party.chatsen = chatsen_badges;
-        cache.third_party.chatty = chatty_badges;
-        cache.third_party.dankchat = dankchat_badges;
+        let mut failed: Vec<&str> = Vec::new();
+        macro_rules! keep_last_good {
+            ($field:ident, $fresh:expr, $name:literal) => {
+                match $fresh {
+                    Some(v) => cache.third_party.$field = Some(v),
+                    None => {
+                        if cache.third_party.$field.is_none() {
+                            failed.push($name);
+                        } else {
+                            failed.push(concat!($name, " (kept previous)"));
+                        }
+                    }
+                }
+            };
+        }
+        keep_last_good!(ffz, ffz_badges, "ffz");
+        keep_last_good!(bttv, bttv_badges, "bttv");
+        keep_last_good!(chatterino, chatterino_badges, "chatterino");
+        keep_last_good!(homies, homies_badges, "homies");
+        keep_last_good!(chatsen, chatsen_badges, "chatsen");
+        keep_last_good!(chatty, chatty_badges, "chatty");
+        keep_last_good!(dankchat, dankchat_badges, "dankchat");
         // Rebuild the inverted per-user index once per refresh (~10 min) so
         // per-chatter lookups never scan the full holder lists.
         let by_user = cache.third_party.build_by_user_index();
         cache.third_party.by_user = by_user;
-        cache.third_party.last_updated = SystemTime::now();
+        if failed.is_empty() {
+            cache.third_party.last_updated = SystemTime::now();
+        } else {
+            log::warn!(
+                "[BadgeService] Third-party badge providers failed to refresh: {}; retrying in 60s",
+                failed.join(", ")
+            );
+            // Back-date the stamp so the next lookup retries after a minute
+            // instead of serving the stale set for the full window.
+            cache.third_party.last_updated = SystemTime::now()
+                .checked_sub(cache_duration.saturating_sub(Duration::from_secs(60)))
+                .unwrap_or(UNIX_EPOCH);
+        }
 
         Ok(())
     }
@@ -967,9 +950,10 @@ impl BadgeService {
     // GQL FALLBACK (for fetching user's displayBadges when no IRC data)
     // ========================================================================
 
-    /// Fetch display badges AND earned badges from Twitch GQL ViewerCard query (anonymous mode)
-    /// This is used as a fallback when we don't have IRC badge data for a user
-    /// Returns (display_badges, earned_badges)
+    /// Fetch a user's display badges and channel-earned badges from Twitch GQL
+    /// (anonymous, inline query). Used when we have no IRC badge data for a user
+    /// and for the profile overlay. Returns (display_badges, earned_badges) as
+    /// "set_id/version" strings.
     async fn fetch_badges_from_gql(
         &self,
         user_id: &str,
@@ -977,36 +961,22 @@ impl BadgeService {
         channel_id: &str,
         channel_name: &str,
     ) -> Result<(Vec<String>, Vec<String>), String> {
-        let request = GQLRequest {
-            operation_name: "ViewerCard".to_string(),
-            variables: GQLVariables {
+        let request = BadgeLookupRequest {
+            query: BADGE_LOOKUP_QUERY,
+            variables: BadgeLookupVariables {
+                id: user_id.to_string(),
+                login: username.to_lowercase(),
                 channel_id: channel_id.to_string(),
-                channel_login: channel_name.to_string(),
-                has_channel_id: true,
-                target_user_id: Some(user_id.to_string()),
-                target_login: username.to_string(),
-                gift_recipient_login: username.to_string(),
-                is_viewer_badge_collection_enabled: true,
-                with_standard_gifting: true,
-                badge_source_channel_id: channel_id.to_string(),
-                badge_source_channel_login: channel_name.to_string(),
-            },
-            extensions: GQLExtensions {
-                persisted_query: PersistedQuery {
-                    version: 1,
-                    sha256_hash: "80c53fe04c79a6414484104ea573c28d6a8436e031a235fc6908de63f51c74fd"
-                        .to_string(),
-                },
+                channel_login: channel_name.to_lowercase(),
             },
         };
 
-        // Use anonymous mode with public Twitch client ID
         let response = self
             .http_client
             .post("https://gql.twitch.tv/gql")
             .header("Accept-Language", "en-US")
             .header("Client-ID", env!("TWITCH_WEB_CLIENT_ID"))
-            .json(&vec![request])
+            .json(&request)
             .send()
             .await
             .map_err(|e| format!("Failed to send GQL request: {}", e))?;
@@ -1023,153 +993,144 @@ impl BadgeService {
             .await
             .map_err(|e| format!("Failed to read GQL response: {}", e))?;
 
-        // Parse response - it's an array with one item
-        let gql_responses: Vec<GQLResponse> =
-            serde_json::from_str(&response_text).map_err(|e| {
-                format!(
-                    "Failed to parse GQL response: {} - Raw: {}",
-                    e,
-                    &response_text[..200.min(response_text.len())]
-                )
-            })?;
+        let gql_response: GQLResponse = serde_json::from_str(&response_text).map_err(|e| {
+            format!(
+                "Failed to parse GQL response: {} - Raw: {}",
+                e,
+                &response_text[..200.min(response_text.len())]
+            )
+        })?;
 
-        let gql_data = gql_responses
-            .into_iter()
-            .next()
-            .and_then(|r| r.data)
-            .ok_or_else(|| "No data in GQL response".to_string())?;
+        let gql_data = match gql_response.data {
+            Some(data) => data,
+            None => {
+                let messages: Vec<String> =
+                    gql_response.errors.into_iter().map(|e| e.message).collect();
+                return Err(format!(
+                    "No data in GQL response (errors: {})",
+                    messages.join("; ")
+                ));
+            }
+        };
 
-        // Extract display badges from targetUser.displayBadges
-        let display_badges: Vec<String> = gql_data
-            .target_user
-            .as_ref()
-            .map(|u| {
-                u.display_badges
-                    .iter()
-                    .map(|b| format!("{}/{}", b.set_id, b.version))
-                    .collect()
-            })
-            .unwrap_or_default();
+        // A partial error (e.g. an unrelated field failing an integrity check)
+        // still ships the badge fields, so only surface it at debug.
+        if !gql_response.errors.is_empty() {
+            log::debug!(
+                "[BadgeService] Badge lookup returned partial errors: {:?}",
+                gql_response.errors.iter().map(|e| &e.message).collect::<Vec<_>>()
+            );
+        }
 
-        // Extract earned badges from channelViewer.earnedBadges
-        let earned_badges: Vec<String> = gql_data
-            .channel_viewer
-            .as_ref()
-            .map(|cv| {
-                cv.earned_badges
-                    .iter()
-                    .map(|b| format!("{}/{}", b.set_id, b.version))
-                    .collect()
-            })
-            .unwrap_or_default();
+        let to_ids = |badges: Option<Vec<GQLBadge>>| -> Vec<String> {
+            badges
+                .unwrap_or_default()
+                .into_iter()
+                .map(|b| format!("{}/{}", b.set_id, b.version))
+                .collect()
+        };
+
+        let display_badges = to_ids(gql_data.user.and_then(|u| u.display_badges));
+        let earned_badges = to_ids(gql_data.channel_viewer.and_then(|cv| cv.earned_badges));
 
         Ok((display_badges, earned_badges))
     }
 
-    /// Fetch ALL global badges a user has earned from Twitch GQL
-    /// This uses the globalBadgeCollection query to get the full list of earned badges
-    pub async fn fetch_global_badge_collection_from_gql(
-        &self,
-        username: &str,
-        token: &str,
-    ) -> Result<Vec<String>, String> {
-        // Use full query text instead of persisted query hash (matches working pattern in drops.rs)
-        let query = r#"
-        query GetGlobalBadgeCollection($login: String!) {
-            user(login: $login) {
-                globalBadgeCollection {
-                    badge {
-                        setID
-                        version
-                        title
-                    }
-                }
+    /// Resolve which Twitch user the current Drops token belongs to, cached per
+    /// token so a re-login is picked up and a stable login costs one call.
+    async fn drops_token_user_id(&self, token: &str) -> Result<String, String> {
+        if let Some((cached_token, cached_user)) = self.drops_identity.read().await.as_ref() {
+            if cached_token == token {
+                return Ok(cached_user.clone());
             }
         }
-        "#;
 
-        let request_body = serde_json::json!({
-            "operationName": "GetGlobalBadgeCollection",
-            "query": query,
-            "variables": {
-                "login": username.to_lowercase()
-            }
-        });
-
-        // Use authenticated mode with OAuth token for accessing badge collection
         let response = self
             .http_client
-            .post("https://gql.twitch.tv/gql")
-            .header("Accept-Language", "en-US")
-            .header("Client-Id", env!("TWITCH_WEB_CLIENT_ID"))
+            .get("https://id.twitch.tv/oauth2/validate")
             .header("Authorization", format!("OAuth {}", token))
-            .json(&request_body)
             .send()
             .await
-            .map_err(|e| format!("Failed to send GQL request: {}", e))?;
+            .map_err(|e| format!("Failed to validate drops token: {}", e))?;
 
         if !response.status().is_success() {
             return Err(format!(
-                "GQL request failed with status: {}",
+                "Drops token validation failed with status: {}",
                 response.status()
             ));
         }
 
-        let response_text = response
-            .text()
+        let validation: TokenValidation = response
+            .json()
             .await
-            .map_err(|e| format!("Failed to read GQL response: {}", e))?;
+            .map_err(|e| format!("Failed to parse token validation: {}", e))?;
 
-        log::debug!(
-            "[BadgeService] Badge collection GQL raw response (first 500 chars): {}",
-            &response_text[..500.min(response_text.len())]
-        );
+        if validation.user_id.is_empty() {
+            return Err("Token validation returned no user_id".to_string());
+        }
 
-        // Parse response - single object (not array) when using inline query
-        let gql_response: BadgeCollectionGQLResponse = serde_json::from_str(&response_text)
+        *self.drops_identity.write().await =
+            Some((token.to_string(), validation.user_id.clone()));
+        Ok(validation.user_id)
+    }
+
+    /// Fetch ALL global badges the SIGNED-IN user has earned, as
+    /// "set_id/version" strings.
+    ///
+    /// Twitch removed `user.globalBadgeCollection` from its GQL schema
+    /// (observed 2026-09-05), so the only remaining source for the full global
+    /// collection is the badge picker's own `ChatSettings_Badges` query, which
+    /// answers for the token's user and nobody else. It rides the Drops token
+    /// (Android client) the way chat_identity.rs already does. Errors out,
+    /// rather than returning someone else's badges, when `user_id` is not the
+    /// token's user or when no Drops token is stored.
+    pub async fn fetch_current_user_global_collection(
+        &self,
+        user_id: &str,
+        username: &str,
+    ) -> Result<Vec<String>, String> {
+        let token = crate::services::drops_auth_service::DropsAuthService::get_token()
+            .await
+            .map_err(|e| format!("No drops token for badge collection: {}", e))?;
+
+        let token_user = self.drops_token_user_id(&token).await?;
+        if token_user != user_id {
+            return Err(format!(
+                "Global badge collection is only readable for the signed-in user (token user {}, requested {})",
+                token_user, user_id
+            ));
+        }
+
+        let ids = crate::commands::chat_identity::fetch_badge_collection_ids(username, &token)
+            .await
             .map_err(|e| {
-                format!(
-                    "Failed to parse GQL badge collection response: {} - Raw: {}",
-                    e,
-                    &response_text[..500.min(response_text.len())]
-                )
+                log::warn!(
+                    "[BadgeService] ChatSettings_Badges collection fetch failed for the signed-in user: {}",
+                    e
+                );
+                e
             })?;
 
-        let gql_data = gql_response.data.ok_or_else(|| {
-            format!(
-                "No data in GQL badge collection response. Raw: {}",
-                &response_text[..500.min(response_text.len())]
-            )
-        })?;
-
-        let earned_badges: Vec<String> = gql_data
-            .user
-            .as_ref()
-            .map(|u| {
-                u.global_badge_collection
-                    .iter()
-                    .map(|item| format!("{}/{}", item.badge.set_id, item.badge.version))
-                    .collect()
-            })
-            .unwrap_or_default();
-
         log::debug!(
-            "[BadgeService] Fetched {} global earned badges for user",
-            earned_badges.len()
+            "[BadgeService] Fetched {} global earned badges for the signed-in user",
+            ids.len()
         );
 
-        Ok(earned_badges)
+        Ok(ids)
     }
 
     /// Fetch ALL earned badges from both channel-specific and global sources
-    /// This merges channelViewer.earnedBadges with globalBadgeCollection for complete coverage
+    /// This merges channelViewer.earnedBadges with the signed-in user's global
+    /// badge collection for complete coverage. For any OTHER user only the
+    /// channel-earned set is available (Twitch no longer exposes third-party
+    /// global collections).
     /// NOTE: This is only used for profile overlays, not for normal chat!
     async fn fetch_all_earned_badges(
         &self,
         channel_earned_ids: Vec<String>,
+        user_id: &str,
         username: &str,
         channel_id: &str,
-        token: &str,
     ) -> Vec<UserBadge> {
         let mut all_badge_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
 
@@ -1178,9 +1139,9 @@ impl BadgeService {
             all_badge_ids.insert(badge_id);
         }
 
-        // 2. Fetch global badge collection (ALL earned global badges)
+        // 2. Fetch the global badge collection (signed-in user only)
         match self
-            .fetch_global_badge_collection_from_gql(username, token)
+            .fetch_current_user_global_collection(user_id, username)
             .await
         {
             Ok(global_badge_ids) => {
@@ -1188,8 +1149,15 @@ impl BadgeService {
                     all_badge_ids.insert(badge_id);
                 }
             }
-            Err(_) => {
-                // Silently fail - this is just supplemental data
+            Err(e) => {
+                // Expected for other users' profiles (not the token's user), so
+                // this stays at debug; a failure for the signed-in user is
+                // logged at WARN by fetch_current_user_global_collection.
+                log::debug!(
+                    "[BadgeService] Global badge collection unavailable for {}: {}",
+                    username,
+                    e
+                );
             }
         }
 
@@ -1289,7 +1257,13 @@ impl BadgeService {
             .await
         {
             Ok(result) => result,
-            Err(_) => {
+            Err(e) => {
+                log::warn!(
+                    "[BadgeService] GQL badge lookup failed for {} in {}: {}",
+                    username,
+                    channel_name,
+                    e
+                );
                 // Fall back to IRC cache if available
                 if let Some(badge_str) = self.get_user_badge_string(user_id).await {
                     let display = self.resolve_badge_string(&badge_str, channel_id).await;
@@ -1316,7 +1290,7 @@ impl BadgeService {
 
         // Fetch all earned badges (merges channel + global)
         let earned_badges = self
-            .fetch_all_earned_badges(channel_earned_ids, username, channel_id, token)
+            .fetch_all_earned_badges(channel_earned_ids, user_id, username, channel_id)
             .await;
 
         // Fetch third-party badges
