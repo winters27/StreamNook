@@ -9,7 +9,7 @@ import { MajorCologneChrome } from '../MajorCologneChrome';
 import { getPreviewEmotes, previewEmoteUrl, rollPreviewChat, type PreviewEmote } from '../../utils/previewChat';
 import { openBadgesWithPaintInMain, openBadgesOnStreamNookInMain } from '../../utils/openBadgesInMain';
 import streamNookLogo from '../../assets/streamnook-logo-128.webp';
-import { User, Link, Unlink, Image as ImageIcon, Film, Heart, Check, ExternalLink } from 'lucide-react';
+import { User, Link, Unlink, Image as ImageIcon, Film, Heart, Check, ExternalLink, Lock } from 'lucide-react';
 import {
   computePaintStyle,
   getBadgeImageUrls,
@@ -49,7 +49,7 @@ import type { CosmeticCatalogEntry } from '../../services/supabaseService';
 import { getIdentityWithCache, setIdentity } from '../../services/identityService';
 import { readOwnProfileCache, writeOwnProfileCache } from '../../services/ownProfileCache';
 import { isSubscriber } from '../../services/subscriberService';
-import { listAtmospheres, getAtmosphere, type Atmosphere } from '../../services/atmospheres';
+import { listAtmospheres, getAtmosphere, getAtmosphereUnlock, type Atmosphere } from '../../services/atmospheres';
 import { resolveEntitlement } from '../../services/cosmetics/ownership';
 import { MAJOR_COLOGNE_THEME_ID, MAJOR_COLOGNE_ACCOLADE_ID, parseCologneTheme, buildCologneTheme, isCologneTheme } from '../../services/cologneEvent';
 import { getTier, getTierAccent, StreamNookBadge } from '../StreamNookBadge';
@@ -128,6 +128,14 @@ const CheckChip = ({ tone = 'accent' }: { tone?: 'accent' | 'seventv' }) => (
   </div>
 );
 
+// The lock on a badge you have not earned yet. Amber like the tier chips on
+// the theme rows, so "locked" reads the same way everywhere on this tab.
+const LockChip = () => (
+  <div className="absolute -top-1.5 -right-1.5 flex h-4 w-4 items-center justify-center rounded-full border border-background bg-[#2a2418]">
+    <Lock size={8} strokeWidth={3} className="text-amber-300/90" />
+  </div>
+);
+
 const ProfileSettings = () => {
   const { isAuthenticated, currentUser, loginToTwitch, currentStream, addToast, openProfilePreview, updateProfilePreview } = useAppStore();
   // Last-rendered loadout persisted from a prior open. Read ONCE, synchronously,
@@ -179,6 +187,11 @@ const ProfileSettings = () => {
   // Only badges are equippable in the badge slot; relics/frames live in their own
   // slots, so keep non-badge kinds out of the badge picker below.
   const ownedBadges = ownedCosmetics.filter((c) => c.kind === 'badge');
+  // Badges that exist but are not yours yet. Shown locked after your own, so
+  // the whole collection is visible; staged/owner-only rows stay out of it.
+  const lockedBadges = cosmeticsCatalog.filter(
+    (c) => c.kind === 'badge' && c.is_active && !c.hidden && !ownedCosmeticSlugs.has(c.slug),
+  );
   const activeCosmeticSlug = currentUser?.user_id
     ? getActiveCosmeticSlug(currentUser.user_id)
     : null;
@@ -1359,7 +1372,7 @@ const ProfileSettings = () => {
           Your StreamNook identity: badges, your profile background, and animated Atmospheres.
         </p>
       </div>
-      {streamNookUserNumber !== null && currentUser?.user_id && ownedBadges.length > 0 && (
+      {streamNookUserNumber !== null && currentUser?.user_id && (ownedBadges.length > 0 || lockedBadges.length > 0) && (
         <div className="settings-card p-4">
           <div className="flex items-center gap-1.5 mb-4">
             <Tooltip content="Open StreamNook badges" side="top">
@@ -1418,6 +1431,43 @@ const ProfileSettings = () => {
                       draggable={false}
                     />
                     {isActive && <CheckChip tone="accent" />}
+                  </div>
+                </Tooltip>
+              );
+            })}
+            {lockedBadges.map((cosmetic) => {
+              const asset = resolveCosmeticAsset(cosmetic, { chatSize: true });
+              if (!asset) return null;
+              const how = cosmetic.payment_type === 'Subscription'
+                ? 'Subscriber badge'
+                : cosmetic.payment_type === 'Donation'
+                  ? 'Supporter badge'
+                  : null;
+              return (
+                <Tooltip
+                  key={cosmetic.slug}
+                  content={
+                    <div className="text-center">
+                      <div className="font-semibold">{cosmetic.name}</div>
+                      <div className="mt-0.5 inline-flex items-center gap-1 text-[11px] text-amber-300/90">
+                        <Lock size={10} />
+                        {how ? `Locked. ${how}` : 'Locked'}
+                      </div>
+                    </div>
+                  }
+                  side="top"
+                >
+                  <div
+                    aria-disabled
+                    className="relative cursor-default rounded-lg border border-dashed border-white/[0.08] p-2"
+                  >
+                    <img
+                      src={asset}
+                      alt={cosmetic.name}
+                      className="h-8 w-8 object-contain opacity-40 saturate-[0.35]"
+                      draggable={false}
+                    />
+                    <LockChip />
                   </div>
                 </Tooltip>
               );
@@ -1579,34 +1629,54 @@ const ProfileSettings = () => {
         </p>
         <div className="mt-3 space-y-2">
           {listAtmospheres()
-            // Cologne renders as its own card with add-on toggles, below.
-            .filter((a) => !isCologneTheme(a.id))
-            // Achievement-gated Atmospheres stay hidden until earned, so the
-            // unlock is a surprise (like the "???" secret accolade) instead of a
-            // spoiler sitting in the cosmetics panel. Once earned, one shows up
-            // unlocked here for any member, no subscription required.
-            .filter((a) => a.unlock?.kind !== 'accolade' || earnedAccolades.has(a.unlock.accoladeId))
+            // Cologne renders as its own card with add-on toggles, below, once
+            // earned. Before that it lists here as a locked accolade row.
+            .filter((a) => !(isCologneTheme(a.id) && earnedAccolades.has(MAJOR_COLOGNE_ACCOLADE_ID)))
             .map((a) => {
             const selected = profileTheme === a.id;
             const locked = !atmUnlocked(a);
+            // Accolade-gated Atmospheres show locked until earned so the whole
+            // collection is visible. A secret challenge keeps its method to
+            // itself ("Hidden challenge"); a public one names the accolade.
+            // Neither is a purchase, so the row is inert rather than a link.
+            const unlock = getAtmosphereUnlock(a);
+            const lockedAccolade = locked && unlock.kind === 'accolade';
+            const tip = lockedAccolade ? unlock.label : (atmosphereUnlockNote(a) ?? a.name);
             return (
-              <Tooltip key={a.id} content={atmosphereUnlockNote(a) ?? a.name} side="top">
+              <Tooltip key={a.id} content={tip} side="top">
               <button
                 type="button"
-                onClick={() => (locked ? openSupportFor('subscriber') : selected ? selectProfileTheme('tier', 'free') : selectProfileTheme(a.id, 'subscriber', a.unlock?.kind === 'accolade'))}
+                aria-disabled={lockedAccolade || undefined}
+                onClick={() =>
+                  lockedAccolade
+                    ? undefined
+                    : locked
+                      ? openSupportFor('subscriber')
+                      : selected
+                        ? selectProfileTheme('tier', 'free')
+                        : selectProfileTheme(a.id, 'subscriber', a.unlock?.kind === 'accolade')
+                }
                 onMouseEnter={() => setPreviewThemeId(a.id)}
                 onMouseLeave={() => setPreviewThemeId(null)}
                 className={`flex w-full items-center gap-3 rounded-lg border p-2.5 text-left transition-colors ${
                   selected
                     ? 'border-accent/50 bg-accent/[0.06]'
-                    : 'border-white/[0.06] hover:border-white/[0.12] hover:bg-white/[0.03]'
-                } ${locked ? 'cursor-pointer opacity-60 hover:opacity-100' : ''}`}
+                    : lockedAccolade
+                      ? 'border-dashed border-white/[0.08]'
+                      : 'border-white/[0.06] hover:border-white/[0.12] hover:bg-white/[0.03]'
+                } ${lockedAccolade ? 'cursor-default opacity-60' : locked ? 'cursor-pointer opacity-60 hover:opacity-100' : ''}`}
               >
                 <span
-                  className="h-9 w-14 flex-shrink-0 rounded-md ring-1 ring-inset ring-white/10"
+                  className={`h-9 w-14 flex-shrink-0 rounded-md ring-1 ring-inset ring-white/10 ${lockedAccolade ? 'saturate-[0.35]' : ''}`}
                   style={{ background: a.swatch }}
                 />
                 <span className="flex-1 text-sm font-medium text-textPrimary">{a.name}</span>
+                {lockedAccolade && (
+                  <span className="inline-flex items-center gap-1 rounded-full border border-amber-400/30 bg-amber-400/[0.06] px-2 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-amber-300/90">
+                    <Lock size={9} />
+                    {unlock.hidden ? 'Hidden challenge' : 'Accolade'}
+                  </span>
+                )}
                 {selected && <span className="text-[10px] font-medium text-textMuted">Active</span>}
                 {selected && <Check size={16} className="text-accent" />}
               </button>
