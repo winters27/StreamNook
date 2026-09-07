@@ -1,3 +1,4 @@
+pub mod default_name_color;
 pub mod link_detect;
 pub mod background_service;
 pub mod badge_feed;
