@@ -142,11 +142,11 @@ const PlayerSettings = () => {
       <SettingsSection
         id="settings-section-auto-switch"
         label="Auto-Switch"
-        description="When a stream goes offline, automatically switch to another stream."
+        description="What happens when the stream you are watching ends, and where StreamNook takes you next."
       >
         <SettingsRow
-          title="Enable Auto-Switch"
-          description="Automatically switch when current stream goes offline"
+          title="Move to another stream when this one ends"
+          description="When the channel you are watching goes offline, StreamNook picks a new live stream and starts it for you."
           control={
             <Toggle
               enabled={autoSwitchEnabled}
@@ -156,11 +156,11 @@ const PlayerSettings = () => {
         />
 
         <SettingsRow
-          title="Switch To"
+          title="Where to go next"
           description={
             autoSwitchMode === 'same_category'
-              ? 'Switch to the highest viewer stream in the same game/category'
-              : 'Switch to one of your live followed streamers'
+              ? 'The most-watched live stream in the same game or category.'
+              : 'One of your followed channels that is live right now.'
           }
           disabled={!autoSwitchEnabled}
         >
@@ -175,8 +175,8 @@ const PlayerSettings = () => {
         </SettingsRow>
 
         <SettingsRow
-          title="Show Notification"
-          description="Display a toast when auto-switching streams"
+          title="Tell me when it switches"
+          description="A toast names the new channel each time StreamNook switches for you."
           disabled={!autoSwitchEnabled}
           control={
             <Toggle
@@ -187,8 +187,8 @@ const PlayerSettings = () => {
         />
 
         <SettingsRow
-          title="Auto-Redirect on Raid"
-          description="Automatically follow raids to the target channel (requires login)"
+          title="Follow raids automatically"
+          description="When the streamer raids another channel, StreamNook jumps there with them (you need to be signed in)."
           control={
             <Toggle
               enabled={autoSwitchRaid}
@@ -198,8 +198,8 @@ const PlayerSettings = () => {
         />
 
         <SettingsRow
-          title="Stay in Offline Chat"
-          description="Don't auto-switch when stream ends, stay in the chat room instead"
+          title="Stay in chat after the stream ends"
+          description="Keeps you in the channel's chat when the stream goes offline instead of switching you away."
           control={
             <Toggle
               enabled={autoSwitchOfflineChat}
@@ -212,10 +212,12 @@ const PlayerSettings = () => {
       <SettingsSection
         id="settings-section-streaming"
         label="Streaming"
+        description="How StreamNook fetches the stream from Twitch, and how patient it is when a channel is slow to start."
       >
         <SettingsRow
-          title="Allow h265 + AV1 codecs"
-          description="Request AV1 and HEVC stream variants in addition to h264. Some Twitch channels ship more efficient encodings at the same resolution. Turn off if you see decode errors on older hardware."
+          title="Allow AV1 and h265 streams"
+          description="Asks Twitch for AV1 and h265 (HEVC) versions of the stream alongside h264, which some channels offer at better quality for the same bandwidth."
+          help="Turn this off if you see decode errors or a black picture on older hardware. The change applies the next time a stream loads, no restart needed."
           control={
             <Toggle
               enabled={streamlink.enhanced_codecs ?? true}
@@ -234,8 +236,8 @@ const PlayerSettings = () => {
         />
 
         <SettingsRow
-          title={`Connection Timeout: ${streamlink.stream_timeout}s`}
-          description="How long to keep retrying to resolve a stream before giving up (e.g. waiting for a channel that just went live)"
+          title={`Keep trying for ${streamlink.stream_timeout}s`}
+          description="How long StreamNook keeps trying to open a stream before giving up, which helps when a channel has only just gone live."
         >
           <input
             type="range"
@@ -254,8 +256,8 @@ const PlayerSettings = () => {
         </SettingsRow>
 
         <SettingsRow
-          title={`Auto-Retry Delay: ${streamlink.retry_streams}s`}
-          description="Seconds to wait between resolve attempts while a stream isn't available yet (0 = a single attempt)"
+          title={`Pause ${streamlink.retry_streams}s between attempts`}
+          description="How long to wait between attempts while a stream is not available yet (0 means a single attempt)."
         >
           <input
             type="range"
@@ -294,8 +296,13 @@ const PlayerSettings = () => {
           title="Scroll to open Channel About"
           description={
             revealNeedsShift
-              ? "Hold Shift and scroll down over the player to slide the channel's About panel up over the stream. Shift is needed because the plain wheel is set to volume; turn that off and a plain scroll down opens it instead."
-              : "Scroll down over the player to slide the channel's About panel up over the stream. It's also always reachable from the About pill that appears when you hover the player."
+              ? "Hold Shift and scroll down over the player to slide the channel's About panel up over the stream."
+              : "Scroll down over the player to slide the channel's About panel up over the stream."
+          }
+          help={
+            revealNeedsShift
+              ? "Shift is needed because the plain wheel is set to volume. Turn Scroll to change volume off and a plain scroll down opens it instead."
+              : "The About pill that appears when you hover the player always opens it too."
           }
           control={
             <Toggle
@@ -318,7 +325,8 @@ const PlayerSettings = () => {
 
         <SettingsRow
           title="Resume VODs where you left off"
-          description="Reopening a past broadcast picks up at your last position. Off starts every VOD from the beginning; positions are still remembered for the video cards."
+          description="Reopening a past broadcast picks up at your last position."
+          help="Off starts every VOD from the beginning; positions are still remembered for the video cards."
           control={
             <Toggle
               enabled={resumeVodPlayback}
@@ -352,10 +360,11 @@ const PlayerSettings = () => {
       <SettingsSection
         id="settings-section-video-player"
         label="Video Player"
+        description="How streams start and how the player buffers; you can still change most of this from the player itself."
       >
         <SettingsRow
-          title="Autoplay"
-          description="Automatically play stream when loaded"
+          title="Play as soon as a stream opens"
+          description="The stream starts playing the moment it loads, with no need to press play."
           control={
             <Toggle
               enabled={videoPlayer?.autoplay ?? true}
@@ -370,8 +379,9 @@ const PlayerSettings = () => {
         />
 
         <SettingsRow
-          title="Live Edge Gap"
-          description="How far behind the live edge to ride. Lower is closer to live; the lowest gaps need Low Latency on (and a capable connection) to stay smooth. Reopen the stream to apply."
+          title="How close to live to stay"
+          description="How far behind the live edge the player rides; lower is closer to live (reopen the stream to apply)."
+          help="The lowest gaps need Low Latency turned on, and a solid connection, to stay smooth."
         >
           <div className="flex items-center gap-3">
             <input
@@ -396,7 +406,8 @@ const PlayerSettings = () => {
 
         <SettingsRow
           title="Low Latency"
-          description="Use the low-latency engine to hold a tight Live Edge Gap smoothly on channels that support it. Off keeps the stable path; if a stream stutters or won't play, turn this off."
+          description="Uses the low-latency engine to hold a tight live edge gap smoothly on channels that support it."
+          help="Off keeps the stable path. If a stream stutters or refuses to play, turn this off first."
           control={
             <Toggle
               enabled={videoPlayer?.experimental_low_latency ?? false}
@@ -413,8 +424,8 @@ const PlayerSettings = () => {
         />
 
         <SettingsRow
-          title={`Max Buffer Length: ${videoPlayer?.max_buffer_length ?? 120}s`}
-          description="Maximum amount of video to buffer ahead (higher = more stable, but more delay)"
+          title={`Buffer up to ${videoPlayer?.max_buffer_length ?? 120}s ahead`}
+          description="How much video the player keeps loaded ahead of playback; more is steadier on a shaky connection but adds delay."
         >
           <input
             type="range"
@@ -436,8 +447,8 @@ const PlayerSettings = () => {
         </SettingsRow>
 
         <SettingsRow
-          title="Default Stream Quality"
-          description="Quality to use when starting streams (you can change quality anytime using the player controls)"
+          title="Quality to start streams at"
+          description="Every stream opens at this quality, and you can change it anytime from the player controls."
         >
           <Dropdown
             value={settings.quality}
@@ -458,8 +469,8 @@ const PlayerSettings = () => {
         </SettingsRow>
 
         <SettingsRow
-          title="Lock Aspect Ratio (16:9)"
-          description="Prevent letterboxing by constraining window resize to maintain video aspect ratio"
+          title="Keep the window at 16:9"
+          description="Resizing the window snaps to the video's shape, so you never see black bars around the picture."
           control={
             <Toggle
               enabled={videoPlayer?.lock_aspect_ratio ?? true}
@@ -490,8 +501,8 @@ const PlayerSettings = () => {
         />
 
         <SettingsRow
-          title="Start Muted"
-          description="Begin playback with audio muted"
+          title="Start streams muted"
+          description="Every stream opens silent until you unmute it."
           control={
             <Toggle
               enabled={videoPlayer?.muted ?? false}
@@ -506,8 +517,8 @@ const PlayerSettings = () => {
         />
 
         <SettingsRow
-          title={`Default Volume: ${Math.round((videoPlayer?.volume ?? 1.0) * 100)}%`}
-          description="Initial volume level when starting playback"
+          title={`Starting volume: ${Math.round((videoPlayer?.volume ?? 1.0) * 100)}%`}
+          description="The volume every stream opens at before you adjust it."
         >
           <input
             type="range"
@@ -529,11 +540,12 @@ const PlayerSettings = () => {
       <SettingsSection
         id="settings-section-audio-boost"
         label="Audio Boost"
-        description="Even out loud and quiet moments and push the stream a little louder than the source, without the harsh clipping you get from raising volume past 100%. Turn it on for a clean, balanced lift, then fine-tune to taste."
+        description="Even out loud and quiet moments and push the stream a little louder than the source, without the harsh clipping you get from raising volume past 100%."
       >
         <SettingsRow
-          title="Enable Audio Boost"
-          description="Run the stream's audio through a compressor and a makeup-gain stage. Stacks on top of the normal volume slider."
+          title="Turn on Audio Boost"
+          description="Evens out the stream's loudness and lifts it, on top of the normal volume slider."
+          help="Under the hood the audio runs through a compressor and then a makeup-gain stage. The defaults give a clean, balanced lift; fine-tune below to taste."
           control={
             <Toggle
               enabled={audioBoost.enabled}
@@ -602,11 +614,11 @@ const PlayerSettings = () => {
       <SettingsSection
         id="settings-section-song-id"
         label="Song Identification"
-        description="The /song command and the player's music button listen to a few seconds of the stream and name the track. Longer captures match more reliably, especially over talking or noise."
+        description="The /song command and the player's music button listen to a few seconds of the stream and name the track."
       >
         <SettingsRow
-          title={`Listen Time: ${songId.capture_seconds}s`}
-          description="How many seconds of audio to fingerprint. Longer is more accurate but takes a bit longer before the result appears."
+          title={`Listen for ${songId.capture_seconds}s`}
+          description="How many seconds of audio to fingerprint; longer matches more reliably over talking or noise, but the result takes a little longer to appear."
         >
           <input
             type="range"
@@ -620,8 +632,9 @@ const PlayerSettings = () => {
         </SettingsRow>
 
         <SettingsRow
-          title={`Retries on No Match: ${songId.retries}`}
-          description="If the first listen finds nothing, try again this many times. Each retry listens to a fresh window, so an ad break or quiet moment gets another shot."
+          title={`Retries when nothing matches: ${songId.retries}`}
+          description="If the first listen finds nothing, StreamNook listens again this many times."
+          help="Each retry listens to a fresh window, so an ad break or quiet moment gets another shot."
         >
           <input
             type="range"

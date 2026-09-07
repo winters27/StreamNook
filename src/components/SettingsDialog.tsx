@@ -1,4 +1,5 @@
 import { useAppStore, SettingsTab } from '../stores/AppStore';
+import SectionNav from './settings/SectionNav';
 import {
   X,
   Layout,
@@ -470,6 +471,8 @@ const SettingsDialog = () => {
                 ref={contentRef}
                 className="scrollbar-thin flex-1 overflow-y-auto px-8 pb-8"
               >
+               <div className="flex items-start gap-8">
+                <div className="min-w-0 flex-1">
                 <Suspense
                   fallback={
                     <div className="flex h-full items-center justify-center">
@@ -502,6 +505,11 @@ const SettingsDialog = () => {
                   </>
                 )}
                 </Suspense>
+                </div>
+                {/* Section rail: sticky beside the panel, spring indicator
+                    follows the section being read (settings/SectionNav). */}
+                <SectionNav containerRef={contentRef} tabKey={activeTab} hidden={searching} />
+               </div>
               </div>
             </section>
           </motion.div>

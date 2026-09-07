@@ -319,7 +319,7 @@ const RemindersSettings = () => {
     <SettingsSection label="Reminders" id="reminders" bare>
       <div className="flex items-start justify-between gap-3">
         <p className="text-xs text-textSecondary flex-1">
-          Auto-post a message into a streamer&apos;s chat to nudge the broadcaster about something — on a
+          Post a message into a streamer&apos;s chat on your behalf to nudge them about something: on a
           repeating timer, after a delay, at a set time, once the stream hits an uptime, or when a keyword shows up
           in chat. You can also fire one off instantly with <Tag>/remind now &lt;message&gt;</Tag>.
         </p>
@@ -365,7 +365,7 @@ const RemindersSettings = () => {
             <p className="text-textSecondary">
               Bump <span className="text-textPrimary">Repeat</span> to post the same line several times in a row so the
               streamer actually catches it. The copies carry an invisible character so Twitch doesn&apos;t reject them as
-              duplicates — they look identical in chat.
+              duplicates, and they look identical in chat.
             </p>
           </section>
 
@@ -437,6 +437,7 @@ const RemindersSettings = () => {
                 value={reminder.label ?? ''}
                 onChange={(e) => updateReminder(reminder.id, { label: e.target.value })}
                 placeholder="Reminder name (optional)"
+                aria-label="Reminder name"
                 maxLength={60}
                 className="flex-1 bg-background/40 rounded border border-borderSubtle text-textPrimary text-sm px-2.5 py-1.5 focus:outline-none focus:border-white/[0.16]"
                 spellCheck={false}
@@ -470,14 +471,17 @@ const RemindersSettings = () => {
             </div>
 
             {/* The message */}
-            <textarea
-              value={reminder.message}
-              onChange={(e) => updateReminder(reminder.id, { message: e.target.value })}
-              placeholder="What to post in chat. Supports {channel}, {stream.uptime}, {stream.title}."
-              rows={2}
-              className="w-full glass-input text-textPrimary text-sm px-2.5 py-1.5 resize-y"
-              spellCheck={false}
-            />
+            <label className="block">
+              <span className="mb-1 block text-[11px] text-textMuted">Message to post</span>
+              <textarea
+                value={reminder.message}
+                onChange={(e) => updateReminder(reminder.id, { message: e.target.value })}
+                placeholder="What to post in chat. Supports {channel}, {stream.uptime}, {stream.title}."
+                rows={2}
+                className="w-full glass-input text-textPrimary text-sm px-2.5 py-1.5 resize-y"
+                spellCheck={false}
+              />
+            </label>
 
             {/* Trigger picker */}
             <SegmentedSelect
@@ -527,14 +531,17 @@ const RemindersSettings = () => {
               )}
               {reminder.trigger === 'keyword' && (
                 <div className="space-y-2">
-                  <input
-                    type="text"
-                    value={reminder.keyword ?? ''}
-                    onChange={(e) => updateReminder(reminder.id, { keyword: e.target.value })}
-                    placeholder="Word or phrase to watch for"
-                    className="w-full glass-input text-textPrimary text-sm px-2.5 py-1.5"
-                    spellCheck={false}
-                  />
+                  <label className="block">
+                    <span className="mb-1 block text-[11px] text-textMuted">Keyword</span>
+                    <input
+                      type="text"
+                      value={reminder.keyword ?? ''}
+                      onChange={(e) => updateReminder(reminder.id, { keyword: e.target.value })}
+                      placeholder="Word or phrase to watch for"
+                      className="w-full glass-input text-textPrimary text-sm px-2.5 py-1.5"
+                      spellCheck={false}
+                    />
+                  </label>
                   <div className="flex flex-wrap items-center gap-2 text-[13px] text-textSecondary">
                     <span>Match</span>
                     <select

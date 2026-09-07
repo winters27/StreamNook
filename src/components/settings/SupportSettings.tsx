@@ -255,11 +255,12 @@ const DiagnosticLoggingSection = () => {
         <SettingsSection
             id="settings-section-diagnostics"
             label="Diagnostics"
-            description="Controls how much detail the app writes to its log file (streamnook.log in the app's logs folder)."
+            description="How much StreamNook writes to its log file, and where to find that file when someone asks you for it."
         >
             <SettingsRow
-                title="Verbose diagnostic logging"
-                description="Records connection, playback and chat activity to the log file. Leave this on if you are reporting a bug, otherwise the log holds almost nothing to send. Turn it off for a quieter log."
+                title="Keep a detailed log for bug reports"
+                description="Records connection, playback, and chat activity to streamnook.log on this PC so a problem can be traced after the fact."
+                help="Leave it on if you might report a bug; with it off the log holds almost nothing worth sending. The file stays on your PC until you choose to share it."
                 control={
                     <Toggle
                         enabled={enabled}
@@ -268,8 +269,8 @@ const DiagnosticLoggingSection = () => {
                 }
             />
             <SettingsRow
-                title="Log file"
-                description="streamnook.log records connection and chat activity. Attach it when reporting a bug."
+                title="Find the log file"
+                description="Opens the folder that holds streamnook.log so you can attach it to a bug report."
                 control={
                     <button
                         onClick={() => {

@@ -10,6 +10,12 @@ interface SettingsSectionProps {
   bare?: boolean;
 }
 
+/** Deterministic id from a section label, so the "On this page" strip can
+ *  target sections that never declared one. Explicit ids still win (the
+ *  search index deep-links to those). */
+export const sectionIdFromLabel = (label: string): string =>
+  `settings-section-${label.toLowerCase().replace(/&/g, 'and').replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')}`;
+
 export const SettingsSection = ({
   label,
   description,
@@ -17,7 +23,7 @@ export const SettingsSection = ({
   id,
   bare = false,
 }: SettingsSectionProps) => (
-  <section id={id}>
+  <section id={id ?? sectionIdFromLabel(label)} data-settings-section={label}>
     <div className="px-1 pb-2.5">
       <h3 className="text-[12px] font-semibold uppercase tracking-[0.14em] text-textPrimary">
         {label}

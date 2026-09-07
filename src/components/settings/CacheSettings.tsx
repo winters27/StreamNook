@@ -9,10 +9,14 @@ const CacheSettings = () => {
 
   return (
     <div className="space-y-8">
-      <SettingsSection label="Cache">
+      <SettingsSection
+        label="Cache"
+        description="Keeps emotes, badges, and channel details on disk so chat loads without fetching them again. Come here to check how much is stored or start fresh."
+      >
         <SettingsRow
-          title="Enable Cache"
-          description="Cache emotes and badges to speed up loading"
+          title="Load emotes and badges from disk"
+          description="Stores a copy on this PC after the first download so later channel loads are near instant. Off means every launch fetches them again."
+          help="Uses a little disk space in the app data folder and nothing else. Turning it off does not delete what is already stored; use Clear cache below for that."
           control={
             <Toggle
               enabled={settings.cache?.enabled ?? true}
@@ -27,8 +31,9 @@ const CacheSettings = () => {
         />
 
         <SettingsRow
-          title={`Cache Expiry: ${settings.cache?.expiry_days ?? 7} days`}
-          description="How long to keep cached data before refreshing"
+          title={`Refresh stored data after ${settings.cache?.expiry_days ?? 7} days`}
+          description="Anything older than this is fetched again the next time it is needed, so new emotes and badge art show up on their own."
+          help="1 to 30 days, 7 by default. A shorter window keeps you current at the cost of more downloads; a longer one saves bandwidth."
         >
           <input
             type="range"
@@ -47,8 +52,9 @@ const CacheSettings = () => {
         </SettingsRow>
 
         <SettingsRow
-          title="Cache Maintenance"
-          description="View cache statistics or delete all cached emotes and badges"
+          title="See what is stored, or clear it"
+          description="View cache info shows a count of what is on disk, Open folder reveals the files, and Clear cache deletes every stored emote and badge so they download fresh."
+          help="Clearing is safe and does not touch your settings or login. Chat will feel slower for the first visit to each channel while the cache refills."
         >
           <div className="flex gap-2">
             <button
@@ -76,7 +82,7 @@ const CacheSettings = () => {
               }}
               className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded transition-all"
             >
-              View Cache Info
+              View cache info
             </button>
             <button
               onClick={async () => {
@@ -90,7 +96,7 @@ const CacheSettings = () => {
               }}
               className="px-4 py-2 bg-secondary hover:bg-surface-hover text-textPrimary text-sm font-medium rounded transition-all"
             >
-              Open Folder
+              Open folder
             </button>
             <button
               onClick={async () => {
@@ -108,7 +114,7 @@ const CacheSettings = () => {
               }}
               className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white text-sm font-medium rounded transition-all"
             >
-              Clear Cache
+              Clear cache
             </button>
           </div>
         </SettingsRow>
