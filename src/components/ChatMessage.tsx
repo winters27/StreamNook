@@ -1532,7 +1532,6 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
           <img
             src={emojiSrc}
             alt={segment.content}
-            loading="lazy"
             className={`inline h-5 w-5 ${inGrid ? '' : 'align-middle'} ${marginClass}`}
             style={gridStyle}
             onError={(e) => {
@@ -1567,7 +1566,6 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
             <img
               src={segment.cheermoteUrl}
               alt={segment.content}
-              loading="lazy"
               className="inline-block h-7 w-auto align-middle"
               referrerPolicy="no-referrer"
               onError={(e) => {
@@ -2128,7 +2126,6 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
                 <img
                   src={getTwitchBadgeUrl(badge.key, badge.info)}
                   alt={badge.info.title}
-                  loading="lazy"
                   className="sn-chat-badge inline-block cursor-pointer hover:scale-110 transition-transform"
                   onClick={() => onBadgeClick?.(badge.key, badge.info)}
                   onError={(e) => {
@@ -2183,7 +2180,6 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
               src={bitsAnimUrl}
               alt=""
               className="w-5 h-5 object-contain"
-              loading="lazy"
               decoding="async"
               referrerPolicy="no-referrer"
               onError={(e) => { e.currentTarget.style.display = 'none'; }}
@@ -2297,7 +2293,6 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
                 <img
                   src={getTwitchBadgeUrl(badge.key, badge.info)}
                   alt={badge.info.title}
-                  loading="lazy"
                   className="sn-chat-badge inline-block cursor-pointer hover:scale-110 transition-transform"
                   onClick={() => onBadgeClick?.(badge.key, badge.info)}
                   onError={(e) => {
@@ -3083,7 +3078,6 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
                           key={`rp-${i}`}
                           src={seg.emoteUrl || seg.emojiUrl}
                           alt={seg.content}
-                          loading="lazy"
                           className="inline-block align-middle mx-px"
                           style={{ height: '1.35em' }}
                         />
@@ -3124,7 +3118,6 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
             <img
               src={parsed.tags.get('avatar')}
               alt=""
-              loading="lazy"
               className="inline-block rounded-full mr-1.5 align-middle object-cover"
               style={{
                 // Scale with the chat font size (≈20px at the 14px default).
