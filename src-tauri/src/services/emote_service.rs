@@ -802,8 +802,13 @@ impl EmoteService {
                         all_emotes.push(Emote {
                             id: id.to_string(),
                             name: name.to_string(),
+                            // 2.0 (56 px) covers a 28 px chat row up to 2x DPR. 3.0 (112 px)
+                            // decoded 16x the pixels a 1x row needs, and the renderer keeps
+                            // every distinct emote it has shown in its image cache, which
+                            // was the largest part of the 2 MB/min drift measured on
+                            // 2026-09-06. Hover previews build their own 4.0 URL.
                             url: format!(
-                                "https://static-cdn.jtvnw.net/emoticons/v2/{}/default/dark/3.0",
+                                "https://static-cdn.jtvnw.net/emoticons/v2/{}/default/dark/2.0",
                                 id
                             ),
                             provider: EmoteProvider::Twitch,

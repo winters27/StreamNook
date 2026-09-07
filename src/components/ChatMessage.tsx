@@ -1285,7 +1285,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
     
     if (segment.type === 'emote') {
       const emoteUrl = segment.emoteUrl ||
-        (segment.emoteId ? `https://static-cdn.jtvnw.net/emoticons/v2/${segment.emoteId}/default/dark/3.0` : '');
+        (segment.emoteId ? `https://static-cdn.jtvnw.net/emoticons/v2/${segment.emoteId}/default/dark/2.0` : '');
 
       // Provider detection up front (reused for tiered caching, disk-first
       // render, srcSet, and the hover preview below). BTTV IDs are ALSO 24 hex
