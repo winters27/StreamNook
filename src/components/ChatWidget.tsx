@@ -26,6 +26,7 @@ import { PROVIDERS, type ProviderId } from '../types/providers';
 import { PlatformAccountChip } from './PlatformAccountChip';
 import { ProviderLogo } from './ProviderLogo';
 import { useAppStore } from '../stores/AppStore';
+import { useChannelState, watchChannel, unwatchChannel, refreshChannelState } from '../stores/channelStateStore';
 import { useProviderEmoteStore } from '../stores/providerEmoteStore';
 import { usePlatformAccountStore } from '../stores/platformAccountStore';
 import { useFollowsStore } from '../stores/followsStore';
@@ -1770,30 +1771,28 @@ const ChatWidget = ({ channelOverride, hypeTrainOverride }: ChatWidgetProps = {}
       .catch((e) => Logger.warn('[selfpaint] connect-resolve failed', e));
   }, [isTwitch, isConnected, currentUser?.user_id]);
 
-  const getViewerCount = useCallback(async () => {
+  // Viewer count, channel points and pinned messages come from the Rust
+  // channel-state service: one watch per channel per window, Rust polls each
+  // section on its own cadence (viewers as one Helix batch for every watched
+  // channel) and emits only on change. The three JS timers that lived here,
+  // and the Helix call the page used to make with credentials handed over by
+  // Rust, are gone. Non-Twitch viewer counts still ride the provider override.
+  const channelStateLogin = isTwitch ? (currentStream?.user_login?.toLowerCase() ?? null) : null;
+  const channelState = useChannelState(channelStateLogin);
+  useEffect(() => {
+    if (!channelStateLogin || !currentStream?.user_id) return;
+    void watchChannel(channelStateLogin, currentStream.user_id);
+    return () => {
+      void unwatchChannel(channelStateLogin);
+    };
+  }, [channelStateLogin, currentStream?.user_id]);
+  useEffect(() => {
     if (!isTwitch) {
-      // Non-Twitch viewer count rides the override (Kick channel-API metadata),
-      // not Helix — surface it into the same state the header reads.
       setViewerCount(currentStream?.viewer_count ?? null);
       return;
     }
-    if (currentStream?.user_login) {
-      try {
-        const [clientId, token] = await invoke<[string, string]>('get_twitch_credentials');
-        const count = await fetchStreamViewerCount(currentStream.user_login, clientId, token);
-        setViewerCount(count);
-      } catch (err) {
-        Logger.error('[ChatWidget] Failed to fetch viewer count:', err);
-        setViewerCount(null);
-      }
-    } else {
-      setViewerCount(null);
-    }
-  }, [isTwitch, currentStream?.user_login, currentStream?.viewer_count]);
-  useEffect(() => {
-    getViewerCount();
-  }, [getViewerCount]);
-  useVisibleInterval(getViewerCount, 60000);
+    setViewerCount(channelState?.viewer_count ?? null);
+  }, [isTwitch, currentStream?.viewer_count, channelState?.viewer_count]);
 
   // Auto-heal a degraded emote set. If this channel's set was fetched while 7TV
   // was down, its 7TV array is empty (7TV's trending+global are always present
@@ -2000,107 +1999,43 @@ const ChatWidget = ({ channelOverride, hypeTrainOverride }: ChatWidgetProps = {}
 
   // Fetch channel points for current channel using direct GQL query with retry logic
   const fetchChannelPoints = useCallback(async () => {
-    if (!isTwitch) return; // channel points are Twitch-only
-    if (!currentStream?.user_login) return;
-
-    const maxRetries = 3;
-    const retryDelayMs = 1000;
-    
-    Logger.debug('[ChatWidget] fetchChannelPoints - fetching for channel:', currentStream.user_login);
-    
-    for (let attempt = 1; attempt <= maxRetries; attempt++) {
-      try {
-        // Use the direct GQL query command which fetches fresh data
-        const result = await invoke<any>('get_channel_points_for_channel', {
-          channelLogin: currentStream.user_login
-        });
-        
-        Logger.debug('[ChatWidget] Raw GQL response:', JSON.stringify(result).substring(0, 500));
-        
-        // The query returns under data.user.channel (the web client nests it
-        // under community.channel); accept either. The SAME communityPoints
-        // object carries the bonus-chest availability, so chest detection rides
-        // this one healthy query instead of a separate stale-hash call.
-        const channel = result?.data?.community?.channel || result?.data?.user?.channel;
-        const communityPoints =
-          result?.data?.community?.channel?.self?.communityPoints
-          ?? result?.data?.user?.channel?.self?.communityPoints;
-
-        let balance = communityPoints?.balance;
-        if (balance === undefined && result?.balance !== undefined) {
-          balance = result.balance;
-        }
-
-        // Extract custom points settings (name and icon)
-        const communityPointsSettings = channel?.communityPointsSettings;
-        if (communityPointsSettings) {
-          const customName = communityPointsSettings.name;
-          const customIconUrl = communityPointsSettings.image?.url;
-          Logger.debug('[ChatWidget] Custom points settings:', { customName, customIconUrl });
-          setCustomPointsName(customName || null);
-          setCustomPointsIconUrl(customIconUrl || null);
-        } else {
-          setCustomPointsName(null);
-          setCustomPointsIconUrl(null);
-        }
-
-        if (typeof balance === 'number') {
-          Logger.debug('[ChatWidget] Got channel points balance:', balance);
-          setChannelPoints(balance);
-          // Mirror the live balance into the backend store so the leaderboard
-          // and the channel-points accolades reflect it immediately, not only
-          // after the realtime socket's next watch-time earn.
-          if (currentStream?.user_id) {
-            invoke('record_channel_points_balance', {
-              channelId: currentStream.user_id,
-              channelName: currentStream.user_login,
-              balance,
-            }).catch(() => {});
-          }
-          // Bonus chest rides the same response: availableClaim is { id } when
-          // a chest is ready, null/absent otherwise. Detection only; the
-          // auto-claim effect collects it when the setting is on.
-          const claimId = communityPoints?.availableClaim?.id;
-          if (claimId && currentStream?.user_id) {
-            setAvailableClaim({ id: claimId, channelId: currentStream.user_id });
-          } else {
-            setAvailableClaim(null);
-          }
-          return;
-        }
-
-        // Check if communityPoints is explicitly null (channel points not enabled)
-        if (communityPoints === null) {
-          Logger.debug('[ChatWidget] Channel points not enabled or user not eligible for this channel');
-          setChannelPoints(null);
-          setAvailableClaim(null);
-          return;
-        }
-        
-        Logger.warn(`[ChatWidget] Attempt ${attempt}/${maxRetries}: Could not parse balance from response`);
-      } catch (err) {
-        Logger.warn(`[ChatWidget] Attempt ${attempt}/${maxRetries} failed:`, err);
-      }
-      
-      // Wait before retrying (except on last attempt)
-      if (attempt < maxRetries) {
-        await new Promise(resolve => setTimeout(resolve, retryDelayMs));
-      }
+    if (!isTwitch || !channelStateLogin) return;
+    await refreshChannelState(channelStateLogin, 'points');
+  }, [isTwitch, channelStateLogin]);
+  // Points arrive through the channel-state store; mirror them into the
+  // local state the header, the tooltip and the claim flow already read. A
+  // null / disabled answer clears everything, as the old parser did.
+  useEffect(() => {
+    if (!isTwitch || channelState?.points_at == null) return;
+    const points = channelState.points;
+    if (!points || !points.enabled) {
+      setChannelPoints(null);
+      setCustomPointsName(null);
+      setCustomPointsIconUrl(null);
+      setAvailableClaim(null);
+      setIsLoadingChannelPoints(false);
+      return;
     }
-    
-    Logger.debug('[ChatWidget] All retries exhausted - will update via events');
-  }, [isTwitch, currentStream?.user_login, currentStream?.user_id]);
+    setCustomPointsName(points.name);
+    setCustomPointsIconUrl(points.icon_url);
+    if (typeof points.balance === 'number') setChannelPoints(points.balance);
+    if (points.available_claim_id && currentStream?.user_id) {
+      setAvailableClaim({ id: points.available_claim_id, channelId: currentStream.user_id });
+    } else {
+      setAvailableClaim(null);
+    }
+    setIsLoadingChannelPoints(false);
+  }, [isTwitch, channelState?.points, channelState?.points_at, currentStream?.user_id]);
 
   // Automatically fetch channel points when entering a new channel. Clear any
   // prior channel's chest first so its claim id can't be clicked against the
   // new channel during the brief fetch window.
   useEffect(() => {
+    // The watch above already fetches on channel change; the points effect
+    // clears the loading flag when the first answer lands.
     setAvailableClaim(null);
-    if (currentStream?.user_login) {
-      setIsLoadingChannelPoints(true);
-      fetchChannelPoints().finally(() => setIsLoadingChannelPoints(false));
-    }
-  }, [currentStream?.user_login, fetchChannelPoints]);
+    setIsLoadingChannelPoints(isTwitch && !!currentStream?.user_login);
+  }, [isTwitch, currentStream?.user_login]);
 
   // Keep the balance mirror current for the claim callback's delta fallback.
   useEffect(() => {
@@ -2171,16 +2106,8 @@ const ChatWidget = ({ channelOverride, hypeTrainOverride }: ChatWidgetProps = {}
     };
   }, [currentStream?.user_id]);
 
-  // Minute poll so a chest that appears mid-stream still surfaces if the PubSub
-  // push is missed. Detection lives in fetchChannelPoints, which reads
-  // availableClaim off the same healthy balance query (the dedicated
-  // check_channel_points command rode a stale persisted-query hash and silently
-  // returned nothing, so the chest never appeared).
-  useEffect(() => {
-    if (!currentStream?.user_login) return;
-    const interval = setInterval(() => { fetchChannelPoints(); }, 60_000);
-    return () => clearInterval(interval);
-  }, [currentStream?.user_login, fetchChannelPoints]);
+  // (The minute poll for a mid-stream chest now runs in Rust: channel_state
+  // polls points every 60 s for every watched channel and emits on change.)
 
   // Single auto-collect point: every detection path only sets availableClaim;
   // when auto-claim is on, this grabs it. Keeping the claim in one place means
@@ -2245,34 +2172,19 @@ const ChatWidget = ({ channelOverride, hypeTrainOverride }: ChatWidgetProps = {}
   // backgrounded window stops polling, and a visible window catches pins
   // within half a minute of them being set.
   const fetchPinnedMessages = useCallback(async () => {
-    if (!isTwitch || !currentStream?.user_id) {
-      // Non-Twitch pins are provider-driven (the snapshot effect below owns
-      // `pinnedMessages`), so don't clobber them here; only clear for Twitch.
+    if (!isTwitch || !channelStateLogin) {
       if (isTwitch) setPinnedMessages([]);
       usePinStore.getState().setPinnedIds([]);
       return;
     }
-    try {
-      const messages = await invoke<PinnedMessage[]>('get_pinned_chat_messages', {
-        channelId: currentStream.user_id,
-      });
-      setPinnedMessages(messages || []);
-      // Publish the underlying message ids so a chat row / drag bucket can flip
-      // its Pin control into Unpin when it's the currently-pinned message.
-      usePinStore.getState().setPinnedIds((messages || []).map((m) => m.message_id).filter(Boolean));
-      if (messages && messages.length > 0) {
-        Logger.debug('[ChatWidget] Pinned messages:', messages.length);
-      }
-    } catch (err) {
-      Logger.warn('[ChatWidget] Failed to fetch pinned messages:', err);
-      setPinnedMessages([]);
-      usePinStore.getState().setPinnedIds([]);
-    }
-  }, [isTwitch, currentStream?.user_id]);
+    await refreshChannelState(channelStateLogin, 'pinned');
+  }, [isTwitch, channelStateLogin]);
   useEffect(() => {
-    fetchPinnedMessages();
-  }, [fetchPinnedMessages]);
-  useVisibleInterval(fetchPinnedMessages, 30000);
+    if (!isTwitch || channelState?.pinned_at == null) return;
+    const messages = (channelState.pinned as PinnedMessage[]) || [];
+    setPinnedMessages(messages);
+    usePinStore.getState().setPinnedIds(messages.map((m) => m.message_id).filter(Boolean));
+  }, [isTwitch, channelState?.pinned, channelState?.pinned_at]);
   // Real-time refresh: any pin/unpin action bumps refreshNonce, so the pin shows
   // up immediately instead of after the 30s poll. A short second pass covers
   // Twitch's brief propagation lag (the Helix 204 can land just before GQL

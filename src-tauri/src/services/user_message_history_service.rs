@@ -1,7 +1,9 @@
 use crate::models::chat_layout::ChatMessage;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
+use std::collections::HashSet;
 use std::sync::OnceLock;
+use tauri::Emitter;
 use tokio::sync::Mutex;
 
 const MAX_USERS: usize = 1000;
@@ -41,6 +43,25 @@ pub struct UserMessageHistoryService {
 
 static INSTANCE: OnceLock<UserMessageHistoryService> = OnceLock::new();
 
+/// Users with an open profile card somewhere: every new message from one of
+/// them is pushed as `user-history-message` instead of the card polling the
+/// service every 2.5 s. Keyed the same way the cache is (`historyKey`).
+static WATCHED_USERS: OnceLock<std::sync::Mutex<HashSet<String>>> = OnceLock::new();
+static APP: OnceLock<tauri::AppHandle> = OnceLock::new();
+
+/// Event name for pushed messages. Payload: `{ user_key, message }`.
+pub const HISTORY_EVENT: &str = "user-history-message";
+
+#[derive(Serialize, Clone)]
+struct HistoryPush<'a> {
+    user_key: &'a str,
+    message: &'a UserMessageSummary,
+}
+
+fn watched() -> &'static std::sync::Mutex<HashSet<String>> {
+    WATCHED_USERS.get_or_init(|| std::sync::Mutex::new(HashSet::new()))
+}
+
 impl UserMessageHistoryService {
     pub fn global() -> &'static UserMessageHistoryService {
         INSTANCE.get_or_init(|| UserMessageHistoryService {
@@ -49,8 +70,32 @@ impl UserMessageHistoryService {
         })
     }
 
+    pub fn set_app_handle(app: tauri::AppHandle) {
+        let _ = APP.set(app);
+    }
+
+    pub fn watch_user(user_key: &str) {
+        if let Ok(mut w) = watched().lock() {
+            w.insert(user_key.to_string());
+        }
+    }
+
+    pub fn unwatch_user(user_key: &str) {
+        if let Ok(mut w) = watched().lock() {
+            w.remove(user_key);
+        }
+    }
+
     pub async fn add_message(&self, user_id: &str, message: &ChatMessage) {
         let summary: UserMessageSummary = message.into();
+        // Push to open cards before the lock: an emit is cheap and the watched
+        // set is tiny, so this costs the chat path one HashSet lookup.
+        let pushed = watched().lock().map(|w| w.contains(user_id)).unwrap_or(false);
+        if pushed {
+            if let Some(app) = APP.get() {
+                let _ = app.emit(HISTORY_EVENT, HistoryPush { user_key: user_id, message: &summary });
+            }
+        }
         let mut cache = self.cache.lock().await;
         let current_access = self
             .access_counter

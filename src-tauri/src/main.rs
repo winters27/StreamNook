@@ -28,7 +28,7 @@
 
 use commands::{
     accounts::*, announcements::*, app::*, automation::*, badge_metadata::*, badge_service::*,
-    badges::*, cache::*, channel_panels::*, chat::*, chat_identity::*, components::*,
+    badges::*, cache::*, channel_panels::*, channel_state::*, chat::*, chat_identity::*, components::*,
     cosmetics_cache::*, diagnostic_logging::*, discord::*, drops::*, emoji::*, emote_prefetch::*,
     emotes::*, eventsub::*, ffz::*, home_snapshot::*, hype_train::*, identity::*, justlog::*, layout::*,
     link_preview::*, logs::*, mod_log_storage::*, modroom::*, multi_nook::*, plugins::*,
@@ -756,6 +756,13 @@ fn main() {
             // network on its critical path. See services::home_snapshot.
             services::home_snapshot::start(app_handle.clone(), live_notification_service.clone());
 
+            // Per-channel chat state (viewers, points, pinned) for every channel a
+            // window has chat open on, and per-user history pushes for open user
+            // cards. Replaces three JS timers per mounted chat and a 2.5 s poll
+            // per open card. See services::channel_state.
+            services::channel_state::start(app_handle.clone());
+            services::user_message_history_service::UserMessageHistoryService::set_app_handle(app_handle.clone());
+
             // Badge-drop detection now lives server-side on the Penrose bot and
             // is delivered to the app over the badge WebSocket feed (started on
             // the frontend via badgeSocketService). The old cache-polling
@@ -1352,6 +1359,13 @@ fn main() {
             refresh_home_section,
             set_home_extra_channels,
             load_more_home_recommended,
+            // Per-channel chat state + user history watches (Rust-owned polls)
+            watch_channel_state,
+            unwatch_channel_state,
+            get_channel_state,
+            refresh_channel_state,
+            watch_user_history,
+            unwatch_user_history,
 
             // Resub notification commands
             get_resub_notification,

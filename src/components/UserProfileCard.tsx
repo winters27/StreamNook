@@ -6,6 +6,7 @@ import { providerLabel, type ProviderId } from '../types/providers';
 import { motion, AnimatePresence, useScroll, useTransform, useReducedMotion, useMotionValue, animate } from 'framer-motion';
 import { setUserNickname, setUserColor } from '../utils/userChatOverrides';
 import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 import { useAppStore } from '../stores/AppStore';
 import { streamProvider } from '../utils/streamProvider';
 import { openBadgesWithPaintInMain, openBadgesOnStreamNookInMain, openBadgesWithBadgeInMain, openBadgesWithTargetInMain, openProfileViewerInMain } from '../utils/openBadgesInMain';
@@ -1078,36 +1079,26 @@ const UserProfileCard = ({
     };
   }, [showMessages, getChannelContext, username, userId]);
 
-  // Keep the timeline live: poll the Rust history service (fed by every incoming
-  // chat message, shared across windows) while the messages view is open and
-  // accumulate anything new. Accumulate rather than replace so a message that
-  // scrolls out of the service's small ring buffer doesn't vanish mid-session.
+  // Keep the timeline live: while the messages view is open, Rust pushes every
+  // new message from this user (user-history-message, shared across windows)
+  // instead of the card polling the history service every 2.5 s.
   useEffect(() => {
     if (!showMessages || !userId) return;
+    const key = historyKey(userId, provider);
     let cancelled = false;
-    const poll = async () => {
-      try {
-        const msgs = await invoke<ParsedMessage[]>('get_user_message_history', {
-          // Same namespacing the write side uses; a bare provider id reads the
-          // wrong bucket (or nothing).
-          userId: historyKey(userId, provider),
-        });
-        if (cancelled || !msgs?.length) return;
-        setLiveMessages((prev) => {
-          const seen = new Set(prev.map((m) => m.id).filter(Boolean));
-          const add = msgs.filter((m) => m.id && !seen.has(m.id));
-          return add.length ? prev.concat(add) : prev;
-        });
-      } catch (e) {
-        Logger.debug('[UserProfileCard] live history poll failed:', e);
-      }
-    };
-    const interval = setInterval(poll, 2500);
+    void invoke('watch_user_history', { userKey: key }).catch(() => {});
+    const unlisten = listen<{ user_key: string; message: ParsedMessage }>('user-history-message', (event) => {
+      if (cancelled || event.payload.user_key !== key) return;
+      const msg = event.payload.message;
+      if (!msg?.id) return;
+      setLiveMessages((prev) => (prev.some((m) => m.id === msg.id) ? prev : prev.concat(msg)));
+    });
     return () => {
       cancelled = true;
-      clearInterval(interval);
+      unlisten.then((fn) => fn());
+      void invoke('unwatch_user_history', { userKey: key }).catch(() => {});
     };
-  }, [showMessages, userId]);
+  }, [showMessages, userId, provider]);
 
   // Land on the newest message (chat reads newest-at-bottom) and stay pinned
   // there as live messages arrive — unless the reader scrolled up into older

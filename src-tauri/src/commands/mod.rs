@@ -8,6 +8,7 @@ pub mod badges;
 
 pub mod cache;
 pub mod channel_panels;
+pub mod channel_state;
 pub mod chat;
 pub mod chat_identity;
 pub mod components;

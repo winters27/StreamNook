@@ -60,6 +60,7 @@ pub mod twitch_resolver;
 pub mod twitch_service;
 pub mod universal_cache_service;
 pub mod user_message_history_service;
+pub mod channel_state;
 pub mod hls_kind;
 pub mod home_snapshot;
 pub mod vod_progress_service;

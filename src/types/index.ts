@@ -988,6 +988,33 @@ export interface ReleaseNotes {
  * YouTube UC…), `thumbnail_url` is a direct URL with no {width} template, and
  * `game_id` / `tags` / `broadcaster_type` may be absent.
  */
+/** Channel points as the Rust channel-state service reports them. */
+export interface ChannelPoints {
+  enabled: boolean;
+  balance: number | null;
+  name: string | null;
+  icon_url: string | null;
+  available_claim_id: string | null;
+}
+
+/** Per-channel chat state owned by Rust (src-tauri/src/services/channel_state.rs). */
+export interface ChannelState {
+  login: string;
+  channel_id: string;
+  viewer_count: number | null;
+  viewers_at: number | null;
+  points: ChannelPoints | null;
+  points_at: number | null;
+  pinned: unknown[];
+  pinned_at: number | null;
+}
+
+/** One changed section, the payload of the `channel-state` event. */
+export type ChannelStateUpdate =
+  | { section: 'viewers'; login: string; viewer_count: number | null; at: number }
+  | { section: 'points'; login: string; points: ChannelPoints | null; at: number }
+  | { section: 'pinned'; login: string; pinned: unknown[]; at: number };
+
 /** One channel's bulk hype-train status, as Rust reports it. */
 export interface HypeTrainBulkStatus {
   channel_id: string;
