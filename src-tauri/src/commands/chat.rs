@@ -5,6 +5,9 @@ use crate::services::chat_service::{ChatService, SendResult};
 use crate::services::irc_service::IrcService;
 use crate::services::providers::{registry, SendCapability, SendOutcome};
 use anyhow::Result;
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 use tauri::State;
 
 /// The folder chat logs are written to right now (the custom folder when one
@@ -603,6 +606,178 @@ pub async fn parse_historical_messages(
     }
 
     Ok(IrcService::parse_historical_messages(messages).await)
+}
+
+/// Join backfill: how long a non-windowed recent-messages answer is reused.
+/// The main window and a MultiChat pane ask for the same channel within the
+/// same second; a rejoin inside the window is served without a round trip.
+const HISTORY_CACHE_TTL: Duration = Duration::from_secs(30);
+/// Mirror page size; robotty caps at 800.
+const HISTORY_DEFAULT_LIMIT: u32 = 100;
+const HISTORY_MAX_LIMIT: u32 = 800;
+const RECENT_MESSAGES_BASE: &str = "https://recent-messages.robotty.de/api/v2/recent-messages";
+
+static HISTORY_CACHE: OnceLock<Mutex<HashMap<String, (Instant, Vec<String>)>>> = OnceLock::new();
+
+fn history_cache() -> &'static Mutex<HashMap<String, (Instant, Vec<String>)>> {
+    HISTORY_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn cached_history(channel: &str) -> Option<Vec<String>> {
+    let cache = history_cache().lock().ok()?;
+    cache
+        .get(channel)
+        .filter(|(at, _)| at.elapsed() < HISTORY_CACHE_TTL)
+        .map(|(_, lines)| lines.clone())
+}
+
+fn store_history(channel: &str, lines: Vec<String>) {
+    if let Ok(mut cache) = history_cache().lock() {
+        cache.retain(|_, (at, _)| at.elapsed() < HISTORY_CACHE_TTL);
+        cache.insert(channel.to_string(), (Instant::now(), lines));
+    }
+}
+
+/// Twitch logins: letters, digits, underscore. Anything else never reaches
+/// the mirror URL.
+fn valid_channel_login(login: &str) -> bool {
+    !login.is_empty()
+        && login.len() <= 25
+        && login.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// Stamp a mirror line as history so the parser and the rows can tell it
+/// from live traffic (the tag the page used to add itself).
+fn mark_historical(line: &str) -> String {
+    match line.strip_prefix('@') {
+        Some(rest) => format!("@historical=1;{rest}"),
+        None => format!("@historical=1 {line}"),
+    }
+}
+
+async fn fetch_recent_messages(
+    channel: &str,
+    limit: u32,
+    after_ms: Option<u64>,
+    before_ms: Option<u64>,
+) -> Vec<String> {
+    let mut url = format!(
+        "{RECENT_MESSAGES_BASE}/{channel}?limit={}&hide_moderation_messages=true&hide_moderated_messages=true",
+        limit.clamp(1, HISTORY_MAX_LIMIT)
+    );
+    if let Some(a) = after_ms {
+        url.push_str(&format!("&after={a}"));
+    }
+    if let Some(b) = before_ms {
+        url.push_str(&format!("&before={b}"));
+    }
+    let resp = match crate::services::http::client().get(&url).send().await {
+        Ok(r) => r,
+        Err(e) => {
+            log::warn!("[ChatHistory] {channel}: mirror request failed: {e}");
+            return Vec::new();
+        }
+    };
+    if !resp.status().is_success() {
+        log::warn!("[ChatHistory] {channel}: mirror answered {}", resp.status());
+        return Vec::new();
+    }
+    let body: serde_json::Value = match resp.json().await {
+        Ok(v) => v,
+        Err(e) => {
+            log::warn!("[ChatHistory] {channel}: mirror body unreadable: {e}");
+            return Vec::new();
+        }
+    };
+    body.get("messages")
+        .and_then(|m| m.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|m| m.as_str())
+                .map(mark_historical)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The join backfill, fetched and parsed by Rust in one call: the recent
+/// messages mirror (recent-messages.robotty.de) tagged `historical=1`, then
+/// the same parse the live path uses. Until 2026-09-07 the page fetched the
+/// mirror itself, serially after the badge cache init, so history landed one
+/// to two seconds after the first live rows and visibly prepended; now the
+/// store starts this call at acquire time, in parallel with the IRC join,
+/// and paints history and the held live tail together. `limit`, `after_ms`
+/// and `before_ms` bound a reconnect backfill (never cached). A mirror error
+/// is an empty answer, as before: a channel with no history is still a
+/// channel.
+#[tauri::command]
+pub async fn load_channel_history(
+    channel: String,
+    limit: Option<u32>,
+    after_ms: Option<u64>,
+    before_ms: Option<u64>,
+    state: State<'_, AppState>,
+) -> Result<Vec<ChatMessage>, String> {
+    let key = channel.trim().trim_start_matches('#').to_lowercase();
+    if !valid_channel_login(&key) {
+        return Err(format!("bad_channel: {channel}"));
+    }
+    let windowed = limit.is_some() || after_ms.is_some() || before_ms.is_some();
+    let started = Instant::now();
+    let raw = match if windowed { None } else { cached_history(&key) } {
+        Some(lines) => lines,
+        None => {
+            let lines =
+                fetch_recent_messages(&key, limit.unwrap_or(HISTORY_DEFAULT_LIMIT), after_ms, before_ms)
+                    .await;
+            if !windowed {
+                store_history(&key, lines.clone());
+            }
+            lines
+        }
+    };
+    // Same background emote warm as parse_historical_messages: never in front
+    // of the rows, a down provider must not blank the chat.
+    let emote_service = state.emote_service.clone();
+    let warm = key.clone();
+    tokio::spawn(async move {
+        IrcService::fetch_and_store_emotes(&warm, emote_service).await;
+    });
+    let parsed = IrcService::parse_historical_messages(raw).await;
+    log::debug!(
+        "[ChatHistory] {key}: {} rows in {} ms{}",
+        parsed.len(),
+        started.elapsed().as_millis(),
+        if windowed { " (windowed)" } else { "" }
+    );
+    Ok(parsed)
+}
+
+#[cfg(test)]
+mod history_tests {
+    use super::*;
+
+    #[test]
+    fn historical_tag_lands_in_the_tag_block() {
+        assert_eq!(
+            mark_historical("@id=1;user-id=2 :a!a@a.tmi.twitch.tv PRIVMSG #c :hi"),
+            "@historical=1;id=1;user-id=2 :a!a@a.tmi.twitch.tv PRIVMSG #c :hi"
+        );
+        assert_eq!(
+            mark_historical(":a!a@a.tmi.twitch.tv PRIVMSG #c :hi"),
+            "@historical=1 :a!a@a.tmi.twitch.tv PRIVMSG #c :hi"
+        );
+    }
+
+    #[test]
+    fn channel_logins_are_validated_before_the_url() {
+        assert!(valid_channel_login("summit1g"));
+        assert!(valid_channel_login("a_b_1"));
+        assert!(!valid_channel_login(""));
+        assert!(!valid_channel_login("a/b"));
+        assert!(!valid_channel_login("a?limit=1"));
+        assert!(!valid_channel_login("x".repeat(26).as_str()));
+    }
 }
 
 /// Diagnostic breadcrumb from the Kick resolver's injected script. A bare

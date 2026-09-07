@@ -67,7 +67,6 @@ import {
   getFavoriteEmotes
 } from '../services/favoriteEmoteService';
 import { getAppleEmojiUrl } from '../services/emojiService';
-import { fetchRecentMessagesAsIRC } from '../services/ivrService';
 import { useChatUserStore } from '../stores/chatUserStore';
 import { forceRefreshCosmetics } from '../services/cosmeticsCache';
 import MentionAutocomplete from './MentionAutocomplete';

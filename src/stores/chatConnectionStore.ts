@@ -36,7 +36,6 @@ import { isFilteredChatUser } from '../utils/chatFilters';
 import { streamProvider } from '../utils/streamProvider';
 import { parseBadges } from '../services/twitchBadges';
 import { invoke } from '@tauri-apps/api/core';
-import { fetchRecentMessagesAsIRC } from '../services/ivrService';
 import { fetchAllEmotes, fetchKickChannelEmotes, fetchYouTubeChannelEmotes, type EmoteSet } from '../services/emoteService';
 import { Logger } from '../utils/logger';
 import { useAppStore } from './AppStore';
@@ -149,6 +148,13 @@ interface ChannelSlice {
    *  messages paint in the real color from the first frame instead of flashing
    *  a default until the IRC echo round-trips. */
   userColorFromIrc: string | null;
+  /** Join hold: live rows that arrived before the Rust backfill landed. They
+   *  paint together with the history in one revision, so a freshly joined
+   *  pane never shows a live tail first and a prepended block a second later.
+   *  Released by the backfill, by its own cap (HISTORY_HOLD_MS), by an own
+   *  send or system row, and by any immediate flush a moderation event asks
+   *  for. */
+  historyHold: { held: any[]; timer: ReturnType<typeof setTimeout> } | null;
 }
 
 interface ChatConnectionState {
@@ -710,6 +716,11 @@ function flushPending(): void {
     if (queued.length === 0) continue;
     const slice = state.channels.get(key);
     if (!slice) continue;
+    if (slice.historyHold) {
+      // Join hold: the rows paint with the backfill (releaseHistoryHold).
+      slice.historyHold.held.push(...queued);
+      continue;
+    }
     const historyMax = getActiveHistoryMax();
     // After a resume the buffer can still hold up to CHAT_BUFFER_SIZE rows of
     // paused overflow. Never cut it to historyMax in one step (that deletes
@@ -741,7 +752,14 @@ function flushPending(): void {
 // frame. Used by paths that scan slice.messages and must see just-arrived
 // messages (e.g. a CLEARCHAT computing which messages a ban affects).
 function flushPendingNow(): void {
+  // A caller that must see every arrived row (a CLEARCHAT computing which
+  // messages it covers) ends any join hold first.
+  const released: string[] = [];
+  for (const s of useChatConnectionStore.getState().channels.values()) {
+    if (releaseHistoryHold(s)) released.push(s.channel);
+  }
   runFlush();
+  if (released.length) bumpRevisionFor(released);
 }
 
 // Queue a brand-new message for the next coalesced flush instead of rendering it
@@ -841,6 +859,7 @@ function emptySlice(
     pendingUpgradeIds: new Set(),
     userBadgesFromIrc: null,
     userColorFromIrc: lastOwnChatColor(),
+    historyHold: null,
   };
 }
 
@@ -889,6 +908,12 @@ function setSlice(channel: string, slice: ChannelSlice) {
 
 function removeSlice(channel: string) {
   const key = channel.toLowerCase();
+  const gone = useChatConnectionStore.getState().channels.get(key);
+  if (gone?.historyHold) {
+    clearTimeout(gone.historyHold.timer);
+    gone.historyHold = null;
+  }
+  historyInFlight.delete(key);
   useChatConnectionStore.setState((state) => {
     const next = new Map(state.channels);
     next.delete(key);
@@ -966,7 +991,71 @@ function removeMessageAt(slice: ChannelSlice, index: number): void {
   slice.messages = next;
 }
 
+// --- Join backfill ---------------------------------------------------------
+// Rust fetches and parses the recent-messages mirror in one call
+// (load_channel_history, commands/chat.rs). Started at acquire time so it runs
+// alongside the IRC connect instead of after it, while the slice holds the
+// first live rows so history and the live tail paint together.
+const HISTORY_HOLD_MS = 1500;
+const historyInFlight = new Map<string, Promise<any[]>>();
+
+interface HistoryWindow {
+  limit?: number;
+  afterMs?: number | null;
+  beforeMs?: number | null;
+}
+
+function loadHistory(key: string, window?: HistoryWindow): Promise<any[]> {
+  return invoke<any[]>('load_channel_history', {
+    channel: key,
+    limit: window?.limit,
+    afterMs: window?.afterMs ?? undefined,
+    beforeMs: window?.beforeMs ?? undefined,
+  }).catch((err) => {
+    Logger.warn(`[ChatStore] load_channel_history failed for ${key}:`, err);
+    return [] as any[];
+  });
+}
+
+function startChannelHistory(key: string): void {
+  if (!historyInFlight.has(key)) historyInFlight.set(key, loadHistory(key));
+}
+
+function armHistoryHold(slice: ChannelSlice): void {
+  if (slice.historyHold) return;
+  const key = slice.channel;
+  slice.historyHold = {
+    held: [],
+    timer: setTimeout(() => {
+      // Mirror slower than the cap: show the live rows now. History prepends
+      // when it arrives, which is the old behaviour kept as the fallback.
+      const s = getSlice(key);
+      if (s && releaseHistoryHold(s)) bumpRevisionFor([key]);
+    }, HISTORY_HOLD_MS),
+  };
+}
+
+/** Ends the join hold, appending whatever it held after the current rows.
+ *  Returns whether it appended anything; callers bump the revision. */
+function releaseHistoryHold(slice: ChannelSlice): boolean {
+  const hold = slice.historyHold;
+  if (!hold) return false;
+  clearTimeout(hold.timer);
+  slice.historyHold = null;
+  if (hold.held.length === 0) return false;
+  slice.liveMessageCount += hold.held.length;
+  slice.messages = trimWithEventRetention(
+    slice.messages.concat(hold.held),
+    liveAppendLimit(slice, getActiveHistoryMax()),
+    slice.liveMessageCount,
+  );
+  return true;
+}
+
 function pushMessage(slice: ChannelSlice, msg: any) {
+  // An own send or a system row is something the user is looking for right
+  // now: end the join hold rather than park it.
+  releaseHistoryHold(slice);
   const limit = liveAppendLimit(slice, getActiveHistoryMax());
   // Monotonic — counts the append regardless of any trim below. Drives the
   // accurate "N new since paused" badge.
@@ -1558,49 +1647,30 @@ async function preloadChannel(
 ): Promise<void> {
   if (!channelId) return;
   const mode = opts?.mode ?? 'initial';
-  const __tBadges = performance.now();
-  await initializeBadgesForChannel(channelId);
-  Logger.info(`[ChatPerf] preload: initializeBadgesForChannel ${Math.round(performance.now() - __tBadges)}ms`);
-
+  const key = channel.toLowerCase();
+  const __t = performance.now();
   try {
-    const __tRecent = performance.now();
-    const raw =
+    // Badges and history in parallel. The backfill used to wait behind the
+    // badge cache init and then the page fetched the mirror itself; now Rust
+    // fetches and parses it, and for an initial load the call already started
+    // at acquire time.
+    const pendingHistory =
       mode === 'backfill'
-        ? await fetchRecentMessagesAsIRC(channel, channelId, {
+        ? loadHistory(key, {
             limit: backfillLimit(opts?.afterMs ?? null),
             afterMs: opts?.afterMs ?? null,
             beforeMs: opts?.beforeMs ?? null,
           })
-        : await fetchRecentMessagesAsIRC(channel, channelId);
-    Logger.info(`[ChatPerf] preload: fetchRecentMessages ${Math.round(performance.now() - __tRecent)}ms (${raw.length} msgs)`);
-    if (raw.length === 0) return;
-    const __tParse = performance.now();
-    let parsed: any[] | null = null;
-    let attempts = 0;
-    while (attempts < 3 && !parsed) {
-      try {
-        if (attempts > 0) await new Promise((r) => setTimeout(r, 200 * attempts));
-        parsed = await invoke<any[]>('parse_historical_messages', {
-          messages: raw,
-          channelName: channel,
-        });
-      } catch (err: any) {
-        attempts++;
-        const msg = err?.message ?? String(err);
-        if (
-          (msg.includes('Failed to fetch') || msg.includes('ERR_CONNECTION_REFUSED')) &&
-          attempts < 3
-        ) {
-          continue;
-        }
-        Logger.warn('[ChatStore] parse_historical_messages failed, using raw IRC:', err);
-        break;
-      }
+        : (historyInFlight.get(key) ?? loadHistory(key));
+    historyInFlight.delete(key);
+    const [, parsed] = await Promise.all([initializeBadgesForChannel(channelId), pendingHistory]);
+    Logger.info(`[ChatPerf] preload: badges + history ${Math.round(performance.now() - __t)}ms (${parsed.length} rows, ${mode})`);
+    if (parsed.length === 0) {
+      withSlice(key, (slice) => { releaseHistoryHold(slice); });
+      return;
     }
-    Logger.info(`[ChatPerf] preload: parse_historical_messages ${Math.round(performance.now() - __tParse)}ms`);
-    withSlice(channel, (slice) => {
-      const useParsed = parsed && parsed.length > 0;
-      const source: any[] = useParsed ? (parsed as any[]) : raw;
+    withSlice(key, (slice) => {
+      const source: any[] = parsed;
 
       // De-dupe against messages already in the slice. The WS subscription
       // starts streaming live messages the moment handle_local_ws upgrades
@@ -1669,9 +1739,12 @@ async function preloadChannel(
       if (slice.messages.length > limit) {
         slice.messages = slice.messages.slice(slice.messages.length - limit);
       }
+      // History is in; the held live tail goes under it in the same revision.
+      if (mode !== 'backfill') releaseHistoryHold(slice);
     });
   } catch (err) {
-    Logger.error('[ChatStore] Failed to fetch recent messages:', err);
+    Logger.error('[ChatStore] Failed to load recent messages:', err);
+    withSlice(key, (slice) => { releaseHistoryHold(slice); });
   }
 }
 
@@ -2777,6 +2850,15 @@ export async function acquireChannel(
   const slice = emptySlice(key, channelId, provider);
   slice.refCount = 1;
   setSlice(key, slice);
+
+  // Twitch: start the Rust backfill now, alongside the connect/join below,
+  // and hold the first live rows until it lands (or HISTORY_HOLD_MS) so the
+  // pane paints once with history above the live tail. Without an id there
+  // is no preload (ensureChannelHistory runs it once the id resolves).
+  if (provider === 'twitch' && channelId) {
+    armHistoryHold(slice);
+    startChannelHistory(key);
+  }
 
   // Kick's socket carries only NEW traffic, so a freshly opened pane is empty
   // until somebody talks, and an OFFLINE channel stays empty indefinitely. Seed

@@ -1081,6 +1081,7 @@ fn main() {
             append_mod_log,
             clear_mod_logs,
             parse_historical_messages,
+            load_channel_history,
             get_chat_log_dir,
             update_chat_settings,
             clear_chat,

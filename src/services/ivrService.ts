@@ -107,11 +107,9 @@ interface CacheEntry<T> {
 }
 
 const CACHE_DURATION = 5 * 60 * 1000; // 5 minutes cache
-const RECENT_MESSAGES_CACHE_DURATION = 30 * 1000; // 30 seconds cache for recent messages
 const userDataCache = new Map<string, CacheEntry<IVRUserData | null>>();
 const subageCache = new Map<string, CacheEntry<IVRSubageData | null>>();
 const modVipCache = new Map<string, CacheEntry<IVRModVipData | null>>();
-const recentMessagesCache = new Map<string, CacheEntry<string[] | null>>();
 
 /**
  * Fetches user data from IVR API
@@ -270,85 +268,6 @@ export async function fetchIVRModVip(username: string, channel: string): Promise
 }
 
 /**
- * Fetches recent chat messages from recent-messages API (robotty.de)
- * @param channel - The channel to fetch messages for
- * @returns Array of raw IRC message strings (limited to 100 most recent)
- */
-export interface RecentMessagesWindow {
-    limit?: number;
-    /** Unix millisecond bounds for the fetch window (robotty `after`/`before`). */
-    afterMs?: number | null;
-    beforeMs?: number | null;
-}
-
-export async function fetchRecentMessages(
-    channel: string,
-    window?: RecentMessagesWindow,
-): Promise<string[]> {
-    const cacheKey = channel.toLowerCase();
-    // Windowed fetches (reconnect backfill) bypass the cache entirely: their
-    // result is window-specific, so serving or storing it under the plain
-    // channel key would poison the initial-load path.
-    const windowed =
-        window != null &&
-        (window.afterMs != null || window.beforeMs != null || window.limit != null);
-    if (!windowed) {
-        const cached = recentMessagesCache.get(cacheKey);
-        if (cached && Date.now() - cached.timestamp < RECENT_MESSAGES_CACHE_DURATION) {
-            Logger.debug('[RecentMessages] Using cached recent messages for:', channel);
-            return cached.data || [];
-        }
-    }
-
-    try {
-        Logger.debug('[RecentMessages] Fetching recent messages for:', channel);
-        // Use the robotty.de recent-messages API which returns raw IRC messages.
-        // Backfill 100 (matches how Chatterino-family clients seed a joined
-        // channel), so the buffer and the per-user history card look populated
-        // on join instead of sparse. Parse cost scales with this count but stays
-        // a one-shot join cost, and messages trim to the buffer cap regardless,
-        // so steady-state memory is unchanged. The channel emote fetch, not this,
-        // dominates chat-load time.
-        let url = `https://recent-messages.robotty.de/api/v2/recent-messages/${encodeURIComponent(channel)}?limit=${window?.limit ?? 100}&hide_moderation_messages=true&hide_moderated_messages=true`;
-        if (window?.afterMs != null) url += `&after=${Math.floor(window.afterMs)}`;
-        if (window?.beforeMs != null) url += `&before=${Math.floor(window.beforeMs)}`;
-        const response = await fetch(url);
-
-        if (!response.ok) {
-            Logger.error('[RecentMessages] API error:', response.status, response.statusText);
-            if (!windowed) recentMessagesCache.set(cacheKey, { data: null, timestamp: Date.now() });
-            return [];
-        }
-
-        const data = await response.json();
-
-        // API returns { messages: [...] } where messages are raw IRC strings
-        if (data && Array.isArray(data.messages)) {
-            const messages = data.messages as string[];
-            // Mark each message as historical by appending a tag
-            const historicalMessages = messages.map(msg => {
-                // Insert historical=1 tag into the IRC message
-                if (msg.startsWith('@')) {
-                    return msg.replace(/^@/, '@historical=1;');
-                }
-                return `@historical=1 ${msg}`;
-            });
-            if (!windowed) {
-                recentMessagesCache.set(cacheKey, { data: historicalMessages, timestamp: Date.now() });
-            }
-            Logger.debug('[RecentMessages] Fetched', historicalMessages.length, 'recent messages');
-            return historicalMessages;
-        }
-
-        if (!windowed) recentMessagesCache.set(cacheKey, { data: [], timestamp: Date.now() });
-        return [];
-    } catch (error) {
-        Logger.error('[RecentMessages] Failed to fetch recent messages:', error);
-        return [];
-    }
-}
-
-/**
  * Converts IVR recent message to IRC format for display
  * @param msg - IVR message object
  * @param channel - Channel name
@@ -395,21 +314,6 @@ export function convertIVRMessageToIRC(msg: IVRRecentMessage, channel: string, r
     const content = `:${msg.message}`;
 
     return `@${tags} ${prefix} ${command} ${content}`;
-}
-
-/**
- * Fetches recent messages (already in IRC format from robotty.de API)
- * @param channel - Channel name
- * @param _roomId - Channel/room ID (not used, kept for API compatibility)
- * @returns Array of IRC-formatted message strings
- */
-export async function fetchRecentMessagesAsIRC(
-    channel: string,
-    _roomId: string,
-    window?: RecentMessagesWindow,
-): Promise<string[]> {
-    // The robotty.de API already returns raw IRC messages, so just fetch them directly
-    return fetchRecentMessages(channel, window);
 }
 
 /**
@@ -483,18 +387,16 @@ export function clearIVRCache(): void {
     userDataCache.clear();
     subageCache.clear();
     modVipCache.clear();
-    recentMessagesCache.clear();
     Logger.debug('[IVR] Cache cleared');
 }
 
 /**
  * Gets the current cache size
  */
-export function getIVRCacheSize(): { users: number; subages: number; modVips: number; recentMessages: number } {
+export function getIVRCacheSize(): { users: number; subages: number; modVips: number } {
     return {
         users: userDataCache.size,
         subages: subageCache.size,
         modVips: modVipCache.size,
-        recentMessages: recentMessagesCache.size
     };
 }
