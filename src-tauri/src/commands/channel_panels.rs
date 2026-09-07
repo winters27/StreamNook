@@ -12,9 +12,10 @@ const GQL_URL: &str = "https://gql.twitch.tv/gql";
 ///
 /// A panel description is HTML the STREAMER wrote, and the About drawer renders
 /// it with `dangerouslySetInnerHTML`. Anything that survives here executes in the
-/// main webview, which can invoke `get_twitch_credentials`, so an unsanitized
-/// `<img src=x onerror=...>` in any channel's panel would hand that channel the
-/// viewer's Twitch token. Sanitizing HERE rather than in the component keeps one
+/// main webview with every app command available to it, so an unsanitized
+/// `<img src=x onerror=...>` in any channel's panel would run as the viewer
+/// (Helix reads through `helix_get`, chat actions, settings; until 2026-09-07
+/// the raw Twitch token too). Sanitizing HERE rather than in the component keeps one
 /// choke point: every consumer of this command gets the cleaned string.
 ///
 /// The allowlist is deliberately narrower than ammonia's default (no images, no

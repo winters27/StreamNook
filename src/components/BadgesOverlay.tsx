@@ -1171,14 +1171,8 @@ const BadgesOverlay = ({ onClose, onBadgeClick, initialPaintId, initialBadgeId, 
       // No cache available, fetch from API
       Logger.debug('[BadgesOverlay] No cached badges, fetching from API...');
 
-      // Get credentials
-      const [clientId, token] = await invoke<[string, string]>('get_twitch_credentials');
-
-      // Fetch global badges (this will cache them)
-      const response = await invoke<{ data: BadgeSet[] }>('fetch_global_badges', {
-        clientId,
-        token,
-      });
+      // Fetch global badges (Rust attaches its own credentials and caches them)
+      const response = await invoke<{ data: BadgeSet[] }>('fetch_global_badges');
 
       setBadges(response.data);
 

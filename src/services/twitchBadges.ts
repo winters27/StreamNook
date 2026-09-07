@@ -115,13 +115,8 @@ export async function initializeBadgeCache(channelId?: string): Promise<void> {
     // ------------------------------------------------------------
     if (channelId) {
       try {
-        // Fetch credentials + channel badges in one shot.
-        const [clientId, token] = await invoke<[string, string]>('get_twitch_credentials');
-        const channelBadges = await invoke<any>('fetch_channel_badges', {
-          channelId,
-          clientId,
-          token,
-        });
+        // Rust attaches the credentials itself.
+        const channelBadges = await invoke<any>('fetch_channel_badges', { channelId });
 
         channelBadgeIndexes.set(channelId, buildBadgeIndex(channelBadges));
         Logger.debug('[BadgeCache] Loaded channel badges into memory cache for:', channelId);

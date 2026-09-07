@@ -55,7 +55,28 @@ const SOURCES_KEY = 'sn_overlay_sources_v1';
 // row (the OBS link the streamer already pasted stays valid) instead of minting a
 // new link each time.
 const OVERLAY_ID_KEY = 'sn_overlay_id_v1';
-const PUBLISH_ENDPOINT = 'https://streamnook.app/api/overlays';
+// Overlay rows live behind the Twitch-authenticated streamnook.app API. Rust
+// makes the calls with its own copy of the token (src-tauri/src/commands/
+// streamnook_api.rs, streamnook_api_request); the page never holds it.
+const PUBLISH_PATH = '/api/overlays';
+interface ApiResult { status: number; ok: boolean; body: string }
+async function apiRequest(method: 'GET' | 'POST' | 'DELETE', path: string, query?: string, body?: unknown) {
+  let r: ApiResult;
+  try {
+    r = await invoke<ApiResult>('streamnook_api_request', { method, path, query, body });
+  } catch (e) {
+    // Rust refuses before the network when there is no Twitch session.
+    if (String(e).startsWith('no_token')) throw new Error('Sign in to Twitch in StreamNook to publish an overlay.');
+    throw e;
+  }
+  return {
+    ok: r.ok,
+    status: r.status,
+    json<T>(): T | null {
+      try { return JSON.parse(r.body) as T; } catch { return null; }
+    },
+  };
+}
 const SOURCE_PROVIDERS: ProviderId[] = ['twitch', 'kick', 'youtube', 'tiktok'];
 
 function loadOverlayId(): string | null {
@@ -874,12 +895,6 @@ const OverlaySettings = () => {
     }
     if (copy) { setPublishState('publishing'); setPublishError(null); }
     try {
-      let token: string;
-      try {
-        [, token] = await invoke<[string, string]>('get_twitch_credentials');
-      } catch {
-        throw new Error('Sign in to Twitch in StreamNook to publish an overlay.');
-      }
       // With multiple profiles the account-reuse fallback is NEVER safe: it
       // fires whenever the sent id matches no row owned by the current account
       // (new profile, concurrent first publishes, Twitch account switch) and
@@ -887,20 +902,17 @@ const OverlaySettings = () => {
       // update in place; create + unusable id = mint fresh. Single-profile
       // installs keep the legacy reuse so a fresh machine adopts the account's
       // stable link. The profile name rides inside the style so other machines
-      // recover it.
+      // recover it. Rust holds the Twitch token and makes the call; a signed-out
+      // user surfaces as the API's `unauthenticated` answer below.
       const create = profiles.length > 1 ? true : undefined;
-      const res = await fetch(PUBLISH_ENDPOINT, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
-        body: JSON.stringify({
+      const res = await apiRequest('POST', PUBLISH_PATH, undefined, {
           id: forProfile.id ?? undefined,
           create,
           channels: sources,
           style: { ...style, profileName: forProfile.name },
-        }),
       });
       if (!res.ok) {
-        const err = (await res.json().catch(() => ({}))) as { error?: string };
+        const err = res.json<{ error?: string }>() ?? {};
         throw new Error(
           err.error === 'unauthenticated' ? 'Sign in to Twitch in StreamNook to publish an overlay.'
             : err.error === 'no_channels' ? 'Add at least one source first.'
@@ -908,7 +920,8 @@ const OverlaySettings = () => {
                 : `Publish failed (${err.error || res.status}).`,
         );
       }
-      const data = (await res.json()) as { id: string; url: string };
+      const data = res.json<{ id: string; url: string }>();
+      if (!data?.id || !data?.url) throw new Error('Publish failed (bad reply).');
       // Stamp the returned id onto the profile this push was for, and strip it
       // from any other profile that claims the same row (self-heals older
       // corruption).
@@ -1020,8 +1033,7 @@ const OverlaySettings = () => {
     // signed-out/offline just leaves the row, which is harmless.
     if (victim.id) {
       try {
-        const [, token] = await invoke<[string, string]>('get_twitch_credentials');
-        void fetch(`${PUBLISH_ENDPOINT}/${victim.id}`, { method: 'DELETE', headers: { authorization: `Bearer ${token}` } });
+        void apiRequest('DELETE', `${PUBLISH_PATH}/${victim.id}`).catch(() => { /* not signed in / offline */ });
       } catch { /* not signed in */ }
     }
   };
@@ -1037,17 +1049,11 @@ const OverlaySettings = () => {
     hydratedRef.current = true;
     let cancelled = false;
     void (async () => {
-      let token: string;
-      try {
-        [, token] = await invoke<[string, string]>('get_twitch_credentials');
-      } catch {
-        return; // not signed in → nothing to recover
-      }
       let rows: Array<{ id?: string; channels?: unknown; style?: unknown }>;
       try {
-        const res = await fetch(`${PUBLISH_ENDPOINT}?all=1`, { headers: { authorization: `Bearer ${token}` } });
-        if (!res.ok) return;
-        rows = ((await res.json()) as { overlays?: typeof rows }).overlays ?? [];
+        const res = await apiRequest('GET', PUBLISH_PATH, 'all=1');
+        if (!res.ok) return; // not signed in, offline, or nothing to recover
+        rows = res.json<{ overlays?: typeof rows }>()?.overlays ?? [];
       } catch {
         return;
       }

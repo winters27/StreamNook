@@ -19,6 +19,7 @@
 // the matcher at query time.
 
 import { invoke } from '@tauri-apps/api/core';
+import { helixGet } from '../services/helix';
 import { useAppStore, clipSourceOf, type SettingsTab } from '../stores/AppStore';
 import { useChatUserStore } from '../stores/chatUserStore';
 import { useFollowsStore } from '../stores/followsStore';
@@ -575,16 +576,8 @@ function buildQuickActions(): PaletteItem[] {
         const stream = requireStream();
         if (!stream?.user_id) return;
         try {
-          // No Tauri command exposes per-broadcaster clip lookup yet; hit
-          // Helix directly using the same get_twitch_credentials pattern
-          // MultiChat's AddChannelPanel uses for profile-image batches.
-          const [clientId, token] = await invoke<[string, string]>('get_twitch_credentials');
-          const resp = await fetch(
-            `https://api.twitch.tv/helix/clips?broadcaster_id=${encodeURIComponent(stream.user_id)}&first=1`,
-            { headers: { 'Client-ID': clientId, Authorization: `Bearer ${token}` } },
-          );
-          if (!resp.ok) throw new Error(`Helix clips ${resp.status}`);
-          const data = (await resp.json()) as { data?: TwitchClip[] };
+          // Rust makes the Helix clips read (helix_get); the page never sees a token.
+          const data = await helixGet<{ data?: TwitchClip[] }>('clips', `broadcaster_id=${encodeURIComponent(stream.user_id)}&first=1`);
           const top = data?.data?.[0];
           if (!top) {
             useAppStore.getState().addToast(`${stream.user_name} has no clips yet`, 'info');

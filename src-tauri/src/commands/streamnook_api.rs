@@ -51,6 +51,69 @@ pub struct ApiResponse {
 /// Returns Err only for conditions the caller can act on differently from an
 /// HTTP error: no token, a disallowed path, or the request never completing. A
 /// 4xx/5xx comes back as Ok with `ok: false` so callers can inspect the body.
+/// Paths the overlay builder may call with any of GET/POST/DELETE. Exact
+/// path or `/api/overlays/<id>` (one segment, no slashes inside).
+const OVERLAY_PREFIX: &str = "/api/overlays";
+
+fn overlay_path_allowed(path: &str) -> bool {
+    match path.strip_prefix(OVERLAY_PREFIX) {
+        None => false,
+        Some("") => true,
+        Some(rest) => rest.starts_with('/')
+            && rest.len() > 1
+            && !rest[1..].contains('/')
+            && !rest.contains("..")
+            && !rest.contains('?')
+            && !rest.contains('#'),
+    }
+}
+
+/// Authenticated GET / POST / DELETE against streamnook.app for the overlay
+/// builder, so its Twitch token never enters the page. `query` is appended
+/// as-is (`all=1`), `body` is sent as JSON for POST.
+#[tauri::command]
+pub async fn streamnook_api_request(
+    method: String,
+    path: String,
+    query: Option<String>,
+    body: Option<serde_json::Value>,
+) -> Result<ApiResponse, String> {
+    if !overlay_path_allowed(&path) {
+        return Err(format!("path_not_allowed: {}", path));
+    }
+    if let Some(q) = &query {
+        if q.contains('/') || q.contains('?') || q.contains('#') {
+            return Err("bad_query".to_string());
+        }
+    }
+    let token = TwitchService::get_token()
+        .await
+        .map_err(|e| format!("no_token: {}", e))?;
+    let client = crate::services::http::client();
+    let url = match query {
+        Some(q) if !q.is_empty() => format!("{}{}?{}", API_BASE, path, q),
+        _ => format!("{}{}", API_BASE, path),
+    };
+    let req = match method.to_ascii_uppercase().as_str() {
+        "GET" => client.get(&url),
+        "DELETE" => client.delete(&url),
+        "POST" => client.post(&url).json(&body.unwrap_or(serde_json::Value::Null)),
+        other => return Err(format!("method_not_allowed: {}", other)),
+    };
+    let resp = req
+        .bearer_auth(&token)
+        .send()
+        .await
+        .map_err(|e| format!("network: {}", e))?;
+    let status = resp.status();
+    let text = resp.text().await.unwrap_or_default();
+    Ok(ApiResponse {
+        status: status.as_u16(),
+        ok: status.is_success(),
+        body: text,
+    })
+}
+
 #[tauri::command]
 pub async fn streamnook_api_post(
     path: String,
@@ -102,6 +165,18 @@ mod tests {
             assert!(!p.contains("://"), "{p} must not carry a scheme");
             assert!(!p.contains('*'), "{p} must be exact, not a pattern");
         }
+    }
+
+    #[test]
+    fn overlay_paths_are_exact_or_one_id_deep() {
+        use super::overlay_path_allowed;
+        assert!(overlay_path_allowed("/api/overlays"));
+        assert!(overlay_path_allowed("/api/overlays/abc123"));
+        assert!(!overlay_path_allowed("/api/overlays/"));
+        assert!(!overlay_path_allowed("/api/overlays/a/b"));
+        assert!(!overlay_path_allowed("/api/overlays/../user"));
+        assert!(!overlay_path_allowed("/api/overlaysX"));
+        assert!(!overlay_path_allowed("/api/v1/user/sync"));
     }
 
     #[test]

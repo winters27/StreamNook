@@ -90,10 +90,11 @@ async fn fetch_badges_from_api(
 
 /// Fetch global Twitch badges with caching support
 #[tauri::command]
-pub async fn fetch_global_badges(
-    client_id: String,
-    token: String,
-) -> Result<HelixBadgesResponse, String> {
+pub async fn fetch_global_badges() -> Result<HelixBadgesResponse, String> {
+    let client_id = env!("TWITCH_APP_CLIENT_ID").to_string();
+    let token = TwitchService::get_token()
+        .await
+        .map_err(|e| format!("Failed to get token: {}", e))?;
     // Serialize against the socket-drop merge so a fetch and a merge can't
     // clobber each other's write of the shared global_badges entry.
     let _guard = GLOBAL_BADGES_LOCK.lock().await;
@@ -193,10 +194,8 @@ pub async fn get_cached_global_badges() -> Result<Option<HelixBadgesResponse>, S
 pub async fn prefetch_global_badges() -> Result<(), String> {
     debug!("[Badges] Starting background badge pre-fetch...");
 
-    let client_id = env!("TWITCH_APP_CLIENT_ID").to_string();
-
     match TwitchService::get_token().await {
-        Ok(token) => match fetch_global_badges(client_id, token).await {
+        Ok(_) => match fetch_global_badges().await {
             Ok(badges) => {
                 debug!(
                     "[Badges] Pre-fetch complete: {} badge sets cached",
@@ -503,16 +502,6 @@ pub async fn prune_invalid_global_badges() -> Result<usize, String> {
     Ok(removed)
 }
 
-/// Get Twitch credentials for badge fetching
-#[tauri::command]
-pub async fn get_twitch_credentials() -> Result<(String, String), String> {
-    let client_id = env!("TWITCH_APP_CLIENT_ID").to_string();
-    let token = TwitchService::get_token()
-        .await
-        .map_err(|e| format!("Failed to get token: {}", e))?;
-
-    Ok((client_id, token))
-}
 
 /// Debug command: List all badge set IDs from Twitch API (bypasses all caching)
 /// Returns a list of (set_id, version_count, version_ids)
@@ -611,11 +600,11 @@ pub async fn debug_compare_badge_sources() -> Result<(Vec<String>, Vec<String>, 
 
 /// Fetch channel-specific Twitch badges using the Helix API
 #[tauri::command]
-pub async fn fetch_channel_badges(
-    channel_id: String,
-    client_id: String,
-    token: String,
-) -> Result<HelixBadgesResponse, String> {
+pub async fn fetch_channel_badges(channel_id: String) -> Result<HelixBadgesResponse, String> {
+    let client_id = env!("TWITCH_APP_CLIENT_ID").to_string();
+    let token = TwitchService::get_token()
+        .await
+        .map_err(|e| format!("Failed to get token: {}", e))?;
     let url = format!(
         "https://api.twitch.tv/helix/chat/badges?broadcaster_id={}",
         channel_id

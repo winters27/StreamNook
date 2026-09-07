@@ -30,7 +30,7 @@ use commands::{
     accounts::*, announcements::*, app::*, automation::*, badge_metadata::*, badge_service::*,
     badges::*, cache::*, channel_panels::*, channel_state::*, chat::*, chat_identity::*, components::*,
     cosmetics_cache::*, diagnostic_logging::*, discord::*, drops::*, emoji::*, emote_prefetch::*,
-    emotes::*, eventsub::*, ffz::*, home_snapshot::*, hype_train::*, identity::*, justlog::*, layout::*,
+    emotes::*, eventsub::*, ffz::*, helix::*, home_snapshot::*, hype_train::*, identity::*, justlog::*, layout::*,
     link_preview::*, logs::*, mod_log_storage::*, modroom::*, multi_nook::*, plugins::*,
     profile_cache::*, provider_browse::*,
     resub::*, screen_capture::*, session::*, settings::*, seventv::*, seventv_cosmetics::*,
@@ -1145,7 +1145,10 @@ fn main() {
             debug_list_twitch_badges,
             debug_compare_badge_sources,
             fetch_channel_badges,
-            get_twitch_credentials,
+            // Rust makes every Helix read the page needs; the page never holds
+            // the token (get_twitch_credentials retired 2026-09-07).
+            helix_get,
+            streamnook_api_request,
             get_user_badges,
             // Unified Badge Service commands
             get_user_badges_unified,

@@ -22,6 +22,7 @@ pub mod emotes;
 pub mod eventsub;
 pub mod ffz;
 pub mod home_snapshot;
+pub mod helix;
 pub mod hype_train;
 pub mod identity;
 pub mod justlog;

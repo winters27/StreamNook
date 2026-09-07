@@ -18,6 +18,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { AnimatePresence, motion } from 'framer-motion';
 import { invoke } from '@tauri-apps/api/core';
+import { helixGet } from '../../services/helix';
 import { Minus, X, CornersOut, CornersIn, ArrowLineLeft } from 'phosphor-react';
 import { Activity, Settings, ShieldCheck, House } from 'lucide-react';
 import MultiChatPane from './MultiChatPane';
@@ -3320,20 +3321,15 @@ function AddChannelPanel({
 
     (async () => {
       try {
-        const [clientId, token] = await invoke<[string, string]>('get_twitch_credentials');
         for (let i = 0; i < unique.length; i += 100) {
           const batch = unique.slice(i, i + 100);
           const query = batch.map((id) => `id=${encodeURIComponent(id)}`).join('&');
-          const resp = await fetch(`https://api.twitch.tv/helix/users?${query}`, {
-            headers: {
-              'Client-ID': clientId,
-              Authorization: `Bearer ${token}`,
-            },
-          });
-          if (!resp.ok) continue;
-          const data = (await resp.json()) as {
-            data?: Array<{ id: string; profile_image_url: string }>;
-          };
+          let data: { data?: Array<{ id: string; profile_image_url: string }> };
+          try {
+            data = await helixGet('users', query);
+          } catch {
+            continue;
+          }
           if (data.data && Array.isArray(data.data)) {
             setProfileImages((prev) => {
               const next = new Map(prev);

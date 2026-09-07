@@ -58,7 +58,6 @@ import { prefetchChannelBadges } from '../services/badgeService';
 import { parseBadges } from '../services/twitchBadges';
 import { initializeBadgeImageCache } from '../services/badgeImageCacheService';
 import { parseMessage } from '../services/twitchChat';
-import { fetchStreamViewerCount } from '../services/twitchService';
 import {
   loadFavoriteEmotes,
   addFavoriteEmote,

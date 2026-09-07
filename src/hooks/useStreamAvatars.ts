@@ -17,6 +17,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { helixGet } from '../services/helix';
 import type { TwitchStream } from '../types';
 import type { ProviderId } from '../types/providers';
 import { streamKey, streamProvider } from '../utils/streamProvider';
@@ -157,17 +158,15 @@ export function useStreamAvatars(streams: TwitchStream[]): Record<string, string
             if (twitchIds.length > 0) {
                 twitchIds.forEach((id) => askedRef.current.add(id));
                 try {
-                    const [clientId, token] = await invoke<[string, string]>('get_twitch_credentials');
                     for (let i = 0; i < twitchIds.length; i += HELIX_BATCH) {
                         const batch = twitchIds.slice(i, i + HELIX_BATCH);
                         const query = batch.map((id) => `id=${id}`).join('&');
-                        const resp = await fetch(`https://api.twitch.tv/helix/users?${query}`, {
-                            headers: { 'Client-ID': clientId, Authorization: `Bearer ${token}` },
-                        });
-                        if (!resp.ok) continue;
-                        const data = (await resp.json()) as {
-                            data?: { id: string; profile_image_url?: string }[];
-                        };
+                        let data: { data?: { id: string; profile_image_url?: string }[] };
+                        try {
+                            data = await helixGet('users', query);
+                        } catch {
+                            continue;
+                        }
                         const next: Record<string, string> = {};
                         for (const user of data?.data ?? []) {
                             if (!user?.profile_image_url) continue;

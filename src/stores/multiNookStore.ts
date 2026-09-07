@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { invoke } from '@tauri-apps/api/core';
+import { helixGet } from '../services/helix';
 import { useAppStore } from './AppStore';
 import { MultiNookSlot, MultiNookPresetChannel } from '../types';
 import type { ProviderId } from '../types/providers';
@@ -294,13 +295,8 @@ export const usemultiNookStore = create<MultiNookState>((set, get) => ({
     // No chunking needed — the grid is hard-capped at 25, well under Helix's 100.
     let byLogin: Map<string, { title?: string; game_name?: string }>;
     try {
-      const [clientId, token] = await invoke<[string, string]>('get_twitch_credentials');
       const qs = logins.map((l) => `user_login=${encodeURIComponent(l)}`).join('&');
-      const resp = await fetch(`https://api.twitch.tv/helix/streams?${qs}`, {
-        headers: { 'Client-ID': clientId, Authorization: `Bearer ${token}` },
-      });
-      if (!resp.ok) return;
-      const data = await resp.json();
+      const data = await helixGet<{ data?: Array<{ user_login?: string; title?: string; game_name?: string }> }>('streams', qs);
       byLogin = new Map(
         (data.data || []).map((s: { user_login?: string; title?: string; game_name?: string }) => [
           (s.user_login || '').toLowerCase(),
@@ -362,13 +358,8 @@ export const usemultiNookStore = create<MultiNookState>((set, get) => ({
 
     let byLogin: Map<string, string>;
     try {
-      const [clientId, token] = await invoke<[string, string]>('get_twitch_credentials');
       const qs = missing.map((l) => `login=${encodeURIComponent(l)}`).join('&');
-      const resp = await fetch(`https://api.twitch.tv/helix/users?${qs}`, {
-        headers: { 'Client-ID': clientId, Authorization: `Bearer ${token}` },
-      });
-      if (!resp.ok) return;
-      const data = await resp.json();
+      const data = await helixGet<{ data?: Array<{ login?: string; broadcaster_type?: string }> }>('users', qs);
       byLogin = new Map(
         (data.data || []).map((u: { login?: string; broadcaster_type?: string }) => [
           (u.login || '').toLowerCase(),
@@ -726,15 +717,8 @@ export const usemultiNookStore = create<MultiNookState>((set, get) => ({
       }
     } else {
     try {
-      const [clientId, token] = await invoke<[string, string]>('get_twitch_credentials');
-      const response = await fetch(`https://api.twitch.tv/helix/users?login=${channelLogin}`, {
-        headers: {
-          'Client-ID': clientId,
-          'Authorization': `Bearer ${token}`
-        }
-      });
-      if (response.ok) {
-        const data = await response.json();
+      const data = await helixGet<{ data?: Array<{ id: string; display_name: string; profile_image_url: string; broadcaster_type: string }> }>('users', `login=${encodeURIComponent(channelLogin)}`).catch(() => null);
+      if (data) {
         if (data.data && data.data.length > 0) {
           resolvedId = data.data[0].id;
           resolvedName = data.data[0].display_name;
@@ -743,14 +727,8 @@ export const usemultiNookStore = create<MultiNookState>((set, get) => ({
 
           // Fetch channel info to get the current category and stream title
           try {
-            const channelResponse = await fetch(`https://api.twitch.tv/helix/channels?broadcaster_id=${resolvedId}`, {
-              headers: {
-                'Client-ID': clientId,
-                'Authorization': `Bearer ${token}`
-              }
-            });
-            if (channelResponse.ok) {
-              const channelData = await channelResponse.json();
+            const channelData = await helixGet<{ data?: Array<{ game_name: string; title: string }> }>('channels', `broadcaster_id=${encodeURIComponent(resolvedId)}`);
+            {
               if (channelData.data && channelData.data.length > 0) {
                 resolvedGameName = channelData.data[0].game_name;
                 resolvedTitle = channelData.data[0].title;
@@ -1132,13 +1110,8 @@ export const usemultiNookStore = create<MultiNookState>((set, get) => ({
           ).filter(Boolean);
           if (logins.length === 0) return;
           try {
-            const [clientId, token] = await invoke<[string, string]>('get_twitch_credentials');
             const qs = logins.slice(0, 100).map((l) => `login=${encodeURIComponent(l)}`).join('&');
-            const resp = await fetch(`https://api.twitch.tv/helix/users?${qs}`, {
-              headers: { 'Client-ID': clientId, Authorization: `Bearer ${token}` },
-            });
-            if (!resp.ok) return;
-            const data = await resp.json();
+            const data = await helixGet<{ data?: Array<{ login?: string; id: string; display_name: string; profile_image_url: string }> }>('users', qs);
             const byLogin = new Map<string, { id: string; display_name: string; profile_image_url: string }>();
             for (const u of data.data || []) byLogin.set((u.login || '').toLowerCase(), u);
             let changed = false;

@@ -2,6 +2,7 @@ import { useEffect, useState, useSyncExternalStore, type CSSProperties } from 'r
 import { motion, AnimatePresence, useDragControls } from 'framer-motion';
 import { X, User, Eye } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
+import { helixGet } from '../services/helix';
 import { useAppStore } from '../stores/AppStore';
 import { Logger } from '../utils/logger';
 import ProfileOverview from './settings/ProfileOverview';
@@ -307,11 +308,7 @@ const PublicProfileOverlay = () => {
 
         // Resolve the viewed user's login + avatar + name from their id (the
         // badge only carries the id). One Helix lookup with the viewer's creds.
-        const [clientId, token] = await invoke<[string, string]>('get_twitch_credentials');
-        const res = await fetch(`https://api.twitch.tv/helix/users?id=${encodeURIComponent(userId)}`, {
-          headers: { 'Client-ID': clientId, Authorization: `Bearer ${token}` },
-        });
-        const data = await res.json();
+        const data = await helixGet<{ data?: Array<{ login?: string; display_name?: string; profile_image_url?: string }> }>('users', `id=${encodeURIComponent(userId)}`).catch(() => null);
         const u = data?.data?.[0];
         if (!u?.login) {
           if (alive) { setError(true); setLoading(false); }

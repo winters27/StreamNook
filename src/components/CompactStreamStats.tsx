@@ -2,8 +2,9 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { Clock, Eye } from 'lucide-react';
 import { useAppStore } from '../stores/AppStore';
-import { fetchStreamViewerCount } from '../services/twitchService';
+import type { TwitchStream } from '../types';
 import { formatUptimeClock } from '../utils/streamStats';
+import { streamProvider } from '../utils/streamProvider';
 import { useVisibleInterval } from '../utils/useVisibleInterval';
 import { Logger } from '../utils/logger';
 
@@ -25,7 +26,10 @@ const CompactStreamStats = () => {
     const [fetched, setFetched] = useState<{ login: string; count: number | null } | null>(null);
     const uptimeRef = useRef<HTMLSpanElement | null>(null);
 
-    const userLogin = currentStream?.user_login;
+    // Helix answers for Twitch logins only. A Kick or YouTube slug that happens
+    // to match a Twitch account would read that stranger's count, so other
+    // providers keep the number the store carries and never poll here.
+    const userLogin = streamProvider(currentStream) === 'twitch' ? currentStream?.user_login : undefined;
     const startedAt = currentStream?.started_at;
     // Until the first poll lands, show the count the store captured when the
     // stream started, so entering Compact View never flashes an empty slot.
@@ -36,8 +40,9 @@ const CompactStreamStats = () => {
     const getViewerCount = useCallback(async () => {
         if (!userLogin) return;
         try {
-            const [clientId, token] = await invoke<[string, string]>('get_twitch_credentials');
-            setFetched({ login: userLogin, count: await fetchStreamViewerCount(userLogin, clientId, token) });
+            // Rust makes the Helix call; an offline channel answers null.
+            const live = await invoke<TwitchStream | null>('check_stream_online', { userLogin });
+            setFetched({ login: userLogin, count: live?.viewer_count ?? null });
         } catch (err) {
             Logger.error('[CompactStreamStats] Failed to fetch viewer count:', err);
             setFetched({ login: userLogin, count: null });
