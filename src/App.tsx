@@ -986,33 +986,12 @@ function App() {
         addToast('Reserved stream went offline - token returned to rotation', 'info');
       });
 
-      // Listen for streamnook:// deep links (e.g. browser-triggered "Watch Stream" buttons)
-      try {
-        const { onOpenUrl } = await import('@tauri-apps/plugin-deep-link');
-        const unlistenDeepLink = await onOpenUrl((urls: string[]) => {
-          for (const url of urls) {
-            Logger.debug('[App] Deep link received:', url);
-            // Parse streamnook://watch/{channel}
-            const match = url.match(/^streamnook:\/\/watch\/(.+)$/i);
-            if (match) {
-              const channel = match[1].replace(/\/$/, ''); // strip trailing slash
-              Logger.info(`[App] Deep link: opening stream for ${channel}`);
-              const { startStream } = useAppStore.getState();
-              startStream(channel);
-              // Bring window to front
-              getCurrentWindow().setFocus().catch(() => {});
-            }
-          }
-        });
-        
-        if (isMounted) {
-          cleanupFunctions.push(unlistenDeepLink);
-        } else {
-          unlistenDeepLink();
-        }
-      } catch (e) {
-        Logger.warn('[App] Deep link plugin not available:', e);
-      }
+      // streamnook:// links are owned by Rust: its deep-link handler emits
+      // `streamnook:watch` (see the effect near the top of this component),
+      // and cold starts drain `take_pending_watch_link`. A second
+      // subscription here through the plugin's onOpenUrl started every warm
+      // link twice (two relay starts 20 to 40 ms apart, the outgoing hls.js
+      // instance erroring against a swapped upstream) until 2026-09-06.
     };
 
     initializeApp();
