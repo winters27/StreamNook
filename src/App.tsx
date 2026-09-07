@@ -1896,7 +1896,7 @@ function App() {
                 animate={{ opacity: 1 }}
                 exit={{ opacity: 0 }}
                 transition={{ duration: 0.2, ease: "easeInOut" }}
-                className={`absolute inset-0 z-40 ${streamUrl || isMultiNookActive ? 'bg-background/85 backdrop-blur-2xl' : 'bg-background'}`}
+                className={`absolute inset-0 z-40 ${streamUrl || isMultiNookActive ? 'bg-background/85 sn-glass-veil' : 'bg-background'}`}
               >
                 <ErrorBoundary componentName="Home" reportToLogService resetKeys={[isHomeActive]}>
                   <Home />
@@ -2180,7 +2180,7 @@ function App() {
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             transition={{ duration: 0.45, ease: 'easeInOut' }}
-            className="fixed inset-x-0 bottom-0 top-[40px] z-[55] flex items-center justify-center bg-background/90 backdrop-blur-2xl"
+            className="fixed inset-x-0 bottom-0 top-[40px] z-[55] flex items-center justify-center bg-background/90 sn-glass-veil"
           >
             <LoadingWidget fullScreen={false} message="Loading StreamNook" />
           </motion.div>
