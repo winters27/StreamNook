@@ -2205,6 +2205,21 @@ html[data-motion="reduced"] .animate-shimmer {
 
    While Home is overlaid on a playing stream the attribute is cleared, because
    then you are browsing again and the animations belong back on screen. */
+/* Minimized, as Rust reports it (html[data-sn-hidden], see
+   utils/windowVisibility.ts). Chromium cannot see the window is minimized
+   (native occlusion detection is off), so without this a minimized playing
+   stream kept every animation and every video frame compositing at the
+   display rate. Animations hold; the video element leaves the render tree
+   so nothing composites it, while playback and audio continue untouched. */
+html[data-sn-hidden] *,
+html[data-sn-hidden] *::before,
+html[data-sn-hidden] *::after {
+  animation-play-state: paused !important;
+}
+html[data-sn-hidden] video {
+  display: none !important;
+}
+
 html[data-watching] .plyr__time--live {
   animation: none;
 }

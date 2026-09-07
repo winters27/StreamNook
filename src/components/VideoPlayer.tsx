@@ -52,6 +52,7 @@ const LIVE_DVR_MAX_BEHIND_SECS = 55;
 
 import { open as openExternalUrl } from '@tauri-apps/plugin-shell';
 import { setActiveVideo } from '../utils/activeVideo';
+import { isWindowHidden } from '../utils/windowVisibility';
 import { recognizeNowPlaying, announceSong } from '../utils/songId';
 import {
   ignoresPlayerMouse,
@@ -705,7 +706,7 @@ const VideoPlayer = () => {
     if (!video || !container || !isLiveRef.current) return;
 
     // Backgrounded window: keep the loop alive but skip the DOM work.
-    if (typeof document !== 'undefined' && document.hidden) {
+    if (isWindowHidden()) {
       progressUpdateIntervalRef.current = requestAnimationFrame(updateLiveTimeDisplay);
       return;
     }

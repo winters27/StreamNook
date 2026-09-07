@@ -68,3 +68,4 @@ pub mod watch_heartbeat_service;
 pub mod whisper_history_service;
 pub mod whisper_service;
 pub mod whisper_storage_service;
+pub mod window_visibility;

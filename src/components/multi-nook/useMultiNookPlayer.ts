@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
+import { isWindowHidden } from '../../utils/windowVisibility';
 import Hls from 'hls.js';
 import Plyr from 'plyr';
 // Plyr's stylesheet ships ONCE, from globals.css, and its position there is
@@ -66,7 +67,7 @@ export const useMultiNookPlayer = ({
     if (!video) return;
 
     // Docked/hidden tiles and a backgrounded window do no DOM work at all.
-    if (isMinimizedRef.current || (typeof document !== 'undefined' && document.hidden)) {
+    if (isMinimizedRef.current || isWindowHidden()) {
       progressUpdateIntervalRef.current = requestAnimationFrame(updateLiveTimeDisplay);
       return;
     }

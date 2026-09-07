@@ -19,6 +19,7 @@
 // at the API boundary.
 
 import { sameSentContent } from '../utils/sentContent';
+import { isWindowHidden, onWindowVisibility } from '../utils/windowVisibility';
 import { useEffect, useState } from 'react';
 import {
   CHAT_BUFFER_SIZE,
@@ -655,7 +656,7 @@ function scheduleFlush(): void {
   // hidden, the timeout alone drains the queue (throttled by the platform, but
   // it always fires, so chat is current the moment the window is shown again).
   timeoutHandle = setTimeout(runFlush, FLUSH_MAX_LATENCY_MS);
-  if (typeof requestAnimationFrame === 'function' && !(typeof document !== 'undefined' && document.hidden)) {
+  if (typeof requestAnimationFrame === 'function' && !isWindowHidden()) {
     rafHandle = requestAnimationFrame(runFlush);
   }
 }
@@ -3383,8 +3384,8 @@ export function useChannelChat(channel: string | null | undefined): ChannelChatS
 
 // Listen for visibility regain to nudge a reconnect if the WS died while hidden
 if (typeof document !== 'undefined') {
-  document.addEventListener('visibilitychange', () => {
-    if (document.hidden) return;
+  onWindowVisibility(() => {
+    if (isWindowHidden()) return;
     // Only a healthy socket is a reason to do nothing. The old `!ws ||` bailed
     // when the socket was GONE, which is precisely the state this handler was
     // written to rescue.

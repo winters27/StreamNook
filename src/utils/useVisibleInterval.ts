@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react';
+import { isWindowHidden, onWindowVisibility } from './windowVisibility';
 
 /**
  * setInterval-style polling that skips ticks while the StreamNook window is
@@ -24,7 +25,8 @@ export function useVisibleInterval(fn: () => void | Promise<void>, ms: number) {
 
     const run = () => {
       if (cancelled) return;
-      if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return;
+      // Rust-aware: a minimized window still reads as visible to Chromium here.
+      if (isWindowHidden()) return;
       // We don't await — preserves setInterval's fire-and-forget semantics and
       // matches the existing setInterval call sites this hook replaces.
       void fnRef.current();
@@ -35,14 +37,13 @@ export function useVisibleInterval(fn: () => void | Promise<void>, ms: number) {
     // When the window becomes visible after being hidden, fire immediately
     // so the UI doesn't have to wait up to `ms` for the next tick.
     const onVisibilityChange = () => {
-      if (document.visibilityState === 'visible') run();
+      if (!isWindowHidden()) run();
     };
-    document.addEventListener('visibilitychange', onVisibilityChange);
-
+    const off = onWindowVisibility(onVisibilityChange);
     return () => {
       cancelled = true;
       clearInterval(id);
-      document.removeEventListener('visibilitychange', onVisibilityChange);
+      off();
     };
   }, [ms]);
 }

@@ -761,6 +761,9 @@ fn main() {
             // cards. Replaces three JS timers per mounted chat and a 2.5 s poll
             // per open card. See services::channel_state.
             services::channel_state::start(app_handle.clone());
+            // Minimized-window signal: the page cannot see it (native occlusion
+            // detection is off), Rust can. See services::window_visibility.
+            services::window_visibility::start(app_handle.clone());
             services::user_message_history_service::UserMessageHistoryService::set_app_handle(app_handle.clone());
 
             // Badge-drop detection now lives server-side on the Penrose bot and
