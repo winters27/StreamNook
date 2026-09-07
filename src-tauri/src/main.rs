@@ -26,6 +26,14 @@
 #![allow(clippy::manual_flatten)]
 #![allow(clippy::collapsible_match)]
 
+use commands::chat_query::{
+    get_chat_history_stats, get_chat_rule_errors, search_chat, validate_chat_filter,
+    validate_chat_phrase,
+};
+use commands::moderation_tools::{
+    get_automod_queue, get_streamer_mode_state, get_user_note, get_user_pronouns,
+    resolve_automod_message, set_user_note, update_channel_info, upload_image,
+};
 use commands::{
     accounts::*, announcements::*, app::*, automation::*, badge_metadata::*, badge_service::*,
     badges::*, cache::*, channel_panels::*, channel_state::*, chat::*, chat_identity::*, components::*,
@@ -372,17 +380,29 @@ fn main() {
     let mut webview_args = String::from(
         "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection,AudioServiceOutOfProcess,CalculateNativeWinOcclusion",
     );
-    // Dev-only headless debugging: SN_CDP_PORT=<port> opens the webview's
-    // remote debug port (localhost) so tooling can inspect the live page.
-    // Compiled out of release builds; off in dev unless the env var is set.
-    #[cfg(debug_assertions)]
-    if let Ok(port) = std::env::var("SN_CDP_PORT") {
+    // Headless debugging: SN_CDP_PORT=<port> opens the webview's remote debug
+    // port on localhost so tooling can inspect the live page (heap snapshots,
+    // DOM counters, the cdp.mjs recipes). Per-launch opt-in through the
+    // environment only, never a persisted setting: the port is a local attack
+    // surface (any process on this machine can drive the page), the same
+    // trust boundary as the DEV-only devtools loader. Until 2026-09-06 this was
+    // compiled out of release builds, which left every release-build memory
+    // report uninspectable short of a byte-patched exe. The value must parse
+    // as a port so nothing else can ride into the browser arguments.
+    let cdp_port: Option<u16> = std::env::var("SN_CDP_PORT")
+        .ok()
+        .and_then(|p| p.trim().parse::<u16>().ok())
+        .filter(|p| *p != 0);
+    if let Some(port) = cdp_port {
         webview_args.push_str(&format!(" --remote-debugging-port={port}"));
     }
     std::env::set_var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", webview_args);
 
     // Initialize the logging system FIRST so all debug!/error! macros work
     services::diagnostic_logger::init_logging();
+    if let Some(port) = cdp_port {
+        warn!("[Main] SN_CDP_PORT set: WebView2 remote debugging is listening on 127.0.0.1:{port} for this launch");
+    }
 
     // Clean up any leftover files from previous update attempts
     cleanup_update_artifacts();
@@ -448,6 +468,10 @@ fn main() {
 
     // Load settings from our custom location in the same directory as cache
     let settings = load_settings_from_file().unwrap_or_else(|_| Settings::default());
+    // Compile the chat rule engine (highlights, ignores, saved filters) from
+    // the loaded settings before any chat connects.
+    services::chat_rules::ChatRules::refresh(&settings);
+    services::streamer_mode::StreamerMode::refresh(&settings);
 
     // Apply persisted diagnostic logging setting immediately after loading settings
     services::diagnostic_logger::set_diagnostics_enabled(settings.error_reporting_enabled);
@@ -556,6 +580,11 @@ fn main() {
             // whole-process) and records them to the capture file. Started here,
             // inside the tokio runtime Tauri set up.
             services::runtime_watchdog::start();
+            // Process-tree memory telemetry: one [Resource] line a minute in the
+            // file log (rust, WebView2 browser/GPU/renderers/utilities, plugin
+            // children), so a "StreamNook is at 800 MB" report can be read off
+            // the log without attaching anything to the user's machine.
+            services::resource_log::start(app_handle.clone());
             // UI-thread "Not Responding" detector: probes the main window's message
             // pump (the same signal Windows uses for "(Not Responding)") and records
             // hangs the runtime_watchdog can't see, like a wedged WebView2/COM call
@@ -600,6 +629,8 @@ fn main() {
             // IRC service JOINs and the user moderates, so the mod log enriches
             // with the acting moderator in single / offline / MultiNook / popout.
             services::eventsub_moderation::init(app_handle.clone());
+            // Streamer mode detector (sleeps unless the setting is "auto").
+            services::streamer_mode::StreamerMode::init(app_handle.clone());
 
             // Register deep link scheme on Windows
             #[cfg(windows)]
@@ -844,11 +875,20 @@ fn main() {
                 true,
                 None::<&str>,
             )?;
+            // A click-through chat overlay cannot be clicked to turn itself
+            // back; the tray is reachable even with a game in front.
+            let overlay_clickable_item = MenuItem::with_id(
+                app,
+                "overlay_clickable",
+                "Make chat overlays clickable",
+                true,
+                None::<&str>,
+            )?;
             let sep = PredefinedMenuItem::separator(app)?;
             let quit_item = MenuItem::with_id(app, "quit", "Quit StreamNook", true, None::<&str>)?;
             let tray_menu = Menu::with_items(
                 app,
-                &[&show_item, &open_multichat_item, &sep, &quit_item],
+                &[&show_item, &open_multichat_item, &overlay_clickable_item, &sep, &quit_item],
             )?;
 
             let _tray = TrayIconBuilder::new()
@@ -858,6 +898,13 @@ fn main() {
                 .icon(app.default_window_icon().unwrap().clone())
                 .on_menu_event(|app_handle, event| match event.id.as_ref() {
                     "show" => show_main_window(app_handle),
+                    "overlay_clickable" => {
+                        // Every overlay window listens; payload forces interactive.
+                        let _ = app_handle.emit(
+                            "chat-overlay-toggle-interactive",
+                            serde_json::json!({ "interactive": true }),
+                        );
+                    }
                     "open_multichat" => {
                         // Recreate/show main first (going live may have CLOSED it),
                         // then defer to its JS helper, which owns popout spawning
@@ -1028,6 +1075,19 @@ fn main() {
             send_chat_message,
             join_chat_channel,
             leave_chat_channel,
+            search_chat,
+            validate_chat_filter,
+            validate_chat_phrase,
+            get_chat_rule_errors,
+            get_chat_history_stats,
+            get_automod_queue,
+            resolve_automod_message,
+            get_streamer_mode_state,
+            update_channel_info,
+            get_user_pronouns,
+            get_user_note,
+            set_user_note,
+            upload_image,
             start_multi_chat,
             provider_chat_connect,
             provider_chat_disconnect,
@@ -1469,7 +1529,7 @@ fn main() {
                     let popouts_open = app_handle
                         .webview_windows()
                         .iter()
-                        .any(|(l, _)| l.starts_with("multichat-"));
+                        .any(|(l, _)| l.starts_with("multichat-") || l.starts_with("overlay-"));
                     // Settings can be poisoned or momentarily locked; falling
                     // back to the default keeps close working either way.
                     let mode = app_handle
@@ -1500,7 +1560,7 @@ fn main() {
                     }
                 }
 
-            } else if label.starts_with("multichat-") {
+            } else if label.starts_with("multichat-") || label.starts_with("overlay-") {
                 if let WindowEvent::Destroyed = event {
                     // Tell the main window this popout is gone so it can
                     // drop the popout's channel set from its tracking and
@@ -1513,7 +1573,7 @@ fn main() {
                     let still_open = app_handle
                         .webview_windows()
                         .iter()
-                        .filter(|(l, _)| l.starts_with("multichat-") && **l != label)
+                        .filter(|(l, _)| (l.starts_with("multichat-") || l.starts_with("overlay-")) && **l != label)
                         .count();
                     if still_open == 0 {
                         // Exit when the last popout closes and main is unavailable —

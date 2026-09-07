@@ -388,6 +388,7 @@ const THIRD_PARTY_PROVIDER_GROUPS: { key: string; label: string }[] = [
   { key: 'Chatty', label: 'Chatty' },
   { key: 'DankChat', label: 'DankChat' },
   { key: 'Homies', label: 'Homies' },
+  { key: 'Moltorino', label: 'Moltorino' },
 ];
 
 // Inline editor for the nickname + color overrides we expose on each user.
@@ -663,6 +664,50 @@ const UserProfileCard = ({
   // Which rows this card shows. Subscribed (not a one-shot read) so toggling a
   // row in Settings updates an open card.
   const cardPrefs = useAppStore((s) => s.settings.user_card);
+  // Pronouns (opt-in) and the private note, both served by Rust.
+  const [pronouns, setPronouns] = useState<string | null>(null);
+  useEffect(() => {
+    if (!cardPrefs?.show_pronouns || !username) return;
+    let cancelled = false;
+    void invoke<string | null>('get_user_pronouns', { login: username })
+      .then((p) => {
+        if (!cancelled) setPronouns(p);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [cardPrefs?.show_pronouns, username]);
+  const [note, setNote] = useState('');
+  const [noteSaved, setNoteSaved] = useState<'idle' | 'saving' | 'saved'>('idle');
+  const noteLoadedRef = useRef<string>('');
+  useEffect(() => {
+    if (cardPrefs?.show_notes === false || !userId) return;
+    let cancelled = false;
+    void invoke<{ note: string } | null>('get_user_note', { userId })
+      .then((n) => {
+        if (cancelled) return;
+        const text = n?.note ?? '';
+        noteLoadedRef.current = text;
+        setNote(text);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [cardPrefs?.show_notes, userId]);
+  const saveNote = async () => {
+    if (note === noteLoadedRef.current) return;
+    setNoteSaved('saving');
+    try {
+      await invoke('set_user_note', { userId, note });
+      noteLoadedRef.current = note;
+      setNoteSaved('saved');
+      window.setTimeout(() => setNoteSaved('idle'), 1500);
+    } catch {
+      setNoteSaved('idle');
+    }
+  };
   const showRelative = cardPrefs?.show_relative_time !== false;
   // Twitch-suspended account. Worth marking because their messages stay in
   // chat history long after the account is gone.
@@ -1566,6 +1611,11 @@ const UserProfileCard = ({
               style={{ opacity: collapsedNameOpacity, pointerEvents: collapsedNamePointer }}
             >
               <span className="text-sm font-bold leading-tight truncate min-w-0" style={usernameStyle}>{displayName}</span>
+              {pronouns && (
+                <span className="flex-shrink-0 rounded-full border border-white/10 bg-white/5 px-1.5 py-[1px] text-[10px] font-medium leading-none text-textSecondary">
+                  {pronouns}
+                </span>
+              )}
               <div className="flex items-center gap-1.5 flex-shrink-0">{identityChips}</div>
             </motion.div>
           )}
@@ -1998,6 +2048,26 @@ const UserProfileCard = ({
                       </div>
                     )}
 
+                    {cardPrefs?.show_notes !== false && (
+                      <div className="glass-tile px-2.5 py-2">
+                        <div className="mb-1 flex items-center justify-between">
+                          <span className="text-[10px] font-semibold uppercase tracking-wider text-textSecondary">Private note</span>
+                          <span className="text-[10px] text-textSecondary/70">
+                            {noteSaved === 'saving' ? 'Saving…' : noteSaved === 'saved' ? 'Saved' : note ? 'Only you see this' : ''}
+                          </span>
+                        </div>
+                        <textarea
+                          value={note}
+                          onChange={(e) => setNote(e.target.value.slice(0, 4000))}
+                          onBlur={() => void saveNote()}
+                          onClick={(e) => e.stopPropagation()}
+                          rows={note.length > 60 ? 3 : 1}
+                          placeholder="Add a note about this person…"
+                          className="glass-input w-full resize-none px-2.5 py-1.5 text-xs leading-snug text-textPrimary placeholder-textSecondary/60 focus:outline-none"
+                          spellCheck={false}
+                        />
+                      </div>
+                    )}
                     {(ivrData?.is_subscribed || ivrData?.is_mod || ivrData?.is_vip) && (
                       <div className="flex flex-wrap gap-1.5">
                         {ivrData?.is_subscribed && (

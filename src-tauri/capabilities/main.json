@@ -11,7 +11,8 @@
     "twitch-login",
     "drops-login",
     "multichat-*",
-    "plugin-*"
+    "plugin-*",
+    "overlay-*"
   ],
   "permissions": [
     "app-commands",
@@ -35,6 +36,7 @@
     "core:window:allow-set-position",
     "core:window:allow-set-focus",
     "core:window:allow-set-always-on-top",
+    "core:window:allow-set-ignore-cursor-events",
     "core:window:allow-current-monitor",
     "core:window:allow-get-all-windows",
     "core:webview:allow-create-webview-window",

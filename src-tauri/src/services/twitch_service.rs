@@ -32,7 +32,7 @@ const REDIRECT_URI: &str = "http://localhost:3000/callback";
 //   moderator:manage:blocked_terms — /blockterm and /unblockterm (read-only
 //     moderator:read:blocked_terms was already held)
 //   user:bot — the chat-bot badge on /bot sends
-const SCOPES: &str = "user:read:follows user:read:email chat:read chat:edit channel:read:redemptions channel:manage:redemptions moderator:read:followers openid user:manage:whispers user:read:whispers user:read:emotes channel:read:hype_train moderator:read:blocked_terms moderator:manage:blocked_terms moderator:manage:chat_settings moderator:manage:unban_requests moderator:manage:banned_users moderator:manage:chat_messages moderator:read:warnings moderator:read:moderators moderator:read:vips moderator:read:chatters channel:manage:moderators channel:manage:vips channel:manage:polls channel:manage:predictions moderator:manage:suspicious_users user:manage:chat_color user:manage:blocked_users user:read:blocked_users moderator:manage:announcements moderator:manage:shoutouts channel:edit:commercial channel:manage:raids channel:manage:broadcast moderation:read user:write:chat user:bot clips:edit";
+const SCOPES: &str = "user:read:follows user:read:email chat:read chat:edit channel:read:redemptions channel:manage:redemptions moderator:read:followers openid user:manage:whispers user:read:whispers user:read:emotes channel:read:hype_train moderator:read:blocked_terms moderator:manage:blocked_terms moderator:manage:chat_settings moderator:manage:unban_requests moderator:manage:banned_users moderator:manage:chat_messages moderator:read:warnings moderator:read:moderators moderator:read:vips moderator:read:chatters channel:manage:moderators channel:manage:vips channel:manage:polls channel:manage:predictions moderator:manage:suspicious_users user:manage:chat_color user:manage:blocked_users user:read:blocked_users moderator:manage:announcements moderator:manage:shoutouts channel:edit:commercial channel:manage:raids channel:manage:broadcast moderation:read user:write:chat user:bot clips:edit moderator:manage:automod moderator:read:suspicious_users";
 const TOKEN_FILE_NAME: &str = ".twitch_token";
 
 /// Normalize a GQL Language enum spelling ("FR", "ZH_HK") to the Helix form
@@ -1068,9 +1068,13 @@ impl TwitchService {
             .collect();
 
         if !missing_scopes.is_empty() {
-            debug!(
-                "[Auth Debug] Token is missing required scopes: {:?}",
-                missing_scopes
+            // INFO on purpose: this line is the only evidence of a forced
+            // re-login in the shipped log, and a scope Twitch will not grant
+            // would otherwise loop the user through login forever.
+            log::warn!(
+                "[Auth] Token is missing required scopes {:?} (token has {} scopes); clearing accounts for re-login",
+                missing_scopes,
+                scopes.len()
             );
 
             // Clear the token AND the account registry. A scopes upgrade
@@ -4578,6 +4582,93 @@ impl TwitchService {
     }
 
     /// Update Suspicious User Status (Restrict/Monitor)
+    /// Set the stream title and/or category (`channel:manage:broadcast`).
+    /// A category is given by name and resolved through Helix `games?name=`;
+    /// an unknown name is an error, never a silent no-op.
+    pub async fn update_channel_info(
+        broadcaster_id: &str,
+        title: Option<&str>,
+        game_name: Option<&str>,
+    ) -> Result<()> {
+        let token = Self::get_token().await?;
+        let client = crate::services::http::client().clone();
+        let mut payload = serde_json::Map::new();
+        if let Some(t) = title {
+            payload.insert("title".into(), serde_json::json!(t));
+        }
+        if let Some(name) = game_name {
+            let resp = client
+                .get("https://api.twitch.tv/helix/games")
+                .query(&[("name", name)])
+                .header("Client-Id", CLIENT_ID)
+                .header(AUTHORIZATION, format!("Bearer {}", token))
+                .send()
+                .await?;
+            let json: serde_json::Value = resp.json().await?;
+            let id = json
+                .pointer("/data/0/id")
+                .and_then(|v| v.as_str())
+                .map(String::from)
+                .ok_or_else(|| anyhow::anyhow!("No Twitch category named \"{}\"", name))?;
+            payload.insert("game_id".into(), serde_json::json!(id));
+        }
+        if payload.is_empty() {
+            return Ok(());
+        }
+        let response = client
+            .patch(format!(
+                "https://api.twitch.tv/helix/channels?broadcaster_id={}",
+                broadcaster_id
+            ))
+            .header("Client-Id", CLIENT_ID)
+            .header(AUTHORIZATION, format!("Bearer {}", token))
+            .header("Content-Type", "application/json")
+            .json(&serde_json::Value::Object(payload))
+            .send()
+            .await?;
+        if !response.status().is_success() {
+            let status = response.status().as_u16();
+            let text = response.text().await.unwrap_or_default();
+            error!("[TwitchService] update_channel_info failed ({}): {}", status, text);
+            return Err(anyhow::anyhow!(match status {
+                401 | 403 => "Only the broadcaster can change the title or category".to_string(),
+                _ => format!("Channel update failed ({})", status),
+            }));
+        }
+        Ok(())
+    }
+
+    /// Allow or deny an AutoMod-held message (`moderator:manage:automod`).
+    pub async fn resolve_automod_message(msg_id: &str, allow: bool) -> Result<()> {
+        let token = Self::get_token().await?;
+        let client = crate::services::http::client().clone();
+        let user_info = Self::get_user_info().await?;
+        let payload = serde_json::json!({
+            "user_id": user_info.id,
+            "msg_id": msg_id,
+            "action": if allow { "ALLOW" } else { "DENY" },
+        });
+        let response = client
+            .post("https://api.twitch.tv/helix/moderation/automod/message")
+            .header("Client-Id", CLIENT_ID)
+            .header(AUTHORIZATION, format!("Bearer {}", token))
+            .header("Content-Type", "application/json")
+            .json(&payload)
+            .send()
+            .await?;
+        if !response.status().is_success() {
+            let status = response.status().as_u16();
+            let error_text = response.text().await.unwrap_or_default();
+            error!("[TwitchService] AutoMod resolve failed ({}): {}", status, error_text);
+            return Err(anyhow::anyhow!(match status {
+                400 => "That message is no longer held".to_string(),
+                403 => "Not allowed to review AutoMod for this channel".to_string(),
+                _ => format!("AutoMod request failed ({})", status),
+            }));
+        }
+        Ok(())
+    }
+
     pub async fn update_suspicious_user_status(
         broadcaster_id: &str,
         target_user_id: &str,
