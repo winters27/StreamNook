@@ -1,7 +1,7 @@
 import { useEffect, useState, useMemo, useRef, useSyncExternalStore } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { createPortal } from 'react-dom';
-import { X, ArrowUpDown, RefreshCw, Check, Trophy, Award, ChevronUp, ChevronDown, Search, ExternalLink, Lock } from 'lucide-react';
+import { X, ArrowUpDown, RefreshCw, Check, Trophy, Award, Search, ExternalLink, Lock } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { useAppStore } from '../stores/AppStore';
@@ -31,6 +31,8 @@ import { AtmosphereBackground } from './AtmosphereBackground';
 import streamNookLogo from '../assets/streamnook-logo-128.webp';
 import chatterinoLogo from '../assets/chatterino-logo.svg';
 import betterttvLogo from '../assets/betterttv-logo.png';
+import { ChatClientsGallery } from './ChatClientsGallery';
+import type { ChatClientBadge } from './ChatClientsGallery';
 
 import { Logger } from '../utils/logger';
 import { deriveBadgeStatus } from '../utils/badgeWindow';
@@ -39,29 +41,8 @@ type AttainableTab = 'twitch-badges' | '7tv-badges' | '7tv-paints' | 'streamnook
 // Sub-tabs within the StreamNook section (its own badges vs its atmospheres).
 type StreamNookTab = 'badges' | 'atmospheres';
 
-// One distinct third-party chat-client badge (mirrors Rust ThirdPartyGalleryBadge).
-interface ChatClientBadge {
-  id: string;
-  provider: 'ffz' | 'bttv' | 'chatterino' | 'homies' | 'chatsen' | 'chatty' | 'dankchat';
-  title: string;
-  image_1x: string;
-  image_2x: string;
-  image_4x: string;
-  user_count: number;
-  owned: boolean;
-  click_url: string | null;
-}
-
-// Display order + friendly labels for the chat-client sections. BetterTTV is
-// intentionally NOT here -- it has its own dedicated 'bttv' tab.
-const CHAT_CLIENT_PROVIDERS: { key: ChatClientBadge['provider']; label: string }[] = [
-  { key: 'ffz', label: 'FrankerFaceZ' },
-  { key: 'chatterino', label: 'Chatterino' },
-  { key: 'chatsen', label: 'Chatsen' },
-  { key: 'chatty', label: 'Chatty' },
-  { key: 'dankchat', label: 'DankChat' },
-  { key: 'homies', label: 'Homies' },
-];
+// The Chat Clients tab (sections, tiles, provider metadata) lives in
+// ChatClientsGallery.tsx; this file only fetches the badges and hands them over.
 
 interface BadgeVersion {
   id: string;
@@ -242,7 +223,6 @@ const BadgesOverlay = ({ onClose, onBadgeClick, initialPaintId, initialBadgeId, 
   const [chatClientBadges, setChatClientBadges] = useState<ChatClientBadge[]>([]);
   const [loadingChatClientBadges, setLoadingChatClientBadges] = useState(false);
   const [chatClientBadgesError, setChatClientBadgesError] = useState<string | null>(null);
-  const [collapsedClientSections, setCollapsedClientSections] = useState<Set<string>>(new Set());
   // The signed-in user's own BetterTTV Pro loyalty badge (if any), shown as an
   // "owned" tile on the BetterTTV tab. Resolved via the same on-demand socket
   // lookup the profile card uses (see bttv_pro_service.rs).
@@ -1723,7 +1703,7 @@ const BadgesOverlay = ({ onClose, onBadgeClick, initialPaintId, initialBadgeId, 
                 onClick={() => setActiveTab('chat-clients')}
                 className={`px-4 py-2 rounded-lg transition-all flex items-center gap-2 ${
                   activeTab === 'chat-clients'
-                    ? 'glass-button text-[#29b6f6] shadow-[0_0_15px_rgba(41,182,246,0.3)]'
+                    ? 'glass-button text-accent shadow-[0_0_15px_rgba(var(--color-accent-rgb),0.25)]'
                     : 'text-textSecondary hover:text-textPrimary'
                 }`}
               >
@@ -1798,9 +1778,9 @@ const BadgesOverlay = ({ onClose, onBadgeClick, initialPaintId, initialBadgeId, 
                 {/* Chat Clients Counter */}
                 {activeTab === 'chat-clients' && chatClientBadges.length > 0 && (
                   <div className="flex items-center gap-2 px-3 py-1.5 glass-badge">
-                    <Check size={14} className="text-[#29b6f6]" />
+                    <Check size={14} className="text-accent" />
                     <span className="text-sm text-textPrimary">
-                      <span className="font-semibold text-[#29b6f6]">{chatClientBadges.filter(b => b.owned).length}</span>
+                      <span className="font-semibold text-accent">{chatClientBadges.filter(b => b.owned).length}</span>
                       <span className="text-textSecondary"> / {chatClientBadges.length} owned</span>
                     </span>
                   </div>
@@ -2574,109 +2554,13 @@ const BadgesOverlay = ({ onClose, onBadgeClick, initialPaintId, initialBadgeId, 
           )}
 
           {activeTab === 'chat-clients' && (
-            <>
-              {loadingChatClientBadges && (
-                <div className="flex items-center justify-center h-full">
-                  <div className="text-center">
-                    <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-[#29b6f6] mx-auto mb-4"></div>
-                    <p className="text-textSecondary">Loading chat-client badges...</p>
-                  </div>
-                </div>
-              )}
-
-              {chatClientBadgesError && (
-                <div className="flex items-center justify-center h-full">
-                  <div className="text-center">
-                    <p className="text-red-400 mb-4">{chatClientBadgesError}</p>
-                    <button
-                      onClick={() => { setChatClientBadges([]); loadChatClientBadges(); }}
-                      className="px-4 py-2 glass-button text-[#29b6f6]"
-                    >
-                      Retry
-                    </button>
-                  </div>
-                </div>
-              )}
-
-              {!loadingChatClientBadges && !chatClientBadgesError && chatClientBadges.length === 0 && (
-                <div className="flex items-center justify-center h-full">
-                  <p className="text-textSecondary">No chat-client badges found</p>
-                </div>
-              )}
-
-              {!loadingChatClientBadges && !chatClientBadgesError && chatClientBadges.length > 0 && (
-                <div className="space-y-6">
-                  {CHAT_CLIENT_PROVIDERS.map(({ key, label }) => {
-                    const all = chatClientBadges.filter(b => b.provider === key);
-                    const q = searchQuery.trim().toLowerCase();
-                    const badges = q ? all.filter(b => b.title.toLowerCase().includes(q)) : all;
-                    if (badges.length === 0) return null;
-                    const collapsed = collapsedClientSections.has(key);
-                    return (
-                      <div key={key}>
-                        <button
-                          onClick={() => setCollapsedClientSections(prev => {
-                            const next = new Set(prev);
-                            if (next.has(key)) next.delete(key); else next.add(key);
-                            return next;
-                          })}
-                          className="w-full flex items-center gap-2 mb-3 group"
-                        >
-                          <span className="text-[11px] text-textSecondary uppercase tracking-[0.2em] font-semibold group-hover:text-textPrimary transition-colors">
-                            {label}
-                          </span>
-                          <span className="text-xs text-textSecondary/60">({badges.length})</span>
-                          {collapsed
-                            ? <ChevronDown size={16} className="text-textSecondary ml-auto" />
-                            : <ChevronUp size={16} className="text-textSecondary ml-auto" />}
-                        </button>
-                        {!collapsed && (
-                          <div className="grid grid-cols-8 gap-2">
-                            {badges.map((badge) => (
-                              <Tooltip key={badge.id} content={badge.user_count > 0 ? `${badge.title} · ${badge.user_count} user${badge.user_count !== 1 ? 's' : ''}` : badge.title}>
-                              <button
-                                onClick={async () => {
-                                  if (!badge.click_url) return;
-                                  try {
-                                    const { open } = await import('@tauri-apps/plugin-shell');
-                                    await open(badge.click_url);
-                                  } catch (err) {
-                                    Logger.error('Failed to open badge link:', err);
-                                  }
-                                }}
-                                className={`flex flex-col items-center gap-2 p-3 rounded-lg hover:bg-white/5 transition-all duration-200 group cursor-pointer relative ${
-                                  badge.owned ? 'ring-2 ring-[#29b6f6]/50 bg-[#29b6f6]/10' : ''
-                                }`}
-                              >
-                                {badge.owned && (
-                                  <div className="absolute top-1 right-1 w-5 h-5 bg-[#29b6f6] rounded-full flex items-center justify-center shadow-lg z-10">
-                                    <Check size={12} className="text-white" />
-                                  </div>
-                                )}
-                                <div className="w-18 h-18 flex items-center justify-center bg-transparent group-hover:scale-110 transition-transform duration-200">
-                                  <img
-                                    src={badge.image_4x || badge.image_2x || badge.image_1x}
-                                    alt={badge.title}
-                                    className="w-16 h-16 object-contain"
-                                    loading="lazy"
-                                  />
-                                </div>
-                                <span className={`text-xs text-center line-clamp-2 transition-colors font-medium ${
-                                  badge.owned ? 'text-[#29b6f6]' : 'text-textSecondary group-hover:text-textPrimary'
-                                }`}>
-                                  {badge.title}
-                                </span>
-                              </button>
-                              </Tooltip>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-            </>
+            <ChatClientsGallery
+              badges={chatClientBadges}
+              query={searchQuery}
+              loading={loadingChatClientBadges}
+              error={chatClientBadgesError}
+              onRetry={() => { setChatClientBadges([]); loadChatClientBadges(); }}
+            />
           )}
         </div>
       </motion.div>

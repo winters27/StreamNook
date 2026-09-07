@@ -555,6 +555,7 @@ export const THIRD_PARTY_BADGE_PROVIDERS: { id: string; label: string }[] = [
   { id: 'ffz', label: 'FFZ' },
   { id: 'chatterino', label: 'Chatterino' },
   { id: 'homies', label: 'Homies' },
+  { id: 'moltorino', label: 'Moltorino' },
   { id: 'bttv', label: 'BTTV' },
   { id: 'chatsen', label: 'Chatsen' },
   { id: 'chatty', label: 'Chatty' },

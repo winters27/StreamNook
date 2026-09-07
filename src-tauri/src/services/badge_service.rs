@@ -129,6 +129,7 @@ pub enum BadgeProvider {
     Chatsen,
     Chatty,
     DankChat,
+    Moltorino,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -269,6 +270,130 @@ struct DankChatBadge {
     users: Vec<String>,
 }
 
+// Moltorino (MoltoBenne's Chatterino7 fork): GET https://api.moltorino.com/badges.
+// One JSON snapshot of the whole supporter roster: `badges` is the tier list in
+// TIER ORDER (developer, top_donor, founder, supporter) and each tier carries its
+// holders. Moltorino's own client shows only the FIRST tier a user appears in,
+// so a user gets at most one badge here too. Feed facts, asset sizes and the
+// client rules mirrored here: Brain/references/Moltorino_Badge_API.md.
+//
+// Every asset is an animated webp of 120-160 frames (1x 118 KB, 2x 353 KB,
+// 3x 962 KB), which is why the chat row renders third-party badges at 2x.
+const MOLTORINO_BADGES_URL: &str = "https://api.moltorino.com/badges";
+/// The roster changes a few times a week, not a few times an hour, and the
+/// feed is `no-store` with no ETag, so a refresh is always a full 20 KB read.
+/// Six hours is plenty for a badge nobody is waiting on.
+const MOLTORINO_REFRESH: Duration = Duration::from_secs(6 * 60 * 60);
+/// Bounds copied from Moltorino's own parser so a runaway feed cannot balloon
+/// the index: it caps at 64 tiers and 250,000 assignments.
+const MOLTORINO_MAX_TIERS: usize = 64;
+const MOLTORINO_MAX_ASSIGNMENTS: usize = 250_000;
+
+#[derive(Debug, Clone, Deserialize)]
+struct MoltorinoBadgesResponse {
+    #[serde(default)]
+    version: Option<i64>,
+    #[serde(default)]
+    badges: Vec<MoltorinoBadge>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct MoltorinoBadge {
+    id: String,
+    #[serde(default)]
+    tooltip: String,
+    #[serde(default)]
+    description: String,
+    #[serde(default)]
+    images: MoltorinoImages,
+    #[serde(default)]
+    users: Vec<MoltorinoUser>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+struct MoltorinoImages {
+    #[serde(rename = "1x", default)]
+    x1: String,
+    #[serde(rename = "2x", default)]
+    x2: String,
+    #[serde(rename = "3x", default)]
+    x3: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct MoltorinoUser {
+    id: String,
+}
+
+impl MoltorinoBadge {
+    /// Display title: the feed's tooltip, or the tier id when that is blank.
+    fn title(&self) -> String {
+        if self.tooltip.trim().is_empty() {
+            self.id.clone()
+        } else {
+            self.tooltip.clone()
+        }
+    }
+
+    /// (1x, 2x, 4x) URLs with the same fall-through the other providers use:
+    /// a missing larger variant falls back to the next smaller one.
+    fn image_urls(&self) -> Option<(String, String, String)> {
+        let x1 = self.images.x1.trim();
+        if x1.is_empty() {
+            return None;
+        }
+        let x2 = if self.images.x2.trim().is_empty() { x1 } else { self.images.x2.trim() };
+        let x3 = if self.images.x3.trim().is_empty() { x2 } else { self.images.x3.trim() };
+        Some((x1.to_string(), x2.to_string(), x3.to_string()))
+    }
+}
+
+/// Moltorino accepts only numeric Twitch ids of 1-32 digits; anything else in
+/// the feed is a typo or a future key space and must not reach the index.
+fn is_valid_moltorino_user_id(id: &str) -> bool {
+    !id.is_empty() && id.len() <= 32 && id.bytes().all(|b| b.is_ascii_digit())
+}
+
+/// One gallery tile per Moltorino tier, in tier order. Holder counts follow
+/// the same one-badge-per-user rule as the chat index, so a user listed under
+/// two tiers is counted (and flagged `owned`) only for the higher one.
+fn moltorino_gallery_tiles(
+    feed: &MoltorinoBadgesResponse,
+    viewer_user_id: Option<&str>,
+) -> Vec<ThirdPartyGalleryBadge> {
+    let mut tiles = Vec::new();
+    let mut assigned: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    for badge in feed.badges.iter().take(MOLTORINO_MAX_TIERS) {
+        let Some((x1, x2, x4)) = badge.image_urls() else {
+            continue;
+        };
+        let mut user_count = 0usize;
+        let mut owned = false;
+        for user in &badge.users {
+            let uid = user.id.trim();
+            if !is_valid_moltorino_user_id(uid) || !assigned.insert(uid) {
+                continue;
+            }
+            user_count += 1;
+            if viewer_user_id == Some(uid) {
+                owned = true;
+            }
+        }
+        tiles.push(ThirdPartyGalleryBadge {
+            id: format!("moltorino-{}", badge.id),
+            provider: BadgeProvider::Moltorino,
+            title: badge.title(),
+            image_1x: x1,
+            image_2x: x2,
+            image_4x: x4,
+            user_count,
+            owned,
+            click_url: Some("https://moltorino.com/".to_string()),
+        });
+    }
+    tiles
+}
+
 // ============================================================================
 // TWITCH HELIX STRUCTS
 // ============================================================================
@@ -308,6 +433,10 @@ struct ThirdPartyCache {
     chatsen: Option<Vec<ChatsenBadge>>,
     chatty: Option<Vec<ChattyBadge>>,
     dankchat: Option<Vec<DankChatBadge>>,
+    moltorino: Option<MoltorinoBadgesResponse>,
+    /// Moltorino refreshes on its own, slower clock (`MOLTORINO_REFRESH`);
+    /// the seven feeds above share `last_updated`.
+    moltorino_last_updated: SystemTime,
     /// Inverted index over every provider feed: user_id -> the badges that
     /// user holds. Rebuilt once per feed refresh so per-chatter lookups are a
     /// single HashMap get instead of a scan over every holder list. One
@@ -319,7 +448,7 @@ struct ThirdPartyCache {
 impl ThirdPartyCache {
     /// Build the user_id -> badges index from the current provider feeds.
     /// Providers run in the same order the old per-chatter scan checked them
-    /// (FFZ, BTTV, Chatterino, Homies, Chatsen, Chatty, DankChat), and within
+    /// (FFZ, BTTV, Chatterino, Homies, Moltorino, Chatsen, Chatty, DankChat), and within
     /// a provider in feed order, so each user's Vec preserves the exact badge
     /// order the scan produced. A holder is skipped when they already carry a
     /// badge with the same title (case-insensitive), which reproduces the
@@ -465,6 +594,48 @@ impl ThirdPartyCache {
             }
         }
 
+        // Moltorino supporter badges. Tiers arrive in tier order and a user
+        // gets only the FIRST tier they appear in (Moltorino's own rule), so
+        // one badge per holder even when the feed lists them under several.
+        // Sits after Homies: both are Chatterino forks, and the title dedupe
+        // above cannot collide ("Moltorino ..." titles are unique to this feed).
+        if let Some(moltorino) = &self.moltorino {
+            let mut assigned: std::collections::HashSet<&str> = std::collections::HashSet::new();
+            let mut assignments = 0usize;
+            for badge in moltorino.badges.iter().take(MOLTORINO_MAX_TIERS) {
+                let Some((x1, x2, x4)) = badge.image_urls() else {
+                    continue;
+                };
+                let arc = Arc::new(UserBadge {
+                    badge_info: BadgeInfo {
+                        id: format!("moltorino-{}", badge.id),
+                        set_id: "moltorino".to_string(),
+                        version: "1".to_string(),
+                        title: badge.title(),
+                        description: badge.description.clone(),
+                        image_1x: x1,
+                        image_2x: x2,
+                        image_4x: x4,
+                        click_action: None,
+                        click_url: Some("https://moltorino.com/".to_string()),
+                    },
+                    provider: BadgeProvider::Moltorino,
+                });
+                let title_lower = arc.badge_info.title.to_lowercase();
+                for user in &badge.users {
+                    if assignments >= MOLTORINO_MAX_ASSIGNMENTS {
+                        break;
+                    }
+                    let uid = user.id.trim();
+                    if !is_valid_moltorino_user_id(uid) || !assigned.insert(uid) {
+                        continue;
+                    }
+                    assignments += 1;
+                    push(&mut by_user, uid.to_string(), &arc, &title_lower);
+                }
+            }
+        }
+
         // Chatsen badges
         if let Some(chatsen) = &self.chatsen {
             for badge in chatsen {
@@ -581,6 +752,8 @@ impl BadgeCache {
                 chatsen: None,
                 chatty: None,
                 dankchat: None,
+                moltorino: None,
+                moltorino_last_updated: UNIX_EPOCH,
                 by_user: HashMap::new(),
                 last_updated: UNIX_EPOCH,
             },
@@ -607,6 +780,16 @@ pub struct BadgeService {
 }
 
 impl BadgeService {
+    /// (channel badge sets, user badge strings) resident in the LRUs, or
+    /// `None` while the cache is write-locked. Diagnostics for the resource line.
+    pub fn cache_counts(&self) -> Option<(usize, usize)> {
+        self.cache
+            .try_read()
+            .ok()
+            .map(|c| (c.channel_badges.len(), c.user_badge_strings.len()))
+    }
+
+
     pub fn new(client_id: String) -> Self {
         Self {
             cache: Arc::new(RwLock::new(BadgeCache::new())),
@@ -721,6 +904,16 @@ impl BadgeService {
                 return Ok(());
             }
         }
+
+        // Moltorino rides this gate but on its own, slower clock: it is only
+        // re-read once `MOLTORINO_REFRESH` has passed, at whichever 10-minute
+        // boundary comes next.
+        let moltorino_due = cache
+            .third_party
+            .moltorino_last_updated
+            .elapsed()
+            .map(|e| e >= MOLTORINO_REFRESH)
+            .unwrap_or(true);
 
         drop(cache); // Release lock during network calls
 
@@ -838,6 +1031,34 @@ impl BadgeService {
             None
         };
 
+        // Fetch Moltorino supporter badges (single JSON snapshot, ~20 KB). A
+        // hobby API run by one person: identify ourselves honestly instead of
+        // the browser UA the client carries for Chatsen.
+        let moltorino_badges = if moltorino_due {
+            match self
+                .http_client
+                .get(MOLTORINO_BADGES_URL)
+                .header(
+                    "User-Agent",
+                    concat!(
+                        "StreamNook/",
+                        env!("CARGO_PKG_VERSION"),
+                        " (+https://streamnook.app)"
+                    ),
+                )
+                .header("Accept", "application/json")
+                .send()
+                .await
+            {
+                Ok(response) if response.status().is_success() => {
+                    response.json::<MoltorinoBadgesResponse>().await.ok()
+                }
+                _ => None,
+            }
+        } else {
+            None
+        };
+
         // Update cache. A provider that failed this round (network, 5xx, a
         // body that no longer parses) keeps its LAST GOOD list instead of being
         // wiped to None: overwriting it made every badge from that provider
@@ -867,6 +1088,33 @@ impl BadgeService {
         keep_last_good!(chatsen, chatsen_badges, "chatsen");
         keep_last_good!(chatty, chatty_badges, "chatty");
         keep_last_good!(dankchat, dankchat_badges, "dankchat");
+        // Moltorino keeps its last good roster too, but a failure must NOT
+        // back-date the shared stamp below: that would re-read all seven other
+        // feeds every minute for as long as one hobby API is down. Instead its
+        // own clock is set so the next attempt lands at the next 10-minute gate.
+        if moltorino_due {
+            match moltorino_badges {
+                Some(feed) => {
+                    log::debug!(
+                        "[BadgeService] Moltorino roster v{}: {} tiers, {} assignments",
+                        feed.version.unwrap_or(-1),
+                        feed.badges.len(),
+                        feed.badges.iter().map(|b| b.users.len()).sum::<usize>()
+                    );
+                    cache.third_party.moltorino = Some(feed);
+                    cache.third_party.moltorino_last_updated = SystemTime::now();
+                }
+                None => {
+                    log::warn!(
+                        "[BadgeService] Moltorino badge feed failed to refresh{}; retrying at the next gate",
+                        if cache.third_party.moltorino.is_some() { " (kept previous)" } else { "" }
+                    );
+                    cache.third_party.moltorino_last_updated = SystemTime::now()
+                        .checked_sub(MOLTORINO_REFRESH.saturating_sub(cache_duration))
+                        .unwrap_or(UNIX_EPOCH);
+                }
+            }
+        }
         // Rebuild the inverted per-user index once per refresh (~10 min) so
         // per-chatter lookups never scan the full holder lists.
         let by_user = cache.third_party.build_by_user_index();
@@ -1646,6 +1894,11 @@ impl BadgeService {
             }
         }
 
+        // Moltorino
+        if let Some(moltorino) = &cache.third_party.moltorino {
+            out.extend(moltorino_gallery_tiles(moltorino, viewer_user_id));
+        }
+
         // Collapse entries that share a (provider, title) into one tile. Some feeds
         // (notably Chatty's FFZ re-host) emit one entry PER USER under the same title
         // (e.g. 122x "FFZ:AP Supporter"), which would otherwise flood the gallery.
@@ -1743,6 +1996,8 @@ mod tests {
             chatsen: None,
             chatty: None,
             dankchat: None,
+            moltorino: None,
+            moltorino_last_updated: UNIX_EPOCH,
             by_user: HashMap::new(),
             last_updated: UNIX_EPOCH,
         };
@@ -1756,5 +2011,120 @@ mod tests {
         assert_eq!(held[0].provider, BadgeProvider::FFZ);
 
         assert!(index.get("99999").is_none());
+    }
+
+    /// A trimmed copy of the live feed (version 369, 2026-09-07) with the
+    /// shapes that matter: tier order, a holder listed under two tiers, a
+    /// non-numeric id, and a tier with no images.
+    const MOLTORINO_FIXTURE: &str = r#"{
+      "version": 369,
+      "generatedAt": "2026-09-07T00:12:49.620Z",
+      "badges": [
+        {
+          "id": "developer",
+          "tooltip": "Moltorino Developer",
+          "description": "Given to people who help build and maintain Moltorino.",
+          "images": {
+            "1x": "https://api.moltorino.com/badges/assets/developer/1x.webp?v=369",
+            "2x": "https://api.moltorino.com/badges/assets/developer/2x.webp?v=369",
+            "3x": "https://api.moltorino.com/badges/assets/developer/3x.webp?v=369"
+          },
+          "users": [ { "id": "506954718", "username": "moltobenne_" } ]
+        },
+        {
+          "id": "broken",
+          "tooltip": "No Images",
+          "images": {},
+          "users": [ { "id": "777" } ]
+        },
+        {
+          "id": "supporter",
+          "tooltip": "Moltorino Supporter",
+          "description": "Thanks for supporting Moltorino.",
+          "images": {
+            "1x": "https://api.moltorino.com/badges/assets/supporter/1x.webp?v=369",
+            "2x": "https://api.moltorino.com/badges/assets/supporter/2x.webp?v=369",
+            "3x": "https://api.moltorino.com/badges/assets/supporter/3x.webp?v=369"
+          },
+          "users": [
+            { "id": "506954718", "username": "moltobenne_" },
+            { "id": "249031143", "username": "br_winters" },
+            { "id": "not-a-number", "username": "typo" }
+          ]
+        }
+      ],
+      "users": [ { "id": "1051860673", "username": "omarbasilz", "decorations": false } ]
+    }"#;
+
+    fn moltorino_cache(feed: MoltorinoBadgesResponse) -> ThirdPartyCache {
+        ThirdPartyCache {
+            ffz: None,
+            bttv: None,
+            chatterino: None,
+            homies: None,
+            chatsen: None,
+            chatty: None,
+            dankchat: None,
+            moltorino: Some(feed),
+            moltorino_last_updated: UNIX_EPOCH,
+            by_user: HashMap::new(),
+            last_updated: UNIX_EPOCH,
+        }
+    }
+
+    #[test]
+    fn moltorino_feed_parses_with_unknown_fields() {
+        let feed: MoltorinoBadgesResponse =
+            serde_json::from_str(MOLTORINO_FIXTURE).expect("feed should parse");
+        assert_eq!(feed.version, Some(369));
+        assert_eq!(feed.badges.len(), 3);
+        assert_eq!(feed.badges[0].users[0].id, "506954718");
+    }
+
+    #[test]
+    fn moltorino_holder_gets_one_badge_highest_tier_first() {
+        let feed: MoltorinoBadgesResponse = serde_json::from_str(MOLTORINO_FIXTURE).unwrap();
+        let index = moltorino_cache(feed).build_by_user_index();
+
+        // Listed under developer AND supporter: only the first tier sticks.
+        let dev = index.get("506954718").expect("developer should resolve");
+        assert_eq!(dev.len(), 1);
+        assert_eq!(dev[0].badge_info.id, "moltorino-developer");
+        assert_eq!(dev[0].badge_info.title, "Moltorino Developer");
+        assert_eq!(dev[0].provider, BadgeProvider::Moltorino);
+        assert_eq!(
+            dev[0].badge_info.image_4x,
+            "https://api.moltorino.com/badges/assets/developer/3x.webp?v=369"
+        );
+
+        let sup = index.get("249031143").expect("supporter should resolve");
+        assert_eq!(sup.len(), 1);
+        assert_eq!(sup[0].badge_info.id, "moltorino-supporter");
+
+        // A tier with no images never reaches the index; nor does a bad id.
+        assert!(index.get("777").is_none());
+        assert!(index.get("not-a-number").is_none());
+    }
+
+    #[test]
+    fn moltorino_gallery_counts_holders_and_ownership() {
+        let feed: MoltorinoBadgesResponse = serde_json::from_str(MOLTORINO_FIXTURE).unwrap();
+        let tiles = moltorino_gallery_tiles(&feed, Some("249031143"));
+        let ids: Vec<&str> = tiles.iter().map(|t| t.id.as_str()).collect();
+        assert_eq!(ids, vec!["moltorino-developer", "moltorino-supporter"]);
+        assert_eq!(tiles[0].user_count, 1);
+        assert!(!tiles[0].owned);
+        // The duplicate holder and the bad id are not counted.
+        assert_eq!(tiles[1].user_count, 1);
+        assert!(tiles[1].owned);
+    }
+
+    #[test]
+    fn moltorino_provider_serializes_lowercase() {
+        assert_eq!(
+            serde_json::to_string(&BadgeProvider::Moltorino).unwrap(),
+            "\"moltorino\""
+        );
+        assert_eq!(format!("{:?}", BadgeProvider::Moltorino), "Moltorino");
     }
 }
