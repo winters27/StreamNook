@@ -2467,6 +2467,14 @@ const VideoPlayer = () => {
     if (video.paused) video.play().catch(() => { /* autoplay policy / teardown */ });
   }, [restartStream]);
 
+  // Mirror the overlay state to the store only while fullscreen, so the
+  // fullscreen chat column can fade with the controls. Windowed hover never
+  // writes the store.
+  useEffect(() => {
+    if (!useAppStore.getState().isPlayerFullscreen) return;
+    useAppStore.setState({ playerOverlayVisible: showOverlay });
+  }, [showOverlay]);
+
   // Handle mouse events for overlay visibility (works in both normal and fullscreen modes)
   useEffect(() => {
     const container = containerRef.current;

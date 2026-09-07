@@ -391,6 +391,12 @@ interface AppState {
   // theater mode (hides chrome, stays windowed) and player fullscreen (video
   // only). Mirrors the actual OS window state.
   isWindowFullscreen: boolean;
+  /** Plyr CSS fullscreen is active (single player or a MultiNook tile). Set by
+   *  utils/windowFullscreen; drives the fullscreen chat overlay in App. */
+  isPlayerFullscreen: boolean;
+  /** The player's hover overlay (controls) is currently shown. Mirrored from
+   *  VideoPlayer so the fullscreen chat overlay can hide with the controls. */
+  playerOverlayVisible: boolean;
   toasts: Toast[];
   isAutoSwitching: boolean;
   // Track when raid redirect occurred to prevent auto-switch from overriding
@@ -973,6 +979,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   isTheaterMode: false,
   originalChatPlacement: null,
   isWindowFullscreen: false,
+  isPlayerFullscreen: false,
+  playerOverlayVisible: false,
   toasts: [],
   isAutoSwitching: false,
   // Track when raid redirect occurred to prevent auto-switch from overriding

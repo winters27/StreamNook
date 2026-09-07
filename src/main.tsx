@@ -15,6 +15,7 @@ import './bootPreload';
 const App = lazy(() => import('./App.tsx'));
 const ProfileCardPage = lazy(() => import('./pages/ProfileCardPage.tsx'));
 const MultiChatWindow = lazy(() => import('./components/multichat/MultiChatWindow.tsx'));
+const ChatOverlayWindow = lazy(() => import('./components/multichat/ChatOverlayWindow'));
 const PluginWindowHost = lazy(() => import('./plugins-ui/PluginWindowHost.tsx'));
 // Side-effect import: registers `window.openMultiChatWindow` for popout spawning.
 import './utils/multichatWindow';
@@ -47,6 +48,7 @@ localStorage.removeItem('plyr');
 const hash = window.location.hash;
 const isProfileCard = hash.startsWith('#/profile');
 const isMultiChat = hash.startsWith('#/multichat');
+const isChatOverlay = hash.startsWith('#/chat-overlay');
 const isPluginWindow = hash.startsWith('#/plugin/');
 
 // Create the React root ONCE per container. The lazy route imports above can make
@@ -131,7 +133,7 @@ root.render(
   <React.StrictMode>
     <MotionScope>
       <Suspense fallback={null}>
-        {isMultiChat ? <MultiChatWindow /> : isPluginWindow ? <PluginWindowHost /> : isProfileCard ? <ProfileCardPage /> : <App />}
+        {isChatOverlay ? <ChatOverlayWindow /> : isMultiChat ? <MultiChatWindow /> : isPluginWindow ? <PluginWindowHost /> : isProfileCard ? <ProfileCardPage /> : <App />}
       </Suspense>
     </MotionScope>
   </React.StrictMode>,

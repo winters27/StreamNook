@@ -281,6 +281,21 @@ function App() {
   const chatAutoHide = settings.chat_auto_hide ?? false;
   const isSideChat = chatPlacement === 'right' || chatPlacement === 'left';
   const autoHideActive = chatAutoHide && isSideChat;
+  // Fullscreen chat overlay: while Plyr is in CSS fullscreen the docked chat
+  // panel is lifted above the fullscreen layer as a translucent fixed column
+  // (globals.css .chat-fullscreen-overlay). Same DOM node, no remount, no
+  // second WebView. Hidden with the player controls unless hovered/focused.
+  const isPlayerFullscreen = useAppStore((s) => s.isPlayerFullscreen);
+  const playerOverlayVisible = useAppStore((s) => s.playerOverlayVisible);
+  const fsChat = settings.fullscreen_chat;
+  const fsOverlayActive = isPlayerFullscreen && (fsChat?.mode ?? 'overlay') === 'overlay';
+  const [fsChatHeld, setFsChatHeld] = useState(false);
+  const fsChatSide: 'left' | 'right' =
+    fsChat?.side && fsChat.side !== 'auto' ? fsChat.side : chatPlacement === 'left' ? 'left' : 'right';
+  const fsChatHidden = fsOverlayActive && (fsChat?.auto_hide ?? true) && !playerOverlayVisible && !fsChatHeld;
+  useEffect(() => {
+    if (!isPlayerFullscreen) setFsChatHeld(false);
+  }, [isPlayerFullscreen]);
   const [chatRevealed, setChatRevealed] = useState(false);
   const chatRevealTimer = useRef<number | null>(null);
   // A streamnook:// deep link that landed while the app was still booting. Played
@@ -2081,6 +2096,7 @@ function App() {
                           className={`
                             group flex items-center justify-center flex-shrink-0 z-10
                             ${isSideChat ? 'w-1 cursor-ew-resize' : 'h-1 cursor-ns-resize'}
+                            ${fsOverlayActive ? 'hidden' : ''}
                           `}
                         >
                           <div
@@ -2094,10 +2110,21 @@ function App() {
                       </Tooltip>
                       <div
                         data-chat-panel="true"
-                        className="flex-shrink-0 flex flex-col h-full overflow-hidden bg-background"
-                        style={{
-                          [isSideChat ? 'width' : 'height']: `${chatSize}px`
-                        }}
+                        data-fs-hidden={fsChatHidden ? 'true' : undefined}
+                        onMouseEnter={fsOverlayActive ? () => setFsChatHeld(true) : undefined}
+                        onMouseLeave={fsOverlayActive ? () => setFsChatHeld(false) : undefined}
+                        onFocusCapture={fsOverlayActive ? () => setFsChatHeld(true) : undefined}
+                        className={`flex-shrink-0 flex flex-col h-full overflow-hidden bg-background ${
+                          fsOverlayActive ? `chat-fullscreen-overlay chat-fullscreen-overlay--${fsChatSide}` : ''
+                        }`}
+                        style={
+                          fsOverlayActive
+                            ? ({
+                                '--fs-chat-width': `${Math.max(240, Math.min(640, fsChat?.width ?? 340))}px`,
+                                '--fs-chat-opacity': `${Math.max(0, Math.min(100, fsChat?.opacity ?? 55))}%`,
+                              } as React.CSSProperties)
+                            : { [isSideChat ? 'width' : 'height']: `${chatSize}px` }
+                        }
                       >
                         {isMultiNookActive && <Suspense fallback={null}><MultiNookChatSwitcher /></Suspense>}
                         <div className="flex-1 overflow-hidden relative">

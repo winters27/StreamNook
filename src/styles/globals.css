@@ -3912,3 +3912,155 @@ html[data-motion="reduced"] .sn-ffz-anim-leave {
   line-height: 1.3;
   z-index: 3;
 }
+
+/* Fullscreen chat overlay (App.tsx). While Plyr is in CSS fullscreen (its
+   .plyr sits fixed at z-index 10000000), the docked chat panel is lifted
+   above it as a translucent fixed column: same node, no remount, no second
+   window. Width and opacity are user settings passed as custom properties.
+   Never animate backdrop-filter here (see MultiChat glass artifacts note). */
+.chat-fullscreen-overlay {
+  position: fixed !important;
+  top: 0 !important;
+  bottom: 0 !important;
+  height: 100vh !important;
+  width: var(--fs-chat-width, 340px) !important;
+  z-index: 10000002 !important;
+  background: color-mix(in srgb, var(--color-background) var(--fs-chat-opacity, 55%), transparent) !important;
+  transition: opacity 0.2s ease, transform 0.25s ease;
+}
+.chat-fullscreen-overlay--right {
+  right: 0;
+  border-left: 1px solid color-mix(in srgb, var(--color-border-subtle) 60%, transparent);
+}
+.chat-fullscreen-overlay--left {
+  left: 0;
+  border-right: 1px solid color-mix(in srgb, var(--color-border-subtle) 60%, transparent);
+}
+.chat-fullscreen-overlay[data-fs-hidden="true"] {
+  opacity: 0;
+  pointer-events: none;
+}
+.chat-fullscreen-overlay--right[data-fs-hidden="true"] {
+  transform: translateX(12px);
+}
+.chat-fullscreen-overlay--left[data-fs-hidden="true"] {
+  transform: translateX(-12px);
+}
+
+/* ---------------------------------------------------------------------------
+   Chat overlay window (#/chat-overlay). The window itself is transparent; this
+   frame is the only painted thing. ONE alpha (--sn-overlay-alpha, the user's
+   slider) drives everything that is chrome rather than message: the tint, the
+   single hairline, the scrollbar, the message dividers, the row stripes and
+   the hover strip's ground. At 0 nothing but the rows is left on screen.
+   No backdrop blur: nothing of the page sits behind a transparent window,
+   so a filter here is pure compositor cost for no visible result.
+   --------------------------------------------------------------------------- */
+.sn-chat-overlay-frame {
+  --sn-overlay-alpha: 0.7;
+  border-radius: 14px;
+  border: 0;
+  background-color: color-mix(in srgb, var(--color-background) calc(var(--sn-overlay-alpha) * 100%), transparent);
+  background-image: linear-gradient(180deg, rgba(255, 255, 255, calc(0.04 * var(--sn-overlay-alpha))), rgba(255, 255, 255, 0) 30%);
+  /* One hairline, never a border plus a bevel (that read as two edges). */
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, calc(0.10 * var(--sn-overlay-alpha))),
+    0 12px 32px -10px rgba(0, 0, 0, calc(0.6 * var(--sn-overlay-alpha)));
+  transition: box-shadow 0.2s ease;
+}
+/* Interaction feedback only while hovered and clickable; it fades with the
+   slider too so a fully clear overlay stays clear. */
+.sn-chat-overlay-frame[data-chrome="on"][data-clickthrough="off"] {
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--color-accent) calc(45% * var(--sn-overlay-alpha)), transparent),
+    0 12px 32px -10px rgba(0, 0, 0, calc(0.6 * var(--sn-overlay-alpha)));
+}
+/* The control strip keeps a floor of contrast while it is showing, or the
+   buttons would be unreadable on a clear overlay; hidden at rest anyway. */
+.sn-chat-overlay-chrome {
+  opacity: 0;
+  transform: translateY(-4px);
+  transition: opacity 0.18s ease, transform 0.18s ease;
+  background-color: color-mix(in srgb, var(--color-background) calc(max(var(--sn-overlay-alpha), 0.35) * 55%), transparent);
+  border-bottom: 1px solid rgba(255, 255, 255, calc(0.06 * max(var(--sn-overlay-alpha), 0.35)));
+}
+.sn-chat-overlay-frame[data-chrome="on"] .sn-chat-overlay-chrome {
+  opacity: 1;
+  transform: none;
+}
+/* Rows: legible over anything, and every piece of chrome inside the feed
+   follows the slider. */
+.sn-overlay-feed {
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.75);
+}
+.sn-overlay-feed img {
+  filter: drop-shadow(0 1px 1px rgba(0, 0, 0, 0.5));
+}
+.sn-overlay-feed .border-borderSubtle,
+.sn-overlay-feed .border-borderLight,
+.sn-overlay-feed [class*="border-white/"] {
+  border-color: rgba(255, 255, 255, calc(0.09 * var(--sn-overlay-alpha))) !important;
+}
+.sn-overlay-feed .chat-striped > .chat-message-row:nth-child(even) {
+  background-color: color-mix(in srgb, var(--color-surface) calc(var(--sn-overlay-alpha) * 100%), transparent);
+}
+.sn-overlay-feed .overflow-y-auto {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, calc(0.28 * var(--sn-overlay-alpha))) transparent;
+}
+.sn-overlay-feed .overflow-y-auto::-webkit-scrollbar {
+  width: 6px;
+}
+.sn-overlay-feed .overflow-y-auto::-webkit-scrollbar-track {
+  background: transparent;
+}
+.sn-overlay-feed .overflow-y-auto::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, calc(0.28 * var(--sn-overlay-alpha)));
+  border-radius: 3px;
+}
+.sn-overlay-slider {
+  accent-color: var(--color-accent);
+  opacity: 0.85;
+}
+
+/* Fullscreen chat overlay column: same glass grammar as the overlay window,
+   plus a light frost since the video really is behind it in this WebView. */
+.chat-fullscreen-overlay {
+  background-image: linear-gradient(180deg, rgba(255, 255, 255, 0.035), rgba(255, 255, 255, 0) 25%) !important;
+  box-shadow:
+    inset 1px 0 0 0 rgba(255, 255, 255, 0.10),
+    0 0 40px -10px rgba(0, 0, 0, 0.6);
+  -webkit-backdrop-filter: blur(calc(10px * var(--glass-strength))) saturate(140%);
+  backdrop-filter: blur(calc(10px * var(--glass-strength))) saturate(140%);
+}
+.chat-fullscreen-overlay--left {
+  box-shadow:
+    inset -1px 0 0 0 rgba(255, 255, 255, 0.10),
+    0 0 40px -10px rgba(0, 0, 0, 0.6);
+}
+
+/* Split-pane strip (MultiChat custom splits): a glass tile, not a bar. The
+   focused pane shows an accent underline; the rest stay quiet. */
+.sn-pane-strip {
+  background-image: linear-gradient(180deg, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0.015));
+  border-bottom: 1px solid var(--color-border-subtle);
+  box-shadow: inset 0 1px 0 0 rgba(255, 255, 255, 0.08);
+}
+.sn-pane-strip[data-focused="true"] {
+  box-shadow:
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.08),
+    inset 0 -2px 0 0 color-mix(in srgb, var(--color-accent) 70%, transparent);
+}
+
+/* AutoMod queue strip above the composer: amber edge, glass body. */
+.sn-automod-strip {
+  background-image: linear-gradient(180deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0.01));
+  border-top: 1px solid var(--color-border-subtle);
+  box-shadow: inset 3px 0 0 0 color-mix(in srgb, #f59e0b 75%, transparent);
+}
+
+/* History rows loaded on join (metadata.from_backfill) at the user's chosen
+   opacity; live rows stay at 1. */
+.chat-message-row.is-backfill {
+  opacity: var(--sn-backfill-opacity, 1);
+}
