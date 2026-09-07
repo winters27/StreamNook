@@ -1,7 +1,10 @@
+use super::default_name_color;
 use crate::models::chat_layout::{
     Badge, ChatMessage, EmotePos, LayoutResult, MessageMetadata, MessageSegment, ReplyInfo,
 };
 use crate::models::settings::AppState;
+use crate::services::chat_history::ChatHistory;
+use crate::services::chat_rules::ChatRules;
 use crate::plugin_host::PluginHost;
 use crate::services::chat_logger_service::ChatLoggerService;
 use crate::services::emoji_service;
@@ -120,6 +123,9 @@ static START_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 // sleep/resume jumps; a backwards jump could make a dead connection look
 // freshly read.
 static PROCESS_EPOCH: OnceLock<std::time::Instant> = OnceLock::new();
+/// 24-hour timestamps (settings.chat_design.timestamp_format == "24h").
+/// Written by ChatRules::refresh on every settings change.
+pub static TIMESTAMP_24H: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 static LAST_IRC_READ_ELAPSED_MS: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
 
@@ -1057,6 +1063,7 @@ impl IrcService {
         debug!("[IRC Chat] User: {} ({})", user_info.login, user_info.id);
 
         *get_own_identity().lock().await = Some((user_info.login.clone(), user_info.id.clone()));
+        ChatRules::set_own_identity(&user_info.login, &user_info.id);
 
         // Bring up (or reuse) the local WS bridge that fans parsed messages to
         // the frontend. Extracted into ensure_local_ws_bridge so non-Twitch
@@ -1739,12 +1746,21 @@ impl IrcService {
                 )
                 .await;
 
+                // Rule engine: ignores, highlights, mentions, saved filters,
+                // history ring. One snapshot read, stamps onto metadata. An
+                // ignored message never reaches a window but still feeds the
+                // side-effect lane: the log is the record, not the display.
+                let rules = ChatRules::snapshot();
+                let verdict = ChatRules::evaluate(&mut chat_msg, &rules);
+
                 // Deliver to the frontend FIRST (wire order is the only order
                 // the UI needs), then hand the slow side effects (history LRU,
                 // chat logger, plugins) to the ordered lane so they can never
                 // block the read loop.
-                if let Ok(json_msg) = serde_json::to_string(&chat_msg) {
-                    send_to_bridge(json_msg, true).await;
+                if !verdict.drop {
+                    if let Ok(json_msg) = serde_json::to_string(&chat_msg) {
+                        send_to_bridge(json_msg, true).await;
+                    }
                 }
                 enqueue_side_effect(MessageSideEffects {
                     history_key: history_key_for(&chat_msg),
@@ -1797,10 +1813,16 @@ impl IrcService {
                 )
                 .await;
 
+                // Rule engine (raid tint, sub-message filters, ignores).
+                let rules = ChatRules::snapshot();
+                let verdict = ChatRules::evaluate(&mut chat_msg, &rules);
+
                 // Frontend first, side effects on the ordered lane (no history:
                 // USERNOTICE never fed the profile-card history).
-                if let Ok(json_msg) = serde_json::to_string(&chat_msg) {
-                    send_to_bridge(json_msg, true).await;
+                if !verdict.drop {
+                    if let Ok(json_msg) = serde_json::to_string(&chat_msg) {
+                        send_to_bridge(json_msg, true).await;
+                    }
                 }
                 enqueue_side_effect(MessageSideEffects {
                     history_key: history_key_for(&chat_msg),
@@ -1958,6 +1980,7 @@ impl IrcService {
                 let login = Self::extract_tag_value(trimmed, "login").unwrap_or_default();
                 if let Some(ch) = &channel_name {
                     ChatLoggerService::log_deleted_message(ch, &login, deleted_text.as_deref());
+                    ChatHistory::mark_deleted(ch, &target_msg_id);
                 }
                 // Send deletion event to frontend, tagged with channel for routing
                 let delete_event = json!({
@@ -1993,6 +2016,9 @@ impl IrcService {
                 match &target_user {
                     Some(user) => ChatLoggerService::log_timeout(ch, user, ban_duration_secs),
                     None => ChatLoggerService::log_chat_cleared(ch),
+                }
+                if let Some(uid) = &target_user_id {
+                    ChatHistory::mark_user_cleared(ch, uid);
                 }
             }
 
@@ -2789,6 +2815,10 @@ impl IrcService {
         get_user_badges_cache().lock().await.remove(key);
         get_user_color_cache().lock().await.remove(key);
         get_room_state_cache().lock().await.remove(key);
+        // The search ring lives and dies with the channel's last consumer.
+        ChatHistory::clear_channel(key);
+        crate::services::automod_queue::AutomodQueue::clear_channel(key);
+        crate::services::suspicious_users::SuspiciousUsers::clear_channel(key);
 
         // Stop receiving 7TV EventAPI updates for this channel.
         crate::services::seventv_eventapi::unsubscribe_channel(key).await;
@@ -3632,12 +3662,18 @@ impl IrcService {
             .map(|s| s.to_string())
             .unwrap_or_else(|| username.clone());
 
-        let color = tag_map.get("color").map(|s| s.to_string());
-
         let user_id = tag_map
             .get("user-id")
             .map(|s| s.to_string())
             .unwrap_or_default();
+
+        // An empty `color` tag means the chatter never picked one; fill the
+        // deterministic default here so every surface agrees (see the module).
+        let color = Some(default_name_color::resolve_name_color(
+            tag_map.get("color").copied(),
+            &user_id,
+            &username,
+        ));
 
         let timestamp = tag_map
             .get("tmi-sent-ts")
@@ -3838,6 +3874,7 @@ impl IrcService {
             msg_type,
             bits_amount,
             system_message,
+            ..Default::default()
         };
 
         // Extract channel
@@ -3937,12 +3974,18 @@ impl IrcService {
             .map(|s| s.to_string())
             .unwrap_or_else(|| username.clone());
 
-        let color = tag_map.get("color").map(|s| s.to_string());
-
         let user_id = tag_map
             .get("user-id")
             .map(|s| s.to_string())
             .unwrap_or_default();
+
+        // An empty `color` tag means the chatter never picked one; fill the
+        // deterministic default here so every surface agrees (see the module).
+        let color = Some(default_name_color::resolve_name_color(
+            tag_map.get("color").copied(),
+            &user_id,
+            &username,
+        ));
 
         let timestamp = tag_map
             .get("tmi-sent-ts")
@@ -4054,6 +4097,7 @@ impl IrcService {
             msg_type,
             bits_amount: None,
             system_message,
+            ..Default::default()
         };
 
         // Extract channel
@@ -4107,26 +4151,29 @@ impl IrcService {
             static LAST: std::sync::Mutex<Option<(i64, String, String)>> =
                 std::sync::Mutex::new(None);
             let ts_s = ts_ms.div_euclid(1000);
+            let h24 = TIMESTAMP_24H.load(std::sync::atomic::Ordering::Relaxed);
+            // The one-entry cache is keyed by the second AND the format, so a
+            // settings flip never serves the other clock for the same second.
+            let cache_key = if h24 { -ts_s - 1 } else { ts_s };
             if let Ok(guard) = LAST.lock() {
                 if let Some((cached_s, ref without, ref with)) = *guard {
-                    if cached_s == ts_s {
+                    if cached_s == cache_key {
                         return (Some(without.clone()), Some(with.clone()));
                     }
                 }
             }
 
             if let Some(datetime) = Local.timestamp_millis_opt(ts_ms).single() {
-                // Format without seconds: "3:45 PM" or "15:45" depending on locale
-                let without_seconds = datetime.format("%l:%M %p").to_string().trim().to_string();
-                // Format with seconds: "3:45:30 PM" or "15:45:30"
-                let with_seconds = datetime
-                    .format("%l:%M:%S %p")
-                    .to_string()
-                    .trim()
-                    .to_string();
+                let (fmt_short, fmt_long) = if h24 {
+                    ("%H:%M", "%H:%M:%S")
+                } else {
+                    ("%l:%M %p", "%l:%M:%S %p")
+                };
+                let without_seconds = datetime.format(fmt_short).to_string().trim().to_string();
+                let with_seconds = datetime.format(fmt_long).to_string().trim().to_string();
 
                 if let Ok(mut guard) = LAST.lock() {
-                    *guard = Some((ts_s, without_seconds.clone(), with_seconds.clone()));
+                    *guard = Some((cache_key, without_seconds.clone(), with_seconds.clone()));
                 }
                 return (Some(without_seconds), Some(with_seconds));
             }
@@ -4138,6 +4185,7 @@ impl IrcService {
     /// Layout height is set to 0.0 - the browser handles all layout via CSS content-visibility
     pub async fn parse_historical_messages(raw_messages: Vec<String>) -> Vec<ChatMessage> {
         let mut results = Vec::with_capacity(raw_messages.len());
+        let rules = ChatRules::snapshot();
 
         for raw in raw_messages {
             if let Some(mut chat_msg) = Self::parse_privmsg(&raw) {
@@ -4149,6 +4197,12 @@ impl IrcService {
                     is_first_message: false,
                 };
 
+                // Same rules as live rows: a hidden user's backfill is hidden
+                // too, and highlights are stamped so the row needs no matcher.
+                if ChatRules::evaluate(&mut chat_msg, &rules).drop {
+                    continue;
+                }
+                chat_msg.metadata.from_backfill = true;
                 results.push(chat_msg);
             }
         }
@@ -4411,6 +4465,23 @@ impl IrcService {
         ));
         Ok(nudged)
     }
+}
+
+
+/// Entry counts of the per-channel caches, for the `[Resource]` line. Every
+/// lock is a try-lock: the line is diagnostics and must never wait behind
+/// the chat hot path. `None` means "contended this tick".
+pub fn cache_counts() -> Vec<(&'static str, Option<usize>)> {
+    let tl = |m: &Mutex<HashSet<String>>| m.try_lock().ok().map(|g| g.len());
+    let tm = |m: &Mutex<HashMap<String, String>>| m.try_lock().ok().map(|g| g.len());
+    vec![
+        ("irc_channels", tl(get_current_channels())),
+        ("channel_emote_sets", get_channel_emotes().try_lock().ok().map(|g| g.len())),
+        ("personal_emote_users", get_personal_emotes().try_read().ok().map(|g| g.len())),
+        ("user_badge_strings", tm(get_user_badges_cache())),
+        ("user_colors", tm(get_user_color_cache())),
+        ("channel_consumers", get_channel_consumers().try_lock().ok().map(|g| g.len())),
+    ]
 }
 
 #[cfg(test)]

@@ -32,7 +32,6 @@ import { create } from 'zustand';
 import { useShallow } from 'zustand/react/shallow';
 import { PROVIDERS, type ProviderId } from '../types/providers';
 import { makeKey, parseKey } from '../utils/providerKey';
-import { isFilteredChatUser } from '../utils/chatFilters';
 import { streamProvider } from '../utils/streamProvider';
 import { parseBadges } from '../services/twitchBadges';
 import { invoke } from '@tauri-apps/api/core';
@@ -808,21 +807,15 @@ async function seedKickHistory(key: string, channel: string): Promise<void> {
       if (eid) existingIds.add(eid);
     }
     const fresh: any[] = [];
-    const cfHist = useAppStore.getState().settings.chat_filters;
-    const pkHist = parseKey(slice.channel);
+    // Chat filters (hidden users, bots, ignored phrases) are applied in Rust
+    // before this history is returned (services/chat_rules.rs), so nothing
+    // needs re-checking here.
     for (const msg of history) {
       const id = msg?.id;
       if (id) {
         if (slice.seenMessageIds.has(id) || existingIds.has(id)) continue;
         slice.seenMessageIds.add(id);
       }
-      // Chat filters apply to backfilled history too, or a hidden bot's spam
-      // would still flood in on every join.
-      if (
-        cfHist &&
-        !isOwnUserId(msg?.user_id) &&
-        isFilteredChatUser(cfHist, pkHist.provider, pkHist.channel, msg?.username, msg?.display_name)
-      ) continue;
       fresh.push(msg);
     }
     if (!fresh.length) return;
@@ -1696,31 +1689,14 @@ async function preloadChannel(
         if (eid) existingIds.add(eid);
       }
       const filtered: any[] = [];
-      const cfBackfill = useAppStore.getState().settings.chat_filters;
-      const pkBackfill = parseKey(slice.channel);
+      // Structured backfill rows arrive through Rust's parse path, where the
+      // rule engine already dropped hidden users, bots and ignored phrases.
       for (const msg of source) {
         const id =
           typeof msg === 'string' ? msg.match(/(?:^|;)id=([^;]+)/)?.[1] : msg?.id;
         if (id) {
           if (slice.seenMessageIds.has(id) || existingIds.has(id)) continue;
           slice.seenMessageIds.add(id);
-        }
-        // Chat filters apply to the reconnect backfill too (same reason as the
-        // history prepend above).
-        if (cfBackfill) {
-          const login =
-            typeof msg === 'string'
-              ? (msg.match(/ :([A-Za-z0-9_]+)!/)?.[1] ?? msg.match(/^:([A-Za-z0-9_]+)!/)?.[1])
-              : msg?.username;
-          const disp =
-            typeof msg === 'string'
-              ? msg.match(/(?:^|;)display-name=([^;]*)/)?.[1]
-              : msg?.display_name;
-          const uid = typeof msg === 'string' ? msg.match(/user-id=([^;]+)/)?.[1] : msg?.user_id;
-          if (
-            !isOwnUserId(uid) &&
-            isFilteredChatUser(cfBackfill, pkBackfill.provider, pkBackfill.channel, login, disp)
-          ) continue;
         }
         filtered.push(msg);
       }
@@ -2353,21 +2329,9 @@ function appendStructuredMessage(slice: ChannelSlice, parsed: any) {
   if (!messageId) return;
   if (slice.seenMessageIds.has(messageId)) return;
 
-  // Chat filters: a hidden user's or bot's message never enters the buffer,
-  // so every consumer of the store (widget, MultiChat panes, blended panes,
-  // overlay feed) inherits the filter. Own messages are exempt so hiding
-  // yourself can never eat your sends. The id is marked seen so the
-  // reconnect backfill's overlap window doesn't re-offer the same line.
-  if (!isOwnUserId(parsed.user_id)) {
-    const cf = useAppStore.getState().settings.chat_filters;
-    if (cf) {
-      const pk = parseKey(slice.channel);
-      if (isFilteredChatUser(cf, pk.provider, pk.channel, parsed.username, parsed.display_name)) {
-        slice.seenMessageIds.add(messageId);
-        return;
-      }
-    }
-  }
+  // Chat filters (hidden users, bots, ignored phrases) run in Rust before a
+  // structured message is broadcast (services/chat_rules.rs): a filtered row
+  // never reaches this store, so every consumer inherits the filter for free.
 
   // Deterministic own-message upgrade: if we already hold a (string) copy with
   // this exact id — our own optimistic message stamped with the real Helix id,
@@ -2786,20 +2750,8 @@ function handleRawIrcString(raw: string) {
     }
   }
 
-  // Chat filters, raw-fallback twin of the structured gate above. Own lines
-  // already returned, so no own-exemption is needed here.
-  {
-    const cf = useAppStore.getState().settings.chat_filters;
-    if (cf) {
-      const login = raw.match(/^[^ ]* ?:([A-Za-z0-9_]+)!/)?.[1] ?? raw.match(/ :([A-Za-z0-9_]+)!/)?.[1];
-      const disp = raw.match(/(?:^|;)display-name=([^;]*)/)?.[1];
-      const pk = parseKey(slice.channel);
-      if (isFilteredChatUser(cf, pk.provider, pk.channel, login, disp)) {
-        if (messageId) slice.seenMessageIds.add(messageId);
-        return;
-      }
-    }
-  }
+  // Raw-string rows are the parse-failure fallback only; the structured
+  // path carries every filtered message, and Rust already decided it.
 
   if (messageId) {
     if (slice.seenMessageIds.has(messageId)) return;

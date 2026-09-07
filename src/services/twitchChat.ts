@@ -46,6 +46,37 @@ export interface MessageMetadata {
   bits_amount?: number;
   /** System message for subscriptions/donations */
   system_message?: string;
+  /** True when the Rust rule engine evaluated this message: the fields below
+   *  are authoritative and the row runs no matcher of its own. */
+  rules_evaluated?: boolean;
+  /** The message replies to one of ours. */
+  is_reply_to_me?: boolean;
+  /** First matching highlight rule (phrase, user, or badge), if any. */
+  highlight?: HighlightStamp;
+  /** Built-in event tint (raid, returning chatter, first message, self). */
+  built_in?: BuiltInStamp;
+  /** Ids of the user's saved filters this message satisfies. */
+  filter_ids?: string[];
+  /** Sender's low-trust status in this channel (moderators only). */
+  suspicious?: 'monitored' | 'restricted' | string;
+  /** Row came from a history backfill rather than live delivery. */
+  from_backfill?: boolean;
+}
+
+/** A matched highlight rule, stamped by the Rust rule engine. */
+export interface HighlightStamp {
+  rule_id: string;
+  kind: 'phrase' | 'user' | 'badge';
+  color: string;
+  sound_id?: string | null;
+  cooldown_ms: number;
+}
+
+/** A built-in event highlight, stamped by the Rust rule engine. */
+export interface BuiltInStamp {
+  kind: 'raider' | 'returning' | 'first_time' | 'self';
+  color: string;
+  label: string;
 }
 
 export interface BackendChatMessage {

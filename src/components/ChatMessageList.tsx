@@ -4,6 +4,7 @@ import { EmoteSet } from '../services/emoteService';
 import { BackendChatMessage } from '../services/twitchChat';
 import { ModerationContext } from '../hooks/useTwitchChat';
 import { useAppStore } from '../stores/AppStore';
+import { useStreamerMode } from '../utils/streamerMode';
 import { useChatUserStore } from '../stores/chatUserStore';
 import { ProviderLogo } from './ProviderLogo';
 import type { ProviderId } from '../types/providers';
@@ -129,7 +130,9 @@ const MessageRow = memo(function MessageRow({
   return (
     <div
       data-message-id={messageId || undefined}
-      className={`chat-message-row${isModFocus ? ' is-mod-focus' : ''}`}
+      className={`chat-message-row${isModFocus ? ' is-mod-focus' : ''}${
+        typeof message !== 'string' && message.metadata?.from_backfill ? ' is-backfill' : ''
+      }`}
       style={style}
     >
       {sourceProvider ? (
@@ -554,6 +557,9 @@ const ChatMessageList = memo(function ChatMessageList({
   const emoteScale = chatDesign?.emote_scale ?? 1;
   const emoteMargin = chatDesign?.emote_margin ?? 0.125;
   const deletedStyle = chatDesign?.deleted_message_style ?? 'strikethrough';
+  // Streamer mode hides restricted (low-trust) users' rows: a ban evader's
+  // message must not appear on stream while a mod reviews it.
+  const streamerModeActive = useStreamerMode((st) => st.active);
   const hideSharedChat = chatDesign?.hide_shared_chat ?? false;
 
   // Tracks ids already rendered THIS pass so a duplicate id in the message
@@ -580,6 +586,7 @@ const ChatMessageList = memo(function ChatMessageList({
         overflowAnchor: 'auto',
         '--sn-emote-scale': emoteScale,
         '--sn-emote-margin': `${emoteMargin}rem`,
+        '--sn-backfill-opacity': Math.max(0.3, Math.min(1, (chatDesign?.backfill_opacity ?? 100) / 100)),
       } as React.CSSProperties}
     >
       {/* Messages container with native virtualization - pt-10 for header */}
@@ -627,6 +634,13 @@ const ChatMessageList = memo(function ChatMessageList({
           // Deleted message style: 'hidden' suppresses the row entirely.
           // Other styles (strikethrough/dimmed/keep) fall through to ChatMessage.
           if (moderationContext && deletedStyle === 'hidden') {
+            return null;
+          }
+          if (
+            streamerModeActive &&
+            typeof message !== 'string' &&
+            message.metadata?.suspicious === 'restricted'
+          ) {
             return null;
           }
           // Hide shared-chat-flagged messages if the user opted in.

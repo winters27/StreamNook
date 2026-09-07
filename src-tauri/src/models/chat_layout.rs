@@ -82,6 +82,54 @@ pub struct MessageMetadata {
     /// System message for subscriptions/donations
     #[serde(skip_serializing_if = "Option::is_none")]
     pub system_message: Option<String>,
+    /// True when the chat rule engine (services::chat_rules) has evaluated
+    /// this message: the row treats the fields below as authoritative and
+    /// runs no matcher of its own. False on optimistic local rows.
+    #[serde(default)]
+    pub rules_evaluated: bool,
+    /// The message replies to one of ours.
+    #[serde(default)]
+    pub is_reply_to_me: bool,
+    /// First matching user highlight rule (phrase, user, or badge), if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub highlight: Option<HighlightStamp>,
+    /// Built-in event tint (raid, returning chatter, first message, self).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub built_in: Option<BuiltInStamp>,
+    /// Ids of the user's saved filters this message satisfies. A pane bound
+    /// to a filter id shows only rows carrying it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub filter_ids: Vec<String>,
+    /// Low-trust status of the sender in this channel, from EventSub
+    /// `channel.suspicious_user.*`: "monitored" | "restricted". Moderators only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub suspicious: Option<String>,
+    /// Row came from a history backfill, not live delivery. Lets the list
+    /// dim scrollback (`chat_design.backfill_opacity`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub from_backfill: bool,
+}
+
+/// A matched highlight rule, stamped by the Rust rule engine.
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+pub struct HighlightStamp {
+    pub rule_id: String,
+    /// "phrase" | "user" | "badge"
+    pub kind: String,
+    pub color: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sound_id: Option<String>,
+    #[serde(default)]
+    pub cooldown_ms: u64,
+}
+
+/// A built-in event highlight, stamped by the Rust rule engine.
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+pub struct BuiltInStamp {
+    /// "raider" | "returning" | "first_time" | "self"
+    pub kind: String,
+    pub color: String,
+    pub label: String,
 }
 
 /// Represents a parsed segment of a chat message

@@ -28,7 +28,9 @@ import { AtmosphereBackground } from './AtmosphereBackground';
 import { MajorCologneChrome } from './MajorCologneChrome';
 import { getAtmosphere } from '../services/atmospheres';
 import { MAJOR_COLOGNE_THEME_ID } from '../services/cologneEvent';
-import { matchHighlightPhrase, matchHighlightUser, matchHighlightBadge, type HighlightMatch } from '../utils/chatHighlightMatcher';
+import type { HighlightMatch } from '../utils/chatHighlightMatcher';
+import { useStreamerMode } from '../utils/streamerMode';
+import { staticEmoteUrl, static7tvSrcSet } from '../utils/staticEmoteUrl';
 import { flashTitle } from '../utils/titleFlasher';
 import { playSoundThrottled } from '../utils/notificationSound';
 import { chatterId, chatterProvider } from '../utils/chatterIdentity';
@@ -629,6 +631,23 @@ function UsernameWithCosmetics({
   );
 }
 
+/** Timeout durations for the hover dock: settings.moderation.timeout_presets
+ *  (seconds) or the classic 1s / 10m / 1h / 24h. */
+export function formatTimeoutLabel(seconds: number): string {
+  if (seconds % 604800 === 0 && seconds >= 604800) return `${seconds / 604800}w`;
+  if (seconds % 86400 === 0 && seconds >= 86400) return `${seconds / 86400}d`;
+  if (seconds % 3600 === 0 && seconds >= 3600) return `${seconds / 3600}h`;
+  if (seconds % 60 === 0 && seconds >= 60) return `${seconds / 60}m`;
+  return `${seconds}s`;
+}
+const DEFAULT_TIMEOUT_PRESETS = [1, 600, 3600, 86400];
+function presetsFromSetting(raw: number[] | undefined): Array<{ label: string; val: number }> {
+  const list = (raw && raw.length > 0 ? raw : DEFAULT_TIMEOUT_PRESETS)
+    .filter((n) => Number.isFinite(n) && n >= 1 && n <= 1209600)
+    .slice(0, 8);
+  return (list.length > 0 ? list : DEFAULT_TIMEOUT_PRESETS).map((val) => ({ label: formatTimeoutLabel(val), val }));
+}
+
 const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, onReplyClick, isHighlighted = false, moderationContext = null, onEmoteRightClick, onMessageCopy, onUsernameRightClick, onBadgeClick, emotes, isModerator = false, broadcasterId }: ChatMessageProps) {
   // Field selectors, NOT a whole-store subscription. This component is mounted
   // once per chat row, so subscribing to the entire store made every row
@@ -643,6 +662,11 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
   const chatDesign = useAppStore((s) => s.settings.chat_design);
   const chatCustomization = useAppStore((s) => s.settings.chat_customization);
   const chatHighlights = useAppStore((s) => s.settings.chat_highlights);
+  const timeoutPresetSetting = useAppStore((s) => s.settings.moderation?.timeout_presets);
+  const timeoutPresets = useMemo(
+    () => presetsFromSetting(timeoutPresetSetting),
+    [timeoutPresetSetting],
+  );
   const currentUser = useAppStore((s) => s.currentUser);
   // Whole-message pickup attaches transient window listeners; this ref holds the
   // current teardown so an unmount can run it if the row is removed mid-press
@@ -1035,16 +1059,24 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
   // hovered. Keyboard and drag moderation don't need this DOM (verified:
   // ChatModController invokes commands directly; drags target data-message-id).
   const [hoverArmed, setHoverArmed] = useState(false);
-  const highlightPhrases = chatHighlights?.phrases;
-  const highlightUsers = chatHighlights?.users;
-  const highlightBadges = chatHighlights?.badges;
-
-  // Does this message mention the current user, or reply to them? Derived
-  // during render (it is a pure function of the message and the user), so
-  // the first paint of a row already carries its highlight instead of
-  // flashing plain and then re-rendering once an effect had run. Simple
-  // case-insensitive indexOf: no RegExp allocation per message.
+  // "Animate emotes: on hover" needs a live hover flag; the other modes never
+  // write it, so rows do not re-render on pointer traffic unless asked.
+  const animateEmotes = chatDesign?.animate_emotes ?? 'always';
+  const [rowHovering, setRowHovering] = useState(false);
+  // Highlight, mention and reply-to-me are decided ONCE per message by the
+  // Rust rule engine (src-tauri/src/services/chat_rules.rs) and stamped on
+  // metadata; this row reads the stamp instead of running a regex loop per
+  // row per window. Only optimistic local rows (our own sends, raw IRC
+  // fallbacks) arrive unstamped; they cannot mention us, so the cheap
+  // indexOf fallback below is for the raw-string path alone.
+  const stamped = parsed.metadata?.rules_evaluated === true;
   const { isMentioned, isReplyToMe } = useMemo(() => {
+    if (stamped) {
+      return {
+        isMentioned: parsed.metadata?.is_mentioned === true,
+        isReplyToMe: parsed.metadata?.is_reply_to_me === true,
+      };
+    }
     if (!currentUser) return { isMentioned: false, isReplyToMe: false };
     const mentionTarget = `@${currentUser.username.toLowerCase()}`;
     const contentLower = parsed.content.toLowerCase();
@@ -1056,7 +1088,6 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
         mentioned = true;
       } else {
         const charAfter = contentLower[afterIndex];
-        // Word boundary: space, punctuation, or non-alphanumeric.
         mentioned = /[\s.,!?:;'")\]}>]/.test(charAfter) || !/[a-z0-9_]/.test(charAfter);
       }
     }
@@ -1064,38 +1095,20 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
       isMentioned: mentioned,
       isReplyToMe: parsed.replyInfo?.parentUserId === currentUser.user_id,
     };
-  }, [parsed.content, parsed.replyInfo, currentUser]);
+  }, [stamped, parsed.metadata, parsed.content, parsed.replyInfo, currentUser]);
 
-  // User-defined highlight phrases. Computed synchronously so sound playback
-  // (which fires in a separate effect below) sees the same value as the
-  // initial render — avoiding a race where isMentioned hasn't settled yet.
-  // Pre-checks for own-mention / reply-to-me happen inline so this useMemo
-  // doesn't have to wait for the async useState effect that fills those flags.
+  // First matching phrase / user / badge rule, as stamped by Rust. Mentions
+  // and replies suppress it there, so sound and animation never double-fire.
   const phraseMatch = useMemo<HighlightMatch | null>(() => {
-    // Mention/reply animations win over highlight matches; suppress here so
-    // sound effects and animation don't double-fire.
-    const mentionTarget = currentUser ? `@${currentUser.username.toLowerCase()}` : null;
-    const isOwnMention = mentionTarget ? parsed.content.toLowerCase().includes(mentionTarget) : false;
-    const isReplyToMe = !!currentUser && parsed.replyInfo?.parentUserId === currentUser.user_id;
-    if (isOwnMention || isReplyToMe) return null;
-
-    // Try phrase, then user, then badge highlights. First non-null wins.
-    const phraseHit = matchHighlightPhrase(parsed.content, highlightPhrases);
-    if (phraseHit) return phraseHit;
-
-    const senderLogin = parsed.tags.get('display-name')?.toLowerCase() || parsed.tags.get('login') || null;
-    const userHit = matchHighlightUser(senderLogin, highlightUsers);
-    if (userHit) return userHit;
-
-    // Build badge-key list from the message's IRC badges tag (format
-    // "name1/v1,name2/v2"). Empty/missing tag → no badge match.
-    const badgesRaw = parsed.tags.get('badges');
-    const badgeKeys = badgesRaw ? badgesRaw.split(',').filter(Boolean) : null;
-    const badgeHit = matchHighlightBadge(badgeKeys, highlightBadges);
-    if (badgeHit) return badgeHit;
-
-    return null;
-  }, [parsed.content, parsed.replyInfo, parsed.tags, currentUser, highlightPhrases, highlightUsers, highlightBadges]);
+    const hl = stamped ? parsed.metadata?.highlight : undefined;
+    if (!hl) return null;
+    return {
+      phrase_id: hl.rule_id,
+      color: hl.color,
+      sound_id: (hl.sound_id ?? null) as HighlightMatch['sound_id'],
+      cooldown_ms: hl.cooldown_ms,
+    };
+  }, [stamped, parsed.metadata]);
 
   // Fire the phrase's sound on first render if one is configured. Cooldown +
   // backfill guard (see notificationSound.ts) make this safe to call on every
@@ -1324,10 +1337,13 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
       // queue it for caching (per-tier for 7TV) so the NEXT view is local.
       // This is what makes returning to a stream fast instead of re-pulling
       // every emote from the CDN.
-      const cachedEmoteUrl = segment.emoteId && (!giant || emoteProvider === '7tv')
+      // Static mode: the CDN's first-frame file, bypassing the animated disk
+      // cache (a static URL under the animated key would corrupt it).
+      const wantStatic = !giant && (animateEmotes === 'never' || (animateEmotes === 'hover' && !rowHovering));
+      const cachedEmoteUrl = !wantStatic && segment.emoteId && (!giant || emoteProvider === '7tv')
         ? getCachedEmoteUrl(segment.emoteId, emoteProvider, emoteTier)
         : undefined;
-      if (!cachedEmoteUrl && displayUrl && !displayUrl.startsWith('asset://') && !displayUrl.includes('asset.localhost') && segment.emoteId && (!giant || emoteProvider === '7tv')) {
+      if (!wantStatic && !cachedEmoteUrl && displayUrl && !displayUrl.startsWith('asset://') && !displayUrl.includes('asset.localhost') && segment.emoteId && (!giant || emoteProvider === '7tv')) {
         queueEmoteForDisplayCaching(segment.emoteId, emoteProvider, displayUrl, emoteTier);
       }
 
@@ -1341,7 +1357,8 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
         srcSet = `https://cdn.7tv.app/emote/${segment.emoteId}/1x.avif 1x, https://cdn.7tv.app/emote/${segment.emoteId}/2x.avif 2x, https://cdn.7tv.app/emote/${segment.emoteId}/3x.avif 3x, https://cdn.7tv.app/emote/${segment.emoteId}/4x.avif 4x`;
       }
 
-      const displaySrc = cachedEmoteUrl || displayUrl;
+      const displaySrc = wantStatic ? staticEmoteUrl(displayUrl) : cachedEmoteUrl || displayUrl;
+      if (wantStatic) srcSet = is7TVEmote && segment.emoteId ? static7tvSrcSet(segment.emoteId) : undefined;
 
       const imgProps: React.ImgHTMLAttributes<HTMLImageElement> = {
         src: displaySrc,
@@ -1969,7 +1986,16 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
   // cascade below.
   let builtInEventColor: string | null = null;
   let builtInEventLabel: string | null = null;
-  if (isRaidNotice && (builtInHighlights?.raider?.enabled ?? false)) {
+  const builtInStamp = stamped ? parsed.metadata?.built_in : undefined;
+  const suspiciousStatus = stamped ? parsed.metadata?.suspicious : undefined;
+  const streamerModeActive = useStreamerMode((st) => st.active);
+  if (stamped) {
+    // Decided by the Rust rule engine with the same precedence and defaults.
+    if (builtInStamp) {
+      builtInEventColor = builtInStamp.color;
+      builtInEventLabel = builtInStamp.label;
+    }
+  } else if (isRaidNotice && (builtInHighlights?.raider?.enabled ?? false)) {
     builtInEventColor = builtInHighlights?.raider?.color ?? '#ef4444';
     builtInEventLabel = 'Raid';
   } else if (isReturningChatter && (builtInHighlights?.returning_chatter?.enabled ?? false)) {
@@ -1984,6 +2010,24 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
   } else if (isOwnMessage && (builtInHighlights?.self_message?.enabled ?? false)) {
     builtInEventColor = builtInHighlights?.self_message?.color ?? '#facc15';
     builtInEventLabel = 'You';
+  }
+  // /announce rows: Twitch sends msg-id=announcement with a colour name. Tint
+  // the row in that colour and label it, like the web client's banner.
+  if (!builtInEventColor && (msgId === 'announcement' || sourceMsgId === 'announcement')) {
+    const paramColor = (parsed.tags.get('msg-param-color') || 'PRIMARY').toUpperCase();
+    builtInEventColor =
+      paramColor === 'BLUE' ? '#3b82f6'
+      : paramColor === 'GREEN' ? '#22c55e'
+      : paramColor === 'ORANGE' ? '#f97316'
+      : paramColor === 'PURPLE' ? '#a855f7'
+      : (chatDesign?.mention_color ?? '#9147ff');
+    builtInEventLabel = 'Announcement';
+  }
+  // Low-trust chatter (EventSub suspicious_user, moderators only): the tint
+  // marks it even when no other built-in applies.
+  if (!builtInEventColor && suspiciousStatus) {
+    builtInEventColor = suspiciousStatus === 'restricted' ? '#ef4444' : '#f59e0b';
+    builtInEventLabel = suspiciousStatus === 'restricted' ? 'Restricted user' : 'Monitored user';
   }
 
   // Extract source room info for shared chat (needed for all message types)
@@ -2989,7 +3033,11 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
           : {}),
       }}
       onPointerDown={handleBodyPickup}
-      onPointerEnter={hoverArmed ? undefined : () => setHoverArmed(true)}
+      onPointerEnter={(e) => {
+        if (!hoverArmed) setHoverArmed(true);
+        if (animateEmotes === 'hover' && e.pointerType !== 'touch') setRowHovering(true);
+      }}
+      onPointerLeave={animateEmotes === 'hover' ? () => setRowHovering(false) : undefined}
     >
       {/* Atmosphere wash: the same animated aurora as the member's profile
           backdrop, masked to fade out before the text so it stays readable. */}
@@ -3189,11 +3237,15 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
                   </button>
                 </Tooltip>
               )}
-              {/* Third-party badges (FFZ, Chatterino, Homies) */}
+              {/* Third-party badges (FFZ, Chatterino, Homies, Moltorino, ...). The
+                  row is a 20px box, so the 2x variant is the right one: `imageUrl`
+                  is the 4x file, which for Moltorino is a 72px, 120-frame, ~960KB
+                  animated webp per badge. Member-loadout badges carry one URL for
+                  every size, so the fallback keeps them unchanged. */}
               {thirdPartyBadges.filter(badge => badge && badge.imageUrl).map((badge, idx) => (
                 <Tooltip key={`tp-badge-${badge.id}-${idx}`} content={`${badge.title} (${badge.provider.toUpperCase()})`} side="top">
                   <img
-                    src={badge.imageUrl}
+                    src={badge.image2x || badge.imageUrl}
                     alt={badge.title}
                     className="w-5 h-5"
                     onError={(e) => {
@@ -3365,7 +3417,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
           render a click-to-load chip (trusted={false}). showChip (the no-preview
           fallback link chip) applies only to trusted links in clean mode, where
           the inline link is hidden so the card/chip is the sole representation. */}
-      {linkPreviewItems.length > 0 && (
+      {linkPreviewItems.length > 0 && !streamerModeActive && (
         <div className="flex flex-col items-start gap-1">
           {linkPreviewItems.map((it) => (
             <LinkPreviewCard
@@ -3473,12 +3525,7 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
             {/* Timeout Dropdown */}
             <div className="absolute bottom-full left-1/2 -translate-x-1/2 opacity-0 pointer-events-none group-hover/timeout:opacity-100 group-hover/timeout:pointer-events-auto transition-opacity px-2 pb-1.5">
               <div className="flex bg-tertiary border border-white/10 rounded-md shadow-xl overflow-hidden">
-                {[
-                  { label: '1s', val: 1 }, 
-                  { label: '10m', val: 600 }, 
-                  { label: '1h', val: 3600 }, 
-                  { label: '24h', val: 86400 }
-                ].map(opt => (
+                {timeoutPresets.map(opt => (
                   <button
                     key={opt.val}
                     className="px-2 py-1 text-[10px] font-bold text-white/70 hover:text-warning hover:bg-white/10 transition-colors border-r border-white/5 last:border-0"

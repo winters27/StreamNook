@@ -182,7 +182,13 @@ export interface ChatDesignSettings {
   mention_animation: boolean; // Enable red-shift animation for mentions
   show_timestamps?: boolean; // Show timestamp next to each message
   show_timestamp_seconds?: boolean; // Include seconds in timestamps
+  timestamp_format?: '12h' | '24h'; // Formatted in Rust; default 12h
   emote_scale?: number; // Emote size multiplier (0.5x to 3x). Default 1.
+  // Animated emotes: play always (default), only while the row is hovered,
+  // or never (first frame). Typed in Rust too; the CDNs serve static files.
+  animate_emotes?: 'always' | 'hover' | 'never';
+  // Opacity of history rows loaded on join, 0-100. Default 100.
+  backfill_opacity?: number;
   emote_margin?: number; // Horizontal margin around emotes in rem. Negative values overlap. Default 0.125.
   // Height in pixels of the enlarged emote shown in the hover preview card.
   // Default 96 (one step up from the original fixed 64px preview).
@@ -287,8 +293,17 @@ export interface HighlightPhrase {
   cooldown_seconds?: number;
 }
 
+// A user-supplied audio file usable as a highlight sound. `id` is
+// `file:<random>` so it can sit in the same field as the built-in tone ids.
+export interface CustomSound {
+  id: string;
+  name: string;
+  path: string;
+}
+
 export interface ChatHighlightSettings {
   phrases: HighlightPhrase[];
+  custom_sounds?: CustomSound[];
   built_in?: BuiltInHighlightSettings;
   users?: HighlightUser[];
   badges?: HighlightBadge[];
@@ -476,10 +491,28 @@ export interface ChatRenderSettings {
   message_buffer_cap?: number;
 }
 
+export interface ImageUploaderSettings {
+  enabled?: boolean;
+  // A preset id from utils/imageUploadHosts (nuuls, catbox, litterbox, uguu)
+  // or "custom" for the fields below.
+  preset?: string;
+  // Extra text form fields some hosts require, url-encoded "k=v&k2=v2".
+  extra_fields?: string;
+  // Multipart POST target. Chatterino's default is https://i.nuuls.com/upload.
+  url?: string;
+  // Form field name for the file (nuuls: "attachment").
+  form_field?: string;
+  // Dotted path into a JSON response for the link; empty = the body is the link.
+  response_path?: string;
+}
+
 export interface ChatInputSettings {
   // Append an invisible suffix when sending the same message twice in a row,
   // so Twitch's duplicate-message rejection doesn't eat the second send.
   bypass_duplicate?: boolean;
+  // Paste an image into the composer to upload it and insert the link. Off by
+  // default: it sends the image to a third-party host you choose.
+  image_uploader?: ImageUploaderSettings;
   // Ctrl+Enter sends the message AND keeps it in the input box. Plain Enter
   // still sends + clears like normal.
   quick_send?: boolean;
@@ -499,6 +532,9 @@ export interface ChatInputSettings {
   // possible. All default to showing.
   hide_placeholder?: boolean;
   hide_emote_button?: boolean;
+  // Hide the command menu button (the slash-in-a-box left of the emote
+  // button). Typing / still opens the autocomplete.
+  hide_command_button?: boolean;
   hide_points_balance?: boolean;
 }
 
@@ -761,6 +797,35 @@ export interface ChatFilterSettings {
   hidden_users?: string[];
   // Hidden only in one channel: composite channel key -> names.
   per_channel?: Record<string, string[]>;
+  // Phrases that hide a message everywhere. Evaluated in Rust
+  // (services/chat_rules.rs) before the message reaches any window.
+  ignored_phrases?: IgnoredPhrase[];
+}
+
+export interface IgnoredPhrase {
+  id: string;
+  pattern: string;
+  enabled: boolean;
+  case_sensitive?: boolean;
+  whole_word?: boolean;
+  is_regex?: boolean;
+}
+
+// A saved message filter in Chatterino's expression syntax, evaluated in
+// Rust for every message. Panes bind to a filter id and show only rows the
+// engine stamped with it (metadata.filter_ids).
+export interface SavedChatFilter {
+  id: string;
+  name: string;
+  expr: string;
+  enabled: boolean;
+}
+
+// Rust-owned chat query engine settings: saved filters and the per-channel
+// search history cap (default 1000, range 200-5000).
+export interface ChatQuerySettings {
+  filters?: SavedChatFilter[];
+  history_cap?: number;
 }
 
 // Which rows the chat user card shows. Everything defaults to on, so a user
@@ -776,6 +841,11 @@ export interface UserCardSettings {
   show_relative_time?: boolean;
   // Link out to the user's 7TV profile from the card header.
   show_seventv_link?: boolean;
+  // Pronouns from pronouns.alejo.io (one small request per unique user,
+  // cached six hours in the backend). Off by default: it is a third-party call.
+  show_pronouns?: boolean;
+  // Private notes on a user, kept by user id in app data.
+  show_notes?: boolean;
 }
 
 // What the main window's close button does. Mirrors the Rust CloseToTrayMode
@@ -789,12 +859,48 @@ export type CloseToTrayMode = 'with-popouts' | 'always' | 'never';
 // which drops messages it judges low quality so a very fast chat stays readable.
 export type YouTubeChatView = 'live' | 'top';
 
+export interface StreamerModeSettings {
+  // 'auto' watches for OBS / Streamlabs / XSplit / Twitch Studio / vMix.
+  mode?: 'off' | 'on' | 'auto';
+}
+
+export interface ChatOverlaySettings {
+  opacity?: number; // 10-100, default 70
+  width?: number;
+  height?: number;
+}
+
+export interface FullscreenChatSettings {
+  // 'overlay' (default) shows chat over fullscreen video; 'hidden' keeps the
+  // pre-existing behaviour (video covers everything).
+  mode?: 'overlay' | 'hidden';
+  // Background opacity of the overlay column, 0-100. Default 55.
+  opacity?: number;
+  // Column width in px, 240-640. Default 340.
+  width?: number;
+  // Fade the column out with the player controls; hover or focus keeps it.
+  // Default true.
+  auto_hide?: boolean;
+  // Which edge; 'auto' follows chat_placement (bottom docks to the right).
+  side?: 'auto' | 'left' | 'right';
+}
+
 export interface Settings {
   quality: string;
   chat_placement: string;
   // When chat_placement is 'left' or 'right', hide the docked chat and reveal it
   // on hover toward that edge (it slides in and the player flexes to make room).
   chat_auto_hide?: boolean;
+  // Chat laid over the video while the player is fullscreen. Same WebView, no
+  // second window: the docked chat panel is lifted above Plyr's fullscreen
+  // layer as a translucent column.
+  fullscreen_chat?: FullscreenChatSettings;
+  // Transparent always-on-top chat overlay window (#/chat-overlay). Its
+  // opacity and last size; the window itself is opened by the user.
+  chat_overlay?: ChatOverlaySettings;
+  // Streamer mode: hide viewer counts, link previews, restricted users' rows
+  // and mute highlight sounds while broadcasting. Detection runs in Rust.
+  streamer_mode?: StreamerModeSettings;
   accounts: string[];
   current_account: string;
   hide_search_bar_on_startup: boolean;
@@ -871,6 +977,7 @@ export interface Settings {
   // Hiding chat from chosen users and known bots, per channel or everywhere.
   // Only the frontend reads it, so it rides Rust's `extra` catch-all.
   chat_filters?: ChatFilterSettings;
+  chat_query?: ChatQuerySettings;
   // Last 10 polls and predictions you started, newest first, so running the
   // same one again is two clicks in the composer.
   recent_polls?: RecentPollEntry[];
@@ -944,6 +1051,9 @@ export interface ModerationSettings {
   // Reasons offered when banning or timing out from the user card or a
   // message's moderation controls. First entry is the prefilled default.
   saved_ban_reasons?: string[];
+  // Timeout durations (seconds) offered on the hover dock and drag dial.
+  // Default [1, 600, 3600, 86400].
+  timeout_presets?: number[];
 }
 
 export interface ModLogEvent {

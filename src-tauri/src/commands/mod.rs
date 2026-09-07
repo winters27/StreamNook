@@ -11,6 +11,8 @@ pub mod channel_panels;
 pub mod channel_state;
 pub mod chat;
 pub mod chat_identity;
+pub mod chat_query;
+pub mod moderation_tools;
 pub mod components;
 pub mod cosmetics_cache;
 pub mod diagnostic_logging;

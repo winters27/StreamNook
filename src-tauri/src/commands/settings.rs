@@ -136,6 +136,9 @@ pub async fn save_settings(
         settings.drops = state_settings.drops.clone();
         *state_settings = settings.clone();
     }
+    // Recompile chat rules if their groups changed (hash-gated, cheap).
+    crate::services::chat_rules::ChatRules::refresh(&settings);
+    crate::services::streamer_mode::StreamerMode::refresh(&settings);
 
     // Save to our custom location in the same directory as cache
     write_settings_to_disk(&settings)
@@ -234,6 +237,8 @@ pub async fn import_settings(path: String, state: State<'_, AppState>) -> Result
         let mut state_settings = state.settings.lock().unwrap();
         *state_settings = imported.clone();
     }
+    crate::services::chat_rules::ChatRules::refresh(&imported);
+    crate::services::streamer_mode::StreamerMode::refresh(&imported);
     // Immediate direct write, deliberately not debounced: the frontend reloads
     // right after this returns and must find the imported file on disk.
     write_settings_to_disk_sync(&imported)?;

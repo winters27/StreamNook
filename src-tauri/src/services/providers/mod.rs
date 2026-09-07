@@ -233,6 +233,17 @@ pub async fn release_window_claims(window: &str) {
 /// frontend already listens to. The bridge is brought up on demand so an adapter
 /// can publish whether or not a Twitch chat is open.
 pub async fn publish_chat_message(msg: &ChatMessage) {
+    // Same rule engine as the Twitch lane: ignores, highlights, mentions,
+    // saved filters, history ring. Ignored rows skip the bus but still hit
+    // the side-effect lane below (logs are the record).
+    let mut evaluated = msg.clone();
+    let rules = crate::services::chat_rules::ChatRules::snapshot();
+    let verdict = crate::services::chat_rules::ChatRules::evaluate(&mut evaluated, &rules);
+    if verdict.drop {
+        crate::services::irc_service::run_message_side_effects(evaluated);
+        return;
+    }
+    let msg = &evaluated;
     if let Ok(json) = serde_json::to_string(msg) {
         match IrcService::broadcaster().await {
             Some(tx) => {

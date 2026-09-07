@@ -192,12 +192,22 @@ pub struct ChatDesignSettings {
     pub show_timestamps: bool, // Show timestamp next to each message
     #[serde(default)]
     pub show_timestamp_seconds: bool, // Include seconds in timestamps
+    /// "12h" (default) | "24h". Read by irc_service's timestamp formatter.
+    #[serde(default = "default_timestamp_format")]
+    pub timestamp_format: String,
     // The fields below were added to the TS type over time but were missing here,
     // so they silently failed to persist (serde drops unknown fields on save).
     // Each carries a serde default matching the frontend default so old
     // settings.json files (which lack the field) still load.
     #[serde(default = "default_emote_scale")]
     pub emote_scale: f64, // Inline emote size multiplier (0.5-3)
+    /// "always" (default) | "hover" | "never": animated emotes play, play only
+    /// while the row is hovered, or show their first frame. A real CPU lever.
+    #[serde(default = "default_animate_emotes")]
+    pub animate_emotes: String,
+    /// Opacity of backfilled history rows, 0-100 (100 = same as live).
+    #[serde(default = "default_backfill_opacity")]
+    pub backfill_opacity: u32,
     #[serde(default = "default_emote_margin")]
     pub emote_margin: f64, // Horizontal margin around emotes, rem
     #[serde(default = "default_emote_hover_size")]
@@ -298,7 +308,10 @@ impl Default for ChatDesignSettings {
             mention_animation: true,
             show_timestamps: false,
             show_timestamp_seconds: false,
+            timestamp_format: default_timestamp_format(),
             emote_scale: 1.0,
+            animate_emotes: default_animate_emotes(),
+            backfill_opacity: default_backfill_opacity(),
             emote_margin: 0.125,
             emote_hover_size: 96,
             deleted_message_style: "strikethrough".to_string(),
@@ -987,4 +1000,16 @@ mod backup_persistence_tests {
             "an absent provider must not be written back as null"
         );
     }
+}
+
+fn default_timestamp_format() -> String {
+    "12h".to_string()
+}
+
+fn default_animate_emotes() -> String {
+    "always".to_string()
+}
+
+fn default_backfill_opacity() -> u32 {
+    100
 }

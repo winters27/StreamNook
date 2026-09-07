@@ -369,7 +369,21 @@ pub async fn kick_viewer_state(
 pub async fn kick_chat_history(
     channel: String,
 ) -> Vec<crate::models::chat_layout::ChatMessage> {
-    crate::services::providers::kick::chat_history(&channel).await
+    // Backfill goes through the same rule engine as live rows (ignores drop,
+    // highlights stamp), so a hidden user's scrollback is hidden too.
+    let rules = crate::services::chat_rules::ChatRules::snapshot();
+    crate::services::providers::kick::chat_history(&channel)
+        .await
+        .into_iter()
+        .filter_map(|mut m| {
+            if crate::services::chat_rules::ChatRules::evaluate(&mut m, &rules).drop {
+                None
+            } else {
+                m.metadata.from_backfill = true;
+                Some(m)
+            }
+        })
+        .collect()
 }
 
 #[tauri::command]
