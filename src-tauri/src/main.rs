@@ -765,10 +765,13 @@ fn main() {
             // detection is off), Rust can. See services::window_visibility.
             services::window_visibility::start(app_handle.clone());
             services::user_message_history_service::UserMessageHistoryService::set_app_handle(app_handle.clone());
+            // Badge-drop feed socket, owned here so drops still arrive while the
+            // main window is destroyed (live mode, tray). See services::badge_feed.
+            services::badge_feed::start(app_handle.clone());
 
             // Badge-drop detection now lives server-side on the Penrose bot and
-            // is delivered to the app over the badge WebSocket feed (started on
-            // the frontend via badgeSocketService). The old cache-polling
+            // is delivered to the app over the badge WebSocket feed
+            // (services::badge_feed, started above). The old cache-polling
             // detector is retired so drops surface within minutes instead of up
             // to a day late, and so a pushed drop and a locally-detected one can
             // never double-notify.

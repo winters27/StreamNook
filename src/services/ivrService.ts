@@ -52,16 +52,6 @@ interface IVRSubageData {
     } | null;
 }
 
-interface IVRModVipData {
-    id: string;
-    login: string;
-    displayName: string;
-    isMod: boolean;
-    isVip: boolean;
-    modGrantedAt: string | null;
-    vipGrantedAt: string | null;
-}
-
 export interface IVRProfileData {
     createdAt: string | null;
     followingSince: string | null;
@@ -78,28 +68,6 @@ export interface IVRProfileData {
     error: string | null;
 }
 
-export interface IVRRecentMessage {
-    id: string;
-    timestamp: string;
-    user: {
-        id: string;
-        login: string;
-        displayName: string;
-        chatColor: string | null;
-    };
-    message: string;
-    badges: Array<{
-        setID: string;
-        version: string;
-        title: string;
-    }>;
-    emotes: Array<{
-        id: string;
-        name: string;
-        positions: Array<{ start: number; end: number }>;
-    }>;
-}
-
 // Cache for IVR API results
 interface CacheEntry<T> {
     data: T;
@@ -109,7 +77,6 @@ interface CacheEntry<T> {
 const CACHE_DURATION = 5 * 60 * 1000; // 5 minutes cache
 const userDataCache = new Map<string, CacheEntry<IVRUserData | null>>();
 const subageCache = new Map<string, CacheEntry<IVRSubageData | null>>();
-const modVipCache = new Map<string, CacheEntry<IVRModVipData | null>>();
 
 /**
  * Fetches user data from IVR API
@@ -189,134 +156,6 @@ export async function fetchIVRSubage(username: string, channel: string): Promise
 }
 
 /**
- * Fetches mod/VIP status from IVR API
- * @param username - The Twitch username to look up
- * @param channel - The channel to check mod/VIP status for
- * @returns Mod/VIP data or null if not found
- */
-export async function fetchIVRModVip(username: string, channel: string): Promise<IVRModVipData | null> {
-    const cacheKey = `${username.toLowerCase()}:${channel.toLowerCase()}`;
-    const cached = modVipCache.get(cacheKey);
-
-    if (cached && Date.now() - cached.timestamp < CACHE_DURATION) {
-        Logger.debug('[IVR] Using cached mod/vip data for:', username, 'in', channel);
-        return cached.data;
-    }
-
-    try {
-        Logger.debug('[IVR] Fetching mod/vip data for:', username, 'in', channel);
-        const response = await fetch(
-            `https://api.ivr.fi/v2/twitch/modvip/${encodeURIComponent(channel)}?login=${encodeURIComponent(username)}`
-        );
-
-        if (!response.ok) {
-            // 404 means user is not a mod/vip, which is normal
-            if (response.status === 404) {
-                const emptyData: IVRModVipData = {
-                    id: '',
-                    login: username,
-                    displayName: username,
-                    isMod: false,
-                    isVip: false,
-                    modGrantedAt: null,
-                    vipGrantedAt: null
-                };
-                modVipCache.set(cacheKey, { data: emptyData, timestamp: Date.now() });
-                return emptyData;
-            }
-            Logger.error('[IVR] ModVip API error:', response.status, response.statusText);
-            modVipCache.set(cacheKey, { data: null, timestamp: Date.now() });
-            return null;
-        }
-
-        const data = await response.json();
-
-        // API returns an array of mods/vips, find our user
-        if (Array.isArray(data)) {
-            const userData = data.find((u: any) => u.login?.toLowerCase() === username.toLowerCase());
-            if (userData) {
-                const modVipData: IVRModVipData = {
-                    id: userData.id || '',
-                    login: userData.login || username,
-                    displayName: userData.displayName || username,
-                    isMod: userData.isMod || false,
-                    isVip: userData.isVip || false,
-                    modGrantedAt: userData.grantedAt && userData.isMod ? userData.grantedAt : null,
-                    vipGrantedAt: userData.grantedAt && userData.isVip ? userData.grantedAt : null
-                };
-                modVipCache.set(cacheKey, { data: modVipData, timestamp: Date.now() });
-                return modVipData;
-            }
-        }
-
-        // User not in the list means they're not a mod/vip
-        const emptyData: IVRModVipData = {
-            id: '',
-            login: username,
-            displayName: username,
-            isMod: false,
-            isVip: false,
-            modGrantedAt: null,
-            vipGrantedAt: null
-        };
-        modVipCache.set(cacheKey, { data: emptyData, timestamp: Date.now() });
-        return emptyData;
-    } catch (error) {
-        Logger.error('[IVR] Failed to fetch mod/vip data:', error);
-        return null;
-    }
-}
-
-/**
- * Converts IVR recent message to IRC format for display
- * @param msg - IVR message object
- * @param channel - Channel name
- * @param roomId - Channel/room ID
- * @returns IRC-formatted message string
- */
-export function convertIVRMessageToIRC(msg: IVRRecentMessage, channel: string, roomId: string): string {
-    // Build badges string (e.g., "subscriber/12,premium/1")
-    const badgesStr = msg.badges.map(b => `${b.setID}/${b.version}`).join(',');
-
-    // Build emotes string (e.g., "25:0-4,12-16/1902:6-10")
-    const emotesStr = msg.emotes.map(e => {
-        const positions = e.positions.map(p => `${p.start}-${p.end}`).join(',');
-        return `${e.id}:${positions}`;
-    }).join('/');
-
-    // Parse timestamp to tmi-sent-ts format (milliseconds)
-    const timestamp = new Date(msg.timestamp).getTime();
-
-    // Build IRC message format
-    const color = msg.user.chatColor || '';
-    const tags = [
-        `badge-info=`,
-        `badges=${badgesStr}`,
-        `color=${color}`,
-        `display-name=${msg.user.displayName}`,
-        `emotes=${emotesStr}`,
-        `first-msg=0`,
-        `flags=`,
-        `id=${msg.id}`,
-        `mod=0`,
-        `returning-chatter=0`,
-        `room-id=${roomId}`,
-        `subscriber=0`,
-        `tmi-sent-ts=${timestamp}`,
-        `turbo=0`,
-        `user-id=${msg.user.id}`,
-        `user-type=`,
-        `historical=1` // Mark as historical message from IVR
-    ].join(';');
-
-    const prefix = `:${msg.user.login}!${msg.user.login}@${msg.user.login}.tmi.twitch.tv`;
-    const command = `PRIVMSG #${channel}`;
-    const content = `:${msg.message}`;
-
-    return `@${tags} ${prefix} ${command} ${content}`;
-}
-
-/**
  * Formats a date string into a human-readable format
  * @param dateString - ISO date string
  * @param includeRelative - Whether to include relative time (e.g., "5 years ago")
@@ -386,17 +225,15 @@ export function formatSubTenure(streak: number | null, cumulative: number | null
 export function clearIVRCache(): void {
     userDataCache.clear();
     subageCache.clear();
-    modVipCache.clear();
     Logger.debug('[IVR] Cache cleared');
 }
 
 /**
  * Gets the current cache size
  */
-export function getIVRCacheSize(): { users: number; subages: number; modVips: number } {
+export function getIVRCacheSize(): { users: number; subages: number } {
     return {
         users: userDataCache.size,
         subages: subageCache.size,
-        modVips: modVipCache.size,
     };
 }
