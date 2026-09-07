@@ -133,7 +133,21 @@ function Check({ checked, indeterminate }: { checked: boolean; indeterminate?: b
   );
 }
 
-export function BlendedChatPane({ channels }: { channels: BlendedChannel[] }) {
+export function BlendedChatPane({
+  channels,
+  mode = 'all',
+  readOnly = false,
+  transparent = false,
+}: {
+  channels: BlendedChannel[];
+  /** 'mentions' keeps only rows the Rust rule engine stamped as a mention,
+   *  a reply to us, or a highlight match. */
+  mode?: 'all' | 'mentions';
+  /** No composer: the overlay window is a viewer, not a place to type. */
+  readOnly?: boolean;
+  /** No own background: the host paints the (glass) ground. */
+  transparent?: boolean;
+}) {
   // Re-render when any of THIS blend's sources change. Summing the per-channel
   // counters (instead of the global revision) keeps the O(all sources) reconcile
   // below from re-running on flushes of channels this pane doesn't show.
@@ -313,6 +327,17 @@ export function BlendedChatPane({ channels }: { channels: BlendedChannel[] }) {
   // memo by changing every tick.
   const messagesRef = useRef(messages);
   messagesRef.current = messages;
+
+  const shownMessages = useMemo(() => {
+    if (mode !== 'mentions') return messages;
+    return messages.filter(
+      (m) =>
+        typeof m !== 'string' &&
+        (m.metadata?.is_mentioned === true ||
+          m.metadata?.is_reply_to_me === true ||
+          !!m.metadata?.highlight),
+    );
+  }, [messages, mode]);
 
   const getMessageId = useCallback(
     (m: string | BackendChatMessage) => (typeof m === 'string' ? m.match(/id=([^;]+)/)?.[1] ?? null : m.id),
@@ -702,7 +727,7 @@ export function BlendedChatPane({ channels }: { channels: BlendedChannel[] }) {
       : `${selected.length} of ${channels.length} chats`;
 
   return (
-    <div ref={paneRef} className="flex h-full min-h-0 min-w-0 flex-1 flex-col bg-secondary">
+    <div ref={paneRef} className={`flex h-full min-h-0 min-w-0 flex-1 flex-col ${transparent ? 'bg-transparent' : 'bg-secondary'}`}>
       {[...hypeTrains.values()].map((t) => (
         <div
           key={t.broadcaster_user_login}
@@ -719,7 +744,7 @@ export function BlendedChatPane({ channels }: { channels: BlendedChannel[] }) {
       ))}
       <div ref={setFeedEl} className="relative min-h-0 flex-1 overflow-hidden">
         <ChatMessageList
-          messages={messages}
+          messages={shownMessages}
           renderToken={revision}
           isPaused={paused}
           onScroll={onScroll}
@@ -734,7 +759,7 @@ export function BlendedChatPane({ channels }: { channels: BlendedChannel[] }) {
           clearedUserContexts={clearedUserContexts}
           emotes={null}
           getMessageId={getMessageId}
-          showSource
+          showSource={channels.length > 1}
         />
         {/* Identical to the core app's paused indicator (ChatWidget) so the resume
             affordance reads the same everywhere. */}
@@ -757,6 +782,7 @@ export function BlendedChatPane({ channels }: { channels: BlendedChannel[] }) {
         )}
       </div>
 
+      {!readOnly && (
       <div className="border-t border-white/5 p-2">
         {replyingTo && (
           <div className="mb-2 flex items-center gap-2 rounded-md border border-white/10 bg-white/5 px-2.5 py-1.5">
@@ -917,6 +943,7 @@ export function BlendedChatPane({ channels }: { channels: BlendedChannel[] }) {
           </Tooltip>
         </div>
       </div>
+      )}
     </div>
   );
 }

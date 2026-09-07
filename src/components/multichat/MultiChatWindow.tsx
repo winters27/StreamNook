@@ -71,11 +71,25 @@ import {
   OLED_THEME_ID,
 } from '../../themes';
 import { listenForSettingsUpdates } from '../../utils/settingsBroadcast';
-import { MULTICHAT_BASE_WIDTH, MULTICHAT_GEOMETRY_KEY } from '../../utils/multichatWindow';
+import { MULTICHAT_BASE_WIDTH, MULTICHAT_GEOMETRY_KEY, openMultiChatWindow } from '../../utils/multichatWindow';
 import { Tooltip } from '../ui/Tooltip';
 import { Logger } from '../../utils/logger';
 import type { TwitchStream } from '../../types';
 import streamNookLogoUrl from '../../assets/streamnook-logo-128.webp';
+import SplitLayout from './SplitLayout';
+import { registerPaneFocusController } from '../../keybindings/paneFocusController';
+import {
+  columnCount,
+  findLeaf,
+  fromColumns,
+  isSplitNode,
+  leafCount,
+  leaves,
+  removeKey,
+  setLeafKey,
+  showsKey,
+  type SplitNode,
+} from '../../utils/splitTree';
 
 interface ChannelEntry {
   channel: string;
@@ -86,6 +100,9 @@ interface ChannelEntry {
    *  for tab labels and the popout title bar. Falls back to `channel` if a
    *  lookup hasn't resolved yet — corrected on next refresh. */
   channelName: string;
+  /** Saved message filter (settings.chat_query.filters id) bound to this
+   *  tab's pane, persisted with the window state. */
+  filterId?: string | null;
 }
 
 /** Composite identity for a tab. Provider-namespaced (`twitch:foo` / `kick:foo`)
@@ -145,6 +162,13 @@ interface PersistedWindowState {
   showActivityFeed?: boolean;
   /** Whether the merged "blended" chat view is active. */
   isBlendedMode?: boolean;
+  /** Whether the mentions feed (every open source, mentions/replies/highlights
+   *  only, as stamped by the Rust rule engine) is active. */
+  isMentionsMode?: boolean;
+  /** Custom split layout (utils/splitTree). Null means the column presets. */
+  layoutTree?: SplitNode | null;
+  /** Which pane owns the keyboard (mod keys, tab clicks land here). */
+  focusedLeafId?: string | null;
 }
 
 const DEFAULT_MOD_LOGS_HEIGHT = 240;
@@ -265,6 +289,13 @@ function loadPersistedState(windowId: string | null): PersistedWindowState | nul
           typeof (parsed as any).isBlendedMode === 'boolean'
             ? (parsed as any).isBlendedMode
             : undefined,
+        isMentionsMode:
+          typeof (parsed as any).isMentionsMode === 'boolean'
+            ? (parsed as any).isMentionsMode
+            : undefined,
+        layoutTree: isSplitNode((parsed as any).layoutTree) ? ((parsed as any).layoutTree as SplitNode) : undefined,
+        focusedLeafId:
+          typeof (parsed as any).focusedLeafId === 'string' ? (parsed as any).focusedLeafId : undefined,
       };
     }
     return null;
@@ -283,6 +314,9 @@ function persistState(
   activityHeight: number,
   showActivityFeed: boolean,
   isBlendedMode: boolean,
+  isMentionsMode: boolean,
+  layoutTree: SplitNode | null,
+  focusedLeafId: string | null,
 ) {
   const key = storageKey(windowId);
   if (!key) return;
@@ -295,6 +329,9 @@ function persistState(
       activityHeight,
       showActivityFeed,
       isBlendedMode,
+      isMentionsMode,
+      layoutTree,
+      focusedLeafId,
     };
     localStorage.setItem(key, JSON.stringify(payload));
   } catch (err) {
@@ -419,6 +456,9 @@ export default function MultiChatWindow() {
     // Restore blended mode only on a pure reopen — a `replace` seed (popping out
     // MultiNook tiles) is asking for a fresh split layout, not the merged feed.
     const isBlendedMode = params.replace ? false : (persisted?.isBlendedMode ?? false);
+    const isMentionsMode = params.replace ? false : (persisted?.isMentionsMode ?? false);
+    const layoutTree: SplitNode | null = params.replace ? null : (persisted?.layoutTree ?? null);
+    const focusedLeafId: string | null = persisted?.focusedLeafId ?? null;
 
     // Seed channels from the URL. A multi-channel list (popping out all MultiNook
     // tiles) takes precedence over the single-channel params. Restored tabs stay;
@@ -463,6 +503,9 @@ export default function MultiChatWindow() {
         activityHeight,
         showActivityFeed,
         isBlendedMode,
+        isMentionsMode,
+        layoutTree,
+        focusedLeafId,
       };
     }
 
@@ -475,6 +518,9 @@ export default function MultiChatWindow() {
       activityHeight,
       showActivityFeed,
       isBlendedMode,
+      isMentionsMode,
+      layoutTree,
+      focusedLeafId,
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -482,6 +528,42 @@ export default function MultiChatWindow() {
   const [channels, setChannels] = useState<ChannelEntry[]>(initial.channels);
   const [layoutMode, setLayoutMode] = useState<LayoutMode>(initial.layoutMode);
   const [isBlendedMode, setIsBlendedMode] = useState(initial.isBlendedMode);
+  const [isMentionsMode, setIsMentionsMode] = useState(initial.isMentionsMode);
+  // Custom split layout. Null = the column presets (layoutMode). The refs let
+  // selectChannel read the live tree without re-creating its callback.
+  const [layoutTree, setLayoutTree] = useState<SplitNode | null>(initial.layoutTree);
+  const [focusedLeafId, setFocusedLeafId] = useState<string | null>(initial.focusedLeafId);
+  const layoutTreeRef = useRef<SplitNode | null>(initial.layoutTree);
+  const focusedLeafRef = useRef<string | null>(initial.focusedLeafId);
+  // A closed pane can leave the focus id dangling; resolve to the first leaf
+  // at read time instead of writing state from an effect.
+  const effectiveFocusedLeafId = useMemo(() => {
+    if (!layoutTree) return focusedLeafId;
+    if (focusedLeafId && findLeaf(layoutTree, focusedLeafId)) return focusedLeafId;
+    return leaves(layoutTree)[0]?.id ?? null;
+  }, [layoutTree, focusedLeafId]);
+  // Keyboard pane cycling (Ctrl+Alt+Left/Right) through the keybinding engine.
+  useEffect(() => {
+    const step = (dir: 1 | -1) => {
+      const tree = layoutTreeRef.current;
+      if (!tree) return;
+      const ls = leaves(tree);
+      if (ls.length < 2) return;
+      const idx = Math.max(0, ls.findIndex((l) => l.id === focusedLeafRef.current));
+      const next = ls[(idx + dir + ls.length) % ls.length];
+      setFocusedLeafId(next.id);
+    };
+    registerPaneFocusController({
+      isAvailable: () => !!layoutTreeRef.current && leaves(layoutTreeRef.current).length > 1,
+      focusNext: () => step(1),
+      focusPrev: () => step(-1),
+    });
+    return () => registerPaneFocusController(null);
+  }, []);
+  useEffect(() => {
+    layoutTreeRef.current = layoutTree;
+    focusedLeafRef.current = effectiveFocusedLeafId;
+  }, [layoutTree, effectiveFocusedLeafId]);
 
   // The active tab, identified by its composite provider:channel key (NOT the
   // bare channel — see `entryKey`). Two same-named sources on different
@@ -743,6 +825,9 @@ export default function MultiChatWindow() {
       activityHeight,
       showActivityFeed,
       isBlendedMode,
+      isMentionsMode,
+      layoutTree,
+      focusedLeafId,
     );
   }, [
     params.id,
@@ -753,6 +838,9 @@ export default function MultiChatWindow() {
     activityHeight,
     showActivityFeed,
     isBlendedMode,
+    isMentionsMode,
+    layoutTree,
+    focusedLeafId,
   ]);
 
   // Persist the window's position + size (debounced) so a reopen lands on the same
@@ -765,6 +853,9 @@ export default function MultiChatWindow() {
       try {
         const { getCurrentWindow } = await import('@tauri-apps/api/window');
         const win = getCurrentWindow();
+        // Only the default window owns the shared geometry slot; extra
+        // windows cascade off it at spawn and never overwrite it.
+        if (params.id && params.id !== 'default') return;
         const save = () => {
           if (timer) clearTimeout(timer);
           timer = setTimeout(async () => {
@@ -802,7 +893,12 @@ export default function MultiChatWindow() {
   // Blended mode is a single merged feed, not N side-by-side columns, so it must not
   // grow the window one base-width per channel (that's what pushed the composer off a
   // narrow/vertical monitor).
-  const visibleColumns = isBlendedMode ? 1 : Math.min(channels.length, layoutMode);
+  const visibleColumns =
+    isBlendedMode || isMentionsMode
+      ? 1
+      : layoutTree
+        ? Math.min(4, columnCount(layoutTree))
+        : Math.min(channels.length, layoutMode);
   useEffect(() => {
     if (visibleColumns < 1) return;
     let cancelled = false;
@@ -1188,6 +1284,8 @@ export default function MultiChatWindow() {
   }, []);
 
   const removeChannel = useCallback((key: string) => {
+    // Panes showing the removed channel close; the last pane follows the tabs.
+    setLayoutTree((t) => (t ? removeKey(t, key) : t));
     setChannels((prev) => {
       const next = prev.filter((c) => entryKey(c) !== key);
       // If we removed the active tab, pick a neighbor.
@@ -1218,6 +1316,18 @@ export default function MultiChatWindow() {
     (key: string) => {
       setActiveKey(key);
       setIsBlendedMode(false);
+      setIsMentionsMode(false);
+      // Custom splits: a tab click lands in the focused pane unless a pane
+      // already shows that channel (or follows the active tab). No hoisting.
+      const tree = layoutTreeRef.current;
+      if (tree) {
+        if (!showsKey(tree, key, key)) {
+          const focused = focusedLeafRef.current;
+          const target = focused && findLeaf(tree, focused) ? focused : leaves(tree)[0].id;
+          setLayoutTree(setLeafKey(tree, target, key));
+        }
+        return;
+      }
       if (layoutMode > 1) {
         setChannels((prev) => {
           const idx = prev.findIndex((c) => entryKey(c) === key);
@@ -1526,10 +1636,17 @@ export default function MultiChatWindow() {
 
   // Composite keys of the currently-rendered channels (provider-namespaced), so
   // the tab strip can mark the right tabs visible without bare-name collisions.
-  const visibleSet = useMemo(
-    () => new Set(visibleChannels.map(entryKey)),
-    [visibleChannels],
-  );
+  const visibleSet = useMemo(() => {
+    if (layoutTree) {
+      const set = new Set<string>();
+      for (const l of leaves(layoutTree)) {
+        const k = l.key ?? activeKey;
+        if (k) set.add(k);
+      }
+      return set;
+    }
+    return new Set(visibleChannels.map(entryKey));
+  }, [visibleChannels, layoutTree, activeKey]);
 
   // Composite source keys for this window (provider-namespaced). Every source is
   // Twitch today; Phase-1 providers will carry entry.provider instead.
@@ -1571,7 +1688,7 @@ export default function MultiChatWindow() {
   //   - split mode:     "MultiChat · N channels"
   const heading = useMemo(() => {
     if (channels.length === 0) return 'MultiChat';
-    if (layoutMode > 1) {
+    if (layoutMode > 1 || (layoutTree && leafCount(layoutTree) > 1)) {
       return `MultiChat · ${channels.length} channel${channels.length === 1 ? '' : 's'}`;
     }
     const active = channels.find((c) => entryKey(c) === activeKey);
@@ -1859,10 +1976,34 @@ export default function MultiChatWindow() {
         layoutMode={layoutMode}
         onLayoutModeChange={(m) => {
           setLayoutMode(m);
+          setLayoutTree(null);
           setIsBlendedMode(false);
+          setIsMentionsMode(false);
+        }}
+        isSplitMode={!!layoutTree && !isBlendedMode && !isMentionsMode}
+        onToggleSplits={() => {
+          setIsBlendedMode(false);
+          setIsMentionsMode(false);
+          if (layoutTree) {
+            setLayoutTree(null);
+            return;
+          }
+          // Seed from what is on screen: tabs mode becomes one pane that
+          // follows the active tab; a column preset becomes those columns.
+          const seeded = layoutMode === 1 ? fromColumns([null]) : fromColumns(visibleChannels.map(entryKey));
+          setLayoutTree(seeded);
+          setFocusedLeafId(leaves(seeded)[0].id);
         }}
         isBlendedMode={isBlendedMode}
-        onToggleBlended={() => setIsBlendedMode((v) => !v)}
+        onToggleBlended={() => {
+          setIsBlendedMode((v) => !v);
+          setIsMentionsMode(false);
+        }}
+        isMentionsMode={isMentionsMode}
+        onToggleMentions={() => {
+          setIsMentionsMode((v) => !v);
+          setIsBlendedMode(false);
+        }}
         canSplit={channels.length > 0}
         // Restore is only meaningful when this popout owns exactly one channel
         // — otherwise we'd have to pick which one to hand back, which the user
@@ -1913,6 +2054,18 @@ export default function MultiChatWindow() {
           // event won't suppress main's chat anymore for it.
           removeChannel(key);
         }}
+        onMoveToNewWindow={async (key) => {
+          const entry = channels.find((c) => entryKey(c) === key);
+          if (!entry || (entry.provider ?? 'twitch') !== 'twitch') return;
+          await openMultiChatWindow({
+            newWindow: true,
+            channel: entry.channel,
+            channelId: entry.channelId ?? undefined,
+            channelName: entry.channelName,
+          });
+          removeChannel(key);
+        }}
+        onNewWindow={() => void openMultiChatWindow({ newWindow: true })}
         onReorder={(source, target) => {
           setChannels((prev) => {
             const fromIdx = prev.findIndex((c) => entryKey(c) === source);
@@ -2156,6 +2309,15 @@ export default function MultiChatWindow() {
               onApplyGoLive={applyGoLive}
               onStartSetup={startGoLiveSetup}
             />
+          ) : isMentionsMode ? (
+            // Mentions feed: every open source, only the rows the Rust rule
+            // engine stamped as a mention, a reply to us, or a highlight match.
+            <ErrorBoundary
+              componentName="Mentions feed"
+              resetKeys={[channels.map((c) => `${c.provider ?? 'twitch'}:${c.channel}`).join('|')]}
+            >
+              <BlendedChatPane channels={channels} mode="mentions" />
+            </ErrorBoundary>
           ) : isBlendedMode ? (
             // Blended mode: every open source merged into one time-ordered feed
             // with a per-message provider stripe. Ignores tabs/split layout. Wrapped so
@@ -2167,6 +2329,40 @@ export default function MultiChatWindow() {
             >
               <BlendedChatPane channels={channels} />
             </ErrorBoundary>
+          ) : layoutTree ? (
+            // Custom splits: a binary tree of panes (utils/splitTree). Leaves
+            // may repeat a channel; a null leaf follows the active tab.
+            <SplitLayout
+              tree={layoutTree}
+              onChange={(next) => setLayoutTree(next)}
+              options={channels.map((c) => ({ value: entryKey(c), label: c.channelName || c.channel }))}
+              activeLabel="Active tab"
+              focusedLeafId={effectiveFocusedLeafId}
+              onFocusLeaf={setFocusedLeafId}
+              renderLeaf={(l) => {
+                const key = l.key ?? activeKey;
+                const entry = channels.find((c) => entryKey(c) === key) ?? channels[0];
+                if (!entry) return null;
+                const k = entryKey(entry);
+                return (
+                  <ErrorBoundary componentName={`${entry.channelName} chat`} resetKeys={[l.id, k]}>
+                    <MultiChatPane
+                      channel={entry.channel}
+                      channelId={entry.channelId}
+                      channelName={entry.channelName}
+                      provider={entry.provider}
+                      isActive={l.id === effectiveFocusedLeafId}
+                      filterId={entry.filterId ?? null}
+                      onFilterIdChange={(id) => {
+                        setChannels((prev) =>
+                          prev.map((e) => (entryKey(e) === k ? { ...e, filterId: id } : e)),
+                        );
+                      }}
+                    />
+                  </ErrorBoundary>
+                );
+              }}
+            />
           ) : visibleChannels.length === 0 ? null : (
             // Render the visible channels side-by-side. Tabs mode renders one;
             // split modes render 2–4 columns. Inactive/hidden channels stay
@@ -2186,6 +2382,13 @@ export default function MultiChatWindow() {
                     channelName={entry.channelName}
                     provider={entry.provider}
                     isActive={entryKey(entry) === activeKey}
+                    filterId={entry.filterId ?? null}
+                    onFilterIdChange={(id) => {
+                      const key = entryKey(entry);
+                      setChannels((prev) =>
+                        prev.map((e) => (entryKey(e) === key ? { ...e, filterId: id } : e)),
+                      );
+                    }}
                   />
                 </ErrorBoundary>
               </div>
@@ -2532,6 +2735,10 @@ interface TitleBarProps {
   onLayoutModeChange: (mode: LayoutMode) => void;
   isBlendedMode: boolean;
   onToggleBlended: () => void;
+  isMentionsMode: boolean;
+  onToggleMentions: () => void;
+  isSplitMode: boolean;
+  onToggleSplits: () => void;
   onRestore: () => void;
   onClose: () => void;
   onMinimize: () => void;
@@ -2548,6 +2755,10 @@ function TitleBar({
   layoutMode,
   isBlendedMode,
   onToggleBlended,
+  isMentionsMode,
+  onToggleMentions,
+  isSplitMode,
+  onToggleSplits,
   canSplit,
   canRestore,
   showModLogs,
@@ -2625,6 +2836,13 @@ function TitleBar({
           data-tauri-drag-region="false"
         >
           <LayoutToggleButton
+            label="Mentions: only messages that mention you, reply to you, or match a highlight"
+            active={isMentionsMode}
+            onClick={onToggleMentions}
+          >
+            <span className="text-[12px] font-bold leading-none">@</span>
+          </LayoutToggleButton>
+          <LayoutToggleButton
             label="Blend all sources into one feed"
             active={isBlendedMode}
             onClick={onToggleBlended}
@@ -2637,31 +2855,41 @@ function TitleBar({
           <span className="mx-0.5 h-4 w-px bg-borderSubtle" aria-hidden />
           <LayoutToggleButton
             label="Tabs"
-            active={layoutMode === 1 && !isBlendedMode}
+            active={layoutMode === 1 && !isBlendedMode && !isMentionsMode && !isSplitMode}
             onClick={() => onLayoutModeChange(1)}
           >
             <LayoutIcon mode={1} />
           </LayoutToggleButton>
           <LayoutToggleButton
             label="2 columns"
-            active={layoutMode === 2 && !isBlendedMode}
+            active={layoutMode === 2 && !isBlendedMode && !isSplitMode}
             onClick={() => onLayoutModeChange(2)}
           >
             <LayoutIcon mode={2} />
           </LayoutToggleButton>
           <LayoutToggleButton
             label="3 columns"
-            active={layoutMode === 3 && !isBlendedMode}
+            active={layoutMode === 3 && !isBlendedMode && !isSplitMode}
             onClick={() => onLayoutModeChange(3)}
           >
             <LayoutIcon mode={3} />
           </LayoutToggleButton>
           <LayoutToggleButton
             label="4 columns"
-            active={layoutMode === 4 && !isBlendedMode}
+            active={layoutMode === 4 && !isBlendedMode && !isSplitMode}
             onClick={() => onLayoutModeChange(4)}
           >
             <LayoutIcon mode={4} />
+          </LayoutToggleButton>
+          <LayoutToggleButton
+            label="Custom splits: split any pane right or down, drag the dividers, show a channel twice"
+            active={isSplitMode}
+            onClick={onToggleSplits}
+          >
+            <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round">
+              <rect x="3" y="3" width="18" height="18" rx="2" />
+              <path d="M11 3v18M11 13h10" />
+            </svg>
           </LayoutToggleButton>
         </div>
       )}
@@ -2840,6 +3068,10 @@ interface TabStripProps {
   onSelect: (channel: string) => void;
   onRemove: (channel: string) => void;
   onWatchInMain: (channel: string) => void;
+  /** Move a Twitch tab into a brand-new MultiChat window. */
+  onMoveToNewWindow: (channel: string) => void;
+  /** Open an empty extra MultiChat window. */
+  onNewWindow: () => void;
   onReorder: (sourceChannel: string, targetChannel: string) => void;
   onAddClick: () => void;
   goLiveHasProfile: boolean;
@@ -2872,6 +3104,8 @@ function TabStrip({
   onSelect,
   onRemove,
   onWatchInMain,
+  onMoveToNewWindow,
+  onNewWindow,
   onReorder,
   onAddClick,
   goLiveHasProfile,
@@ -2976,6 +3210,25 @@ function TabStrip({
             />
           );
         })}
+        <Tooltip content="New MultiChat window. Each window is its own renderer, about 150 MB; splits inside one window are free." side="bottom">
+          <button
+            type="button"
+            onClick={onNewWindow}
+            aria-label="New MultiChat window"
+            className="glass-button flex h-8 w-8 portrait:h-9 portrait:w-9 items-center justify-center text-textSecondary hover:text-accent"
+            style={{
+              borderRadius: '8px',
+              backdropFilter: 'none',
+              WebkitBackdropFilter: 'none',
+              transition: 'color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease',
+            }}
+          >
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <rect x="3" y="5" width="13" height="13" rx="2" />
+              <path d="M8 5V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-1" />
+            </svg>
+          </button>
+        </Tooltip>
         <button
           type="button"
           onClick={onAddClick}
@@ -3008,6 +3261,13 @@ function TabStrip({
           onClose={() => setContextMenu(null)}
           onWatchInMain={() => {
             onWatchInMain(contextMenu.channel);
+            setContextMenu(null);
+          }}
+          canMoveToNewWindow={
+            (channels.find((c) => entryKey(c) === contextMenu.channel)?.provider ?? 'twitch') === 'twitch'
+          }
+          onMoveToNewWindow={() => {
+            onMoveToNewWindow(contextMenu.channel);
             setContextMenu(null);
           }}
           onRemove={() => {
@@ -3151,6 +3411,8 @@ interface TabContextMenuProps {
   channelName: string;
   onClose: () => void;
   onWatchInMain: () => void;
+  canMoveToNewWindow: boolean;
+  onMoveToNewWindow: () => void;
   onRemove: () => void;
 }
 
@@ -3159,6 +3421,8 @@ function TabContextMenu({
   channelName,
   onClose,
   onWatchInMain,
+  canMoveToNewWindow,
+  onMoveToNewWindow,
   onRemove,
 }: TabContextMenuProps) {
   // Clamp position to viewport so the menu never opens partially off-screen
@@ -3208,6 +3472,19 @@ function TabContextMenu({
           </svg>
           <span>Watch in main app</span>
         </button>
+        {canMoveToNewWindow && (
+          <button
+            type="button"
+            onClick={onMoveToNewWindow}
+            className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium text-textSecondary hover:text-accent hover:bg-glass-hover transition-all"
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+              <rect x="3" y="5" width="13" height="13" rx="2" />
+              <path d="M8 5V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-1" />
+            </svg>
+            <span>Move to new window</span>
+          </button>
+        )}
         <button
           type="button"
           onClick={onRemove}
