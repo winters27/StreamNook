@@ -1,3 +1,36 @@
+## [8.6.0] - 2026-09-07
+
+## 🎉 New: Chat grows up
+> The biggest chat release StreamNook has had. Search any chat, save filters, hide phrases, review AutoMod holds without leaving chat, split MultiChat however you like, float a see-through chat over a fullscreen game, paste a screenshot straight into your message, and browse every command with plain explanations and examples. The AutoMod queue needs two new Twitch permissions, so StreamNook asks you to sign in once more on first launch.
+
+![Chat grows up](https://raw.githubusercontent.com/winters27/StreamNook/main/.github/assets/release-8.6.0-chat-grows-up.webp)
+
+---
+
+### ✨ Features
+- **Paste an image to upload it.** Copy a screenshot, press Ctrl+V in the chat box, and the link lands in your message. Choose i.nuuls.com, catbox, Litterbox, uguu or your own host; links from all of them render as image cards in chat.
+- **Search any chat with Ctrl+F.** Searches the recent history of that chat, with filters like from:, badge:, has:link and regex:, and a result list you can step through.
+- **Saved filters and ignored phrases.** Build reusable chat filters from eight presets or short expressions of your own, and pick one from a chip above chat. Phrases you never want to see are dropped before they reach the screen.
+- **Highlights, mentions and filters are decided in one place.** Every message is checked once, in Rust, so popouts and MultiChat panes always agree, and custom highlight sounds can be your own files.
+- **AutoMod queue inside chat.** Held messages appear in a strip above the message box with Allow and Deny, and restricted users show up marked so moderators can act on them.
+- **Streamer mode.** Turn it on, or let StreamNook notice OBS and friends, and chat hides link previews, viewer counts, sounds and low-trust users while you are live.
+- **MultiChat splits, mentions feed and more windows.** Arrange panes in any split layout, open a mentions-only feed, spin up extra MultiChat windows, and move focus between panes with Ctrl+Alt+Arrows.
+- **Chat over a fullscreen stream, and a floating see-through chat.** Fullscreen keeps chat readable over the video, and /overlay opens an always-on-top glass chat you can park over a game, fade to invisible, and make click-through (Ctrl+Alt+N, or the tray).
+- **A command menu that explains itself.** The new button left of the emote picker lists every command, what it does, who can use it, and examples you can click into the box. Commands you cannot run in this channel show locked, and there is a larger reference view when you want more room.
+- **New slash commands.** /r replies to your last whisper, /clip, /chatters, /ignore, /uptime, /overlay, /settitle and /setgame, and /popup for a new MultiChat window.
+- **Pronouns and private notes on user cards.** Pronouns come from pronouns.alejo.io when you opt in; notes stay on your PC.
+- **12-hour or 24-hour timestamps, animated emotes on hover only, dimmer backfill.** Three small chat design options people kept asking for.
+- **See every StreamNook badge and Atmosphere in profile customization,** with the ones you have not earned yet shown locked.
+- **Moltorino supporter badges**, and a Chat Clients gallery in the Badges window showing the badges every third-party client hands its developers and supporters.
+- **Settings explain themselves.** Every row now says what you get and what it costs in plain language, long tabs have a section rail that follows you as you scroll, and image uploads have their own section.
+
+### 🐛 Bug Fixes
+- **Community badges that are taken back now disappear right away** instead of lingering until the next restart.
+- **Release posts in Discord now carry the release picture.**
+
+### 🔧 Maintenance
+- **A resource line in the log every minute** breaks memory down by process (app, browser, GPU, each window, plugins), so a memory report can be read off the log.
+
 ## [8.5.5] - 2026-09-06
 
 ## 🎉 StreamNook Community Month is on
