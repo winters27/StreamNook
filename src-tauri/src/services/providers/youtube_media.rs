@@ -1392,71 +1392,47 @@ impl YouTubeSource {
         // from your favorite YouTube channels"), verified against a live anonymous
         // request, so that marker is the honest signal.
         let mut rows = rows_from_renderers(&json);
-        // How many CONTENT items the feed carried, live or not.
-        //
-        // This distinction is the whole ballgame. `rows` holds only LIVE rows —
-        // `row_from_lockup` returns None for anything without a live badge — so
-        // `rows.is_empty()` means "nothing live right now", NOT "no content".
-        // Treating those as the same thing declared a perfectly healthy feed to be
-        // a dead session (YouTube puts promo renderers in signed-IN feeds too),
-        // which then re-harvested cookies, returned an error, and dropped the
-        // caller onto a 25-of-254 `live_check` that reported nobody live at all.
-        let content_items = count_feed_items(&json);
-        // Say what actually came back, every time, before deciding what it means.
-        // The previous version only logged on one branch, so the case that was
-        // firing in the field produced no evidence at all.
-        log::info!(
-            "[YouTube] subscriptions feed: {} content item(s), {} live, promo={}, has_contents={}, bytes~{}; renderers: {}",
-            content_items,
-            rows.len(),
-            contains_key(&json, "backgroundPromoRenderer"),
-            json.get("contents").is_some(),
-            body.len(),
-            renderer_histogram(&json),
-        );
+        let bytes = body.len();
         drop(body);
-        if content_items == 0 && contains_key(&json, "backgroundPromoRenderer") {
-            // Decisive: ask a DIFFERENT authenticated endpoint whether these exact
-            // cookies work. account_menu uses the same headers and the same client
-            // block, so the two answers separate the only two possibilities:
-            //   Some(true)  -> auth is fine; the SUBSCRIPTIONS browse is the problem
-            //                  (client version, browseId, or a shape change)
-            //   Some(false) -> the cookies really are rejected; reconnect is needed
-            //   None        -> inconclusive (offline, or an unparsed 200)
-            let verdict = crate::services::youtube_auth_service::validate_session().await;
-            log::warn!(
-                "[YouTube] empty subscriptions feed with a promo shell. Auth probe on \
-                 account_menu says: {}",
-                match verdict {
-                    Some(true) => "AUTH OK — the session works, so this is the browse, not the login",
-                    Some(false) => "REJECTED — the session is genuinely dead; reconnect YouTube",
-                    None => "inconclusive",
-                }
-            );
-            // Signed-out content behind a 200. The WebView2 profile is usually still
-            // logged in and only the harvested cookies went stale, so try to recover
-            // them; the next sweep then succeeds on its own.
-            crate::services::youtube_auth_service::recover_stale_session().await;
-            return Err(anyhow!(
-                "YouTube didn't accept the session (sign in to YouTube again)"
-            ));
-        }
+        // One walk of the tree per poll. The item count, the promo probe and
+        // the renderer histogram are diagnostics for the empty-feed case; the
+        // old code walked the whole tree four times every two minutes and
+        // logged a histogram at INFO each time. On 2026-09-06 the decoded feed
+        // was ~7.2 MB per poll (112 subscriptions), so that was the largest
+        // idle cost in the app for nothing anyone read.
         if rows.is_empty() {
-            // Nothing live is a legitimate answer, but so is "the feed came back in
-            // a shape this parser doesn't read", and the two are indistinguishable
-            // from an empty Vec. This response cannot be reproduced without the
-            // user's own session, so it reports its own shape instead: the renderer
-            // histogram says at a glance whether items were present under a name we
-            // don't handle, whether the feed is continuation-loaded (containers but
-            // no items), or whether the account genuinely has nothing live.
+            let content_items = count_feed_items(&json);
+            let promo = contains_key(&json, "backgroundPromoRenderer");
             log::info!(
-                "[YouTube] subscriptions feed carried {} item(s), none live; renderers seen: {}",
+                "[YouTube] subscriptions feed: {} content item(s), none live, promo={}, has_contents={}, bytes~{}; renderers: {}",
                 content_items,
+                promo,
+                json.get("contents").is_some(),
+                bytes,
                 renderer_histogram(&json),
             );
+            if content_items == 0 && promo {
+                let verdict = crate::services::youtube_auth_service::validate_session().await;
+                log::warn!(
+                    "[YouTube] empty subscriptions feed with a promo shell. Auth probe on \
+                     account_menu says: {}",
+                    match verdict {
+                        Some(true) => "AUTH OK — the session works, so this is the browse, not the login",
+                        Some(false) => "REJECTED — the session is genuinely dead; reconnect YouTube",
+                        None => "inconclusive",
+                    }
+                );
+                // Signed-out content behind a 200. The WebView2 profile is usually still
+                // logged in and only the harvested cookies went stale, so try to recover
+                // them; the next sweep then succeeds on its own.
+                crate::services::youtube_auth_service::recover_stale_session().await;
+                return Err(anyhow!(
+                    "YouTube didn't accept the session (sign in to YouTube again)"
+                ));
+            }
+        } else {
+            log::debug!("[YouTube] subscriptions feed: {} live, bytes~{}", rows.len(), bytes);
         }
-        // The feed can repeat a channel (a live stream plus its own uploads); the
-        // live list wants one row per broadcast.
         let mut seen = std::collections::HashSet::new();
         rows.retain(|r| seen.insert(r.id.clone()));
         Ok(rows)
