@@ -988,6 +988,44 @@ export interface ReleaseNotes {
  * YouTube UC…), `thumbnail_url` is a direct URL with no {width} template, and
  * `game_id` / `tags` / `broadcaster_type` may be absent.
  */
+/** One channel's bulk hype-train status, as Rust reports it. */
+export interface HypeTrainBulkStatus {
+  channel_id: string;
+  is_active: boolean;
+  level: number;
+  is_golden_kappa: boolean;
+}
+
+/** The Rust-owned Home snapshot (src-tauri/src/services/home_snapshot.rs):
+ *  everything the Home grid and the Sidebar render, with a fetch time per
+ *  section (unix seconds, null until first fetched). */
+export interface HomeSnapshot {
+  followed_live: TwitchStream[];
+  followed_live_at: number | null;
+  offline_follows: TwitchStream[];
+  last_broadcasts: Record<string, string | null>;
+  offline_at: number | null;
+  recommended: TwitchStream[];
+  recommended_cursor: string | null;
+  recommended_at: number | null;
+  hype_trains: HypeTrainBulkStatus[];
+  hype_at: number | null;
+  watch_streaks: Record<string, number>;
+  streaks_at: number | null;
+  drops_campaigns: DropCampaign[];
+  drops_active_game_names: string[];
+  drops_at: number | null;
+}
+
+/** One changed section, the payload of the `home-snapshot` event. */
+export type HomeSnapshotUpdate =
+  | { section: 'followed_live'; streams: TwitchStream[]; at: number }
+  | { section: 'offline'; channels: TwitchStream[]; last_broadcasts: Record<string, string | null>; at: number }
+  | { section: 'recommended'; streams: TwitchStream[]; cursor: string | null; at: number }
+  | { section: 'hype_trains'; statuses: HypeTrainBulkStatus[]; at: number }
+  | { section: 'watch_streaks'; streaks: Record<string, number>; at: number }
+  | { section: 'drops'; campaigns: DropCampaign[]; active_game_names: string[]; at: number };
+
 export interface TwitchStream {
   id: string;
   user_id: string;

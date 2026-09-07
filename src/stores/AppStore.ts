@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import { invoke } from '@tauri-apps/api/core';
 import { listen, emit } from '@tauri-apps/api/event';
-import type { Settings, TwitchUser, TwitchStream, UserInfo, TwitchCategory, HypeTrainData, TwitchVideo, ModLogEvent, DropProgressStatus, FavoriteChannel, VodStartInfo, LiveRewindInfo } from '../types';
+import type { Settings, TwitchUser, TwitchStream, UserInfo, TwitchCategory, HypeTrainData, TwitchVideo, ModLogEvent, DropProgressStatus, FavoriteChannel, VodStartInfo, LiveRewindInfo, HomeSnapshot, HomeSnapshotUpdate, HypeTrainBulkStatus } from '../types';
 import { trackActivity } from '../services/logService';
 import { Logger, setDiagnosticsEnabled } from '../utils/logger';
 // Direct import (not via the keybindings index) to avoid a storecommands cycle.
@@ -193,6 +193,22 @@ interface AppState {
   followedStreams: TwitchStream[];
   offlineFollowedChannels: TwitchStream[];
   setOfflineFollowedChannels: (channels: TwitchStream[]) => void;
+  /** user_id -> last broadcast ISO time for the offline roster (Rust snapshot). */
+  offlineLastBroadcasts: Record<string, string | null>;
+  /** When Rust last refreshed the offline roster (unix seconds); null until it has. */
+  offlineFollowsAt: number | null;
+  /** Seed every Home section from the Rust snapshot (mount, window boot). */
+  applyHomeSnapshot: (snapshot: HomeSnapshot) => void;
+  /** Apply one changed section from the `home-snapshot` event. */
+  applyHomeUpdate: (update: HomeSnapshotUpdate) => void;
+  /** Active drop campaigns (Rust snapshot); Home keys them by game id and name. */
+  dropsCampaigns: DropCampaign[];
+  /** Lower-cased game names of campaigns the account is actively in (Sidebar indicator). */
+  dropsActiveGameNames: string[];
+  /** Times a Home has mounted this session: the entrance stagger runs on the first only. */
+  homeOpenCount: number;
+  /** Scroll offset of the Home grid when it last unmounted, restored on the next mount. */
+  homeScrollTop: number;
   recommendedStreams: TwitchStream[];
   recommendedCursor: string | null;
   hasMoreRecommended: boolean;
@@ -426,7 +442,6 @@ interface AppState {
   setCurrentHypeTrain: (train: HypeTrainData | null) => void;
   // Hype Train status for stream badges (channel_id -> { level, isGolden })
   activeHypeTrainChannels: Map<string, { level: number; isGolden: boolean }>;
-  refreshHypeTrainStatuses: (channelIds: string[]) => Promise<void>;
   handleStreamOffline: () => Promise<void>;
   /** Merge fresh fields into the watched stream (viewers/title from a provider
    *  metadata poll). No-op when nothing is playing. */
@@ -813,8 +828,6 @@ async function teardownProviderSession(): Promise<void> {
 // a large JSON. `loadFollowedStreams` is called from 10+ call sites that
 // cascade at startup, so without this guard the fetch fires 3-4× back-to-back
 // for the same data. Cache for 1 hour; refetch only after that.
-const WATCH_STREAKS_TTL_MS = 60 * 60 * 1000;
-let lastWatchStreaksFetchAt = 0;
 
 // Sidebar and Home both fetch followed/recommended streams on mount with no
 // guard, so boot fires each fetch twice. In-flight dedupe (concurrent callers
@@ -829,11 +842,71 @@ let recommendedInFlight: Promise<void> | null = null;
 let recommendedFetchedAt = 0;
 const STREAMS_GUARD_TTL_MS = 10_000;
 
+// --- Rust-owned Home snapshot (src-tauri/src/services/home_snapshot.rs) -----
+//
+// Rust polls followed live (60 s, shared with live notifications), the offline
+// roster (10 min), recommended (5 min while a Home is mounted) and hype trains
+// (30 s) and emits `home-snapshot` with a section only when it changed. Each
+// window registers the listener once and pulls the whole snapshot once; from
+// then on the store is a render model, not a fetcher. The load* actions below
+// are manual refresh requests to Rust (15 s floor per section over there).
+let homeSnapshotListening = false;
+let homeSnapshotHydration: Promise<void> | null = null;
+
+/** Register the `home-snapshot` listener once per window and hydrate the
+ *  store from the current snapshot. Idempotent; safe from any window. */
+export function ensureHomeSnapshotSync(): Promise<void> {
+  if (!homeSnapshotListening) {
+    homeSnapshotListening = true;
+    void listen<HomeSnapshotUpdate>('home-snapshot', (event) => {
+      useAppStore.getState().applyHomeUpdate(event.payload);
+    });
+  }
+  if (!homeSnapshotHydration) {
+    homeSnapshotHydration = invoke<HomeSnapshot>('get_home_snapshot')
+      .then((snapshot) => useAppStore.getState().applyHomeSnapshot(snapshot))
+      .catch((e) => {
+        homeSnapshotHydration = null;
+        Logger.warn('[HomeSnapshot] hydrate failed:', e);
+      });
+  }
+  return homeSnapshotHydration;
+}
+
+/** Publish hype-train statuses only when the content changed (see the
+ *  comment in refreshHypeTrainStatuses for why). */
+function applyHypeStatuses(results: HypeTrainBulkStatus[]) {
+  const newMap = new Map<string, { level: number; isGolden: boolean }>();
+  for (const result of results) {
+    if (result.is_active) {
+      newMap.set(result.channel_id, { level: result.level, isGolden: result.is_golden_kappa });
+    }
+  }
+  const current = useAppStore.getState().activeHypeTrainChannels;
+  let same = current.size === newMap.size;
+  if (same) {
+    for (const [id, next] of newMap) {
+      const prev = current.get(id);
+      if (!prev || prev.level !== next.level || prev.isGolden !== next.isGolden) {
+        same = false;
+        break;
+      }
+    }
+  }
+  if (!same) useAppStore.setState({ activeHypeTrainChannels: newMap });
+}
+
 export const useAppStore = create<AppState>((set, get) => ({
   settings: {} as Settings,
   followedStreams: [],
   offlineFollowedChannels: [],
   setOfflineFollowedChannels: (channels: TwitchStream[]) => set({ offlineFollowedChannels: channels }),
+  offlineLastBroadcasts: {},
+  offlineFollowsAt: null,
+  dropsCampaigns: [],
+  dropsActiveGameNames: [],
+  homeOpenCount: 0,
+  homeScrollTop: 0,
   watchStreaks: {},
   recommendedStreams: [],
   recommendedCursor: null,
@@ -1040,42 +1113,58 @@ export const useAppStore = create<AppState>((set, get) => ({
   setCurrentHypeTrain: (train) => set({ currentHypeTrain: train }),
   // Hype Train status for stream badges
   activeHypeTrainChannels: new Map(),
-  refreshHypeTrainStatuses: async (channelIds: string[]) => {
-    if (channelIds.length === 0) return;
-    try {
-      const results = await invoke('get_bulk_hype_train_status', { channelIds }) as Array<{
-        channel_id: string;
-        is_active: boolean;
-        level: number;
-        is_golden_kappa: boolean;
-      }>;
-      const newMap = new Map<string, { level: number; isGolden: boolean }>();
-      for (const result of results) {
-        if (result.is_active) {
-          newMap.set(result.channel_id, { level: result.level, isGolden: result.is_golden_kappa });
-        }
-      }
-      // Publish only when the content changed. Sidebar polls this every 30 s
-      // and both Sidebar and Home re-poll on every followed-streams refresh;
-      // storing a fresh Map each time re-rendered Sidebar, Home's LayoutGroup,
-      // every stream card and its tooltips (about 220 component renders and a
-      // dozen popLayout re-measures per poll, measured 2026-09-05) while no
-      // hype train existed at all, which is the common case.
-      const current = get().activeHypeTrainChannels;
-      let same = current.size === newMap.size;
-      if (same) {
-        for (const [id, next] of newMap) {
-          const prev = current.get(id);
-          if (!prev || prev.level !== next.level || prev.isGolden !== next.isGolden) {
-            same = false;
-            break;
-          }
-        }
-      }
-      if (!same) set({ activeHypeTrainChannels: newMap });
-    } catch (e) {
-      // Silently fail - Hype Train badges are non-critical
-      Logger.warn('[HypeTrain] Failed to refresh bulk status:', e);
+  applyHomeSnapshot: (snapshot) => {
+    if (snapshot.followed_live_at !== null) {
+      set({ followedStreams: snapshot.followed_live });
+    }
+    if (snapshot.offline_at !== null) {
+      set({
+        offlineFollowedChannels: snapshot.offline_follows,
+        offlineLastBroadcasts: snapshot.last_broadcasts,
+        offlineFollowsAt: snapshot.offline_at,
+      });
+    }
+    if (snapshot.recommended_at !== null) {
+      set({
+        recommendedStreams: snapshot.recommended,
+        recommendedCursor: snapshot.recommended_cursor,
+        hasMoreRecommended: snapshot.recommended_cursor !== null,
+      });
+    }
+    if (snapshot.hype_at !== null) applyHypeStatuses(snapshot.hype_trains);
+    if (snapshot.streaks_at !== null) set({ watchStreaks: snapshot.watch_streaks });
+    if (snapshot.drops_at !== null) {
+      set({ dropsCampaigns: snapshot.drops_campaigns, dropsActiveGameNames: snapshot.drops_active_game_names });
+    }
+  },
+  applyHomeUpdate: (update) => {
+    switch (update.section) {
+      case 'followed_live':
+        set({ followedStreams: update.streams });
+        break;
+      case 'offline':
+        set({
+          offlineFollowedChannels: update.channels,
+          offlineLastBroadcasts: update.last_broadcasts,
+          offlineFollowsAt: update.at,
+        });
+        break;
+      case 'recommended':
+        set({
+          recommendedStreams: update.streams,
+          recommendedCursor: update.cursor,
+          hasMoreRecommended: update.cursor !== null,
+        });
+        break;
+      case 'hype_trains':
+        applyHypeStatuses(update.statuses);
+        break;
+      case 'watch_streaks':
+        set({ watchStreaks: update.streaks });
+        break;
+      case 'drops':
+        set({ dropsCampaigns: update.campaigns, dropsActiveGameNames: update.active_game_names });
+        break;
     }
   },
   // Whisper import state
@@ -1577,46 +1666,14 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
   },
   loadFollowedStreams: async () => {
-    // Boot double-fetch guard: share the in-flight promise, skip inside the TTL.
     if (followedInFlight) return followedInFlight;
     if (Date.now() - followedFetchedAt < STREAMS_GUARD_TTL_MS) return;
     followedInFlight = (async () => {
       try {
-        const streams = await invoke('get_followed_streams') as TwitchStream[];
-        set({ followedStreams: streams });
-
-        // Fetch batched watch streaks for live followed streams.
-        // 1h TTL — see WATCH_STREAKS_TTL_MS above for why this matters.
-        const now = Date.now();
-        if (streams.length > 0 && now - lastWatchStreaksFetchAt > WATCH_STREAKS_TTL_MS) {
-          lastWatchStreaksFetchAt = now; // Set optimistically to dedupe concurrent callers.
-          const channelIds = streams.map(s => s.user_id);
-          invoke('get_watch_streaks_batch', { channelIds })
-            .then(res => {
-              const streakData = res as Record<string, { streak_count: number; share_status: string }>;
-              Logger.debug('[WatchStreak] Batched response data:', streakData);
-              const formattedStreaks: Record<string, number> = {};
-              for (const [id, summary] of Object.entries(streakData)) {
-                if (summary.streak_count > 0) {
-                  formattedStreaks[id] = summary.streak_count;
-                }
-              }
-              // Merge with existing streaks to avoid clearing others
-              set(state => ({ watchStreaks: { ...state.watchStreaks, ...formattedStreaks } }));
-            })
-            .catch(e => {
-              // Roll back the timestamp so a retry can happen
-              lastWatchStreaksFetchAt = 0;
-              Logger.debug('[Sidebar] Failed to fetch batched watch streaks:', e);
-            });
-        }
-
+        await ensureHomeSnapshotSync();
+        await invoke('refresh_home_section', { section: 'followed_live' });
       } catch (e) {
-        Logger.warn('Could not load followed streams:', e);
-        // User is not authenticated, this is expected on first launch
-        set({ followedStreams: [] });
-
-        // Show toast if user tries to view followed streams but isn't logged in
+        Logger.warn('Could not refresh followed streams:', e);
         const state = get();
         if (!state.isAuthenticated && state.showLiveStreamsOverlay) {
           state.addToast('Please log in to Twitch to view your followed streams', 'warning');
@@ -1629,32 +1686,20 @@ export const useAppStore = create<AppState>((set, get) => ({
     return followedInFlight;
   },
   loadRecommendedStreams: async () => {
-    // Boot double-fetch guard: share the in-flight promise, skip inside the TTL.
     if (recommendedInFlight) return recommendedInFlight;
     if (Date.now() - recommendedFetchedAt < STREAMS_GUARD_TTL_MS) return;
     recommendedInFlight = (async () => {
       try {
-        const result = await invoke('get_recommended_streams_paginated', {
-          cursor: null,
-          limit: 20,
+        await ensureHomeSnapshotSync();
+        // Pass the discovery preferences explicitly: the settings dialog calls
+        // this before its debounced save reaches Rust.
+        await invoke('refresh_home_section', {
+          section: 'recommended',
           languages: get().settings.discovery_languages ?? [],
-          personalized: get().settings.discovery_personalized ?? false
-        }) as [TwitchStream[], string | null];
-
-        const [streams, cursor] = result;
-
-        // Filter out streams that are already in followed streams
-        const followedIds = new Set(get().followedStreams.map(s => s.user_id));
-        const filteredStreams = streams.filter(s => !followedIds.has(s.user_id));
-
-        set({
-          recommendedStreams: filteredStreams,
-          recommendedCursor: cursor,
-          hasMoreRecommended: cursor !== null
+          personalized: get().settings.discovery_personalized ?? false,
         });
       } catch (e) {
-        Logger.warn('Could not load recommended streams:', e);
-        set({ recommendedStreams: [], recommendedCursor: null, hasMoreRecommended: false });
+        Logger.warn('Could not refresh recommended streams:', e);
       }
     })().finally(() => {
       recommendedInFlight = null;
@@ -1662,39 +1707,17 @@ export const useAppStore = create<AppState>((set, get) => ({
     });
     return recommendedInFlight;
   },
-
   loadMoreRecommendedStreams: async () => {
-    const { recommendedCursor, hasMoreRecommended, isLoadingMore, followedStreams, recommendedStreams } = get();
-
+    const { hasMoreRecommended, isLoadingMore, recommendedCursor } = get();
     if (!hasMoreRecommended || isLoadingMore || !recommendedCursor) {
       return;
     }
-
     set({ isLoadingMore: true });
-
     try {
-      const result = await invoke('get_recommended_streams_paginated', {
-        cursor: recommendedCursor,
-        limit: 20,
-        languages: get().settings.discovery_languages ?? [],
-        personalized: get().settings.discovery_personalized ?? false
-      }) as [TwitchStream[], string | null];
-
-      const [newStreams, cursor] = result;
-
-      // Filter out streams that are already in followed streams or already loaded
-      const followedIds = new Set(followedStreams.map(s => s.user_id));
-      const existingIds = new Set(recommendedStreams.map(s => s.user_id));
-      const filteredStreams = newStreams.filter(
-        s => !followedIds.has(s.user_id) && !existingIds.has(s.user_id)
-      );
-
-      set({
-        recommendedStreams: [...recommendedStreams, ...filteredStreams],
-        recommendedCursor: cursor,
-        hasMoreRecommended: cursor !== null,
-        isLoadingMore: false
-      });
+      // Rust holds the cursor, dedups against followed and the rows already
+      // shown, appends, and emits the whole list as a `recommended` update.
+      await invoke('load_more_home_recommended');
+      set({ isLoadingMore: false });
     } catch (e) {
       Logger.warn('Could not load more recommended streams:', e);
       set({ isLoadingMore: false, hasMoreRecommended: false });

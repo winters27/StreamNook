@@ -30,7 +30,7 @@ use commands::{
     accounts::*, announcements::*, app::*, automation::*, badge_metadata::*, badge_service::*,
     badges::*, cache::*, channel_panels::*, chat::*, chat_identity::*, components::*,
     cosmetics_cache::*, diagnostic_logging::*, discord::*, drops::*, emoji::*, emote_prefetch::*,
-    emotes::*, eventsub::*, ffz::*, hype_train::*, identity::*, justlog::*, layout::*,
+    emotes::*, eventsub::*, ffz::*, home_snapshot::*, hype_train::*, identity::*, justlog::*, layout::*,
     link_preview::*, logs::*, mod_log_storage::*, modroom::*, multi_nook::*, plugins::*,
     profile_cache::*, provider_browse::*,
     resub::*, screen_capture::*, session::*, settings::*, seventv::*, seventv_cosmetics::*,
@@ -749,6 +749,13 @@ fn main() {
                 }
             });
 
+            // Rust-owned Home snapshot: one followed-streams poll a minute that
+            // feeds the live-notification diff AND the Home/Sidebar grids, plus
+            // the offline roster, recommended page and hype trains on their own
+            // cadences. A mounting Home paints from get_home_snapshot with no
+            // network on its critical path. See services::home_snapshot.
+            services::home_snapshot::start(app_handle.clone(), live_notification_service.clone());
+
             // Badge-drop detection now lives server-side on the Penrose bot and
             // is delivered to the app over the badge WebSocket feed (started on
             // the frontend via badgeSocketService). The old cache-polling
@@ -1339,6 +1346,12 @@ fn main() {
             // Hype Train commands
             get_hype_train_status,
             get_bulk_hype_train_status,
+            // Home snapshot (Rust-owned Home/Sidebar data)
+            get_home_snapshot,
+            set_home_mounted,
+            refresh_home_section,
+            set_home_extra_channels,
+            load_more_home_recommended,
 
             // Resub notification commands
             get_resub_notification,

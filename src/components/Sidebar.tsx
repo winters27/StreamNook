@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef, useCallback, useMemo, memo } from 'react';
 import { useShallow } from 'zustand/react/shallow';
-import { useAppStore } from '../stores/AppStore';
+import { useAppStore, ensureHomeSnapshotSync } from '../stores/AppStore';
 import { ChevronLeft, ChevronRight, Users, Sparkles, Radio, Heart, Gift, Flame, Star } from 'lucide-react';
 import type { TwitchStream } from '../types';
 import { invoke } from '@tauri-apps/api/core';
@@ -19,7 +19,6 @@ import { streamProvider, streamKey } from '../utils/streamProvider';
 import { useStreamAvatars } from '../hooks/useStreamAvatars';
 
 import { Logger } from '../utils/logger';
-import { useVisibleInterval } from '../utils/useVisibleInterval';
 import { formatViewerCount } from '../utils/streamStats';
 // Width constants
 const COMPACT_WIDTH = 56;
@@ -296,7 +295,6 @@ const Sidebar = ({ side = 'left' }: { side?: 'left' | 'right' }) => {
         loadRecommendedStreams,
         loadMoreRecommendedStreams,
         isFavoriteStreamer,
-        refreshHypeTrainStatuses,
     } = useAppStore.getState();
     const {
         followedStreams,
@@ -368,58 +366,19 @@ const Sidebar = ({ side = 'left' }: { side?: 'left' | 'right' }) => {
 
     // Cache for profile images fetched from Twitch Helix API
 
-    // Drops-enabled games tracking (by game_name lowercase)
-    const [dropsGameNames, setDropsGameNames] = useState<Set<string>>(new Set());
+    // Games with a drop campaign the account is actively in, from the Rust
+    // Home snapshot (hourly, and on Home mount when stale).
+    const dropsActiveGameNames = useAppStore((s) => s.dropsActiveGameNames);
+    const dropsGameNames = useMemo(() => new Set(dropsActiveGameNames), [dropsActiveGameNames]);
 
-    // Load drops data to know which games have active drops. Per user
-    // direction: do NOT fetch at idle — only after the user has opened the
-    // drops overlay at least once this session. The DropsCenter overlay
-    // does its own fresh fetch when it opens, so this sidebar indicator
-    // simply piggybacks: once the overlay was opened, we refresh on a
-    // 60-min cadence to keep the sidebar gift-icon indicator in sync.
-    // Until then, the sidebar just doesn't show drops indicators — that's
-    // the explicit trade-off.
-    const dropsOverlayEverOpened = useAppStore((s) => s.dropsOverlayEverOpened);
-    const loadActiveDrops = useCallback(async () => {
-        if (!dropsOverlayEverOpened) return;
-        try {
-            const inventory = await invoke<{ items: Array<{ campaign: { game_name: string }; status: string }> }>('get_drops_inventory');
-            if (inventory?.items) {
-                const gameNames = new Set<string>();
-                for (const item of inventory.items) {
-                    if (item.status === 'Active' && item.campaign.game_name) {
-                        gameNames.add(item.campaign.game_name.toLowerCase());
-                    }
-                }
-                setDropsGameNames(gameNames);
-            }
-        } catch (err) {
-            // Silently fail - drops indicator is optional
-            Logger.warn('[Sidebar] Could not load drops data:', err);
-        }
-    }, [dropsOverlayEverOpened]);
+    // Hype-train badges, the followed list, recommended and the drops indicator
+    // arrive from the Rust Home snapshot (polled in Rust, emitted only on
+    // change); the JS pollers that lived here are gone. Registering the sync
+    // here covers windows that boot straight into a stream, where Home never
+    // mounts.
     useEffect(() => {
-        loadActiveDrops();
-    }, [loadActiveDrops]);
-    useVisibleInterval(loadActiveDrops, 60 * 60 * 1000);
-
-    // Refresh Hype Train status for sidebar streams periodically.
-    // Visibility-gated: when the window is in the tray, hype-train indicators
-    // can't be seen anyway, so we skip the Helix calls.
-    const refreshHypeTrains = useCallback(() => {
-        const ids = new Set<string>();
-        followedStreams.forEach(s => ids.add(s.user_id));
-        recommendedStreams.forEach(s => ids.add(s.user_id));
-        if (ids.size > 0) {
-            refreshHypeTrainStatuses(Array.from(ids));
-        }
-    }, [followedStreams, recommendedStreams, refreshHypeTrainStatuses]);
-
-    useEffect(() => {
-        refreshHypeTrains();
-    }, [refreshHypeTrains]);
-
-    useVisibleInterval(refreshHypeTrains, 30000);
+        void ensureHomeSnapshotSync();
+    }, []);
 
     // Listen for settings changes from InterfaceSettings
     useEffect(() => {
@@ -533,22 +492,6 @@ const Sidebar = ({ side = 'left' }: { side?: 'left' | 'right' }) => {
         }
     }, [isHovered, isEdgeHovered, isManuallyExpanded, isAuthenticated, loadFollowedStreams, loadRecommendedStreams, sidebarMode]);
 
-    // Constant background freshness (every 3 minutes)
-    // Ensures sidebar is fresh even if user hasn't opened/closed it in hours.
-    // Visibility-gated: tray-backgrounded sessions stop syncing entirely.
-    const backgroundStreamSync = useCallback(() => {
-        const isSidebarVisible = isHovered || isEdgeHovered || isManuallyExpanded;
-        // In collapsible modes, only sync while HIDDEN to avoid mid-reading layout
-        // shifts. Expanded mode is always on-screen, but rows now reconcile in
-        // place (no remount), so a periodic sync there is smooth — keep it fresh.
-        if (sidebarMode === 'expanded' || !isSidebarVisible) {
-            Logger.debug('[Sidebar] Background stream sync');
-            if (isAuthenticated) {
-                loadFollowedStreams();
-            }
-        }
-    }, [isHovered, isEdgeHovered, isManuallyExpanded, isAuthenticated, loadFollowedStreams, sidebarMode]);
-    useVisibleInterval(backgroundStreamSync, 3 * 60 * 1000);
 
     // Infinite scroll for recommended streams
     useEffect(() => {

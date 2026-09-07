@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useState, useRef, useCallback, useMemo } from 'react';
 import { useShallow } from 'zustand/react/shallow';
-import { useAppStore, clipSourceOf, HomeTab } from '../stores/AppStore';
+import { useAppStore, ensureHomeSnapshotSync, clipSourceOf, HomeTab } from '../stores/AppStore';
 import { createPortal } from 'react-dom';
 import { Search, ArrowLeft, Heart, X, Gift, Pickaxe, LayoutGrid, Flame, ArrowUpRight, Undo2, Users, User, Loader2, Clock, Play, Check, Plus } from 'lucide-react';
 import { VodProgressBar, VodRecordingBadge } from './VodCardMarks';
@@ -344,8 +344,6 @@ const Home = () => {
     // (toasts, viewer-count updates, hype-train ticks on other surfaces) no
     // longer re-render all of Home.
     const {
-        loadFollowedStreams,
-        loadRecommendedStreams,
         loadMoreRecommendedStreams,
         startStream,
         toggleFavoriteStreamer,
@@ -356,8 +354,6 @@ const Home = () => {
         setSearchReturnTab,
         setCachedTopGames,
         appendCachedTopGames,
-        refreshHypeTrainStatuses,
-        setOfflineFollowedChannels,
         setProfileModalUser,
         openDropsWithSearch,
         playMedia,
@@ -432,9 +428,12 @@ const Home = () => {
     );
     const externalDropsProvider = useAppStore((s) => s.externalDropsProvider);
 
-    const [isLoadingOfflineChannels, setIsLoadingOfflineChannels] = useState(false);
-    const [offlineChannelsFetched, setOfflineChannelsFetched] = useState(false);
-    const [offlineLastBroadcasts, setOfflineLastBroadcasts] = useState<Record<string, string | null>>({});
+    // The offline roster and its last-broadcast times come from the Rust Home
+    // snapshot (store fields, refreshed by Rust every 10 min and on mount when
+    // stale), so they survive Home being unmounted and cost nothing to reopen.
+    const offlineLastBroadcasts = useAppStore((s) => s.offlineLastBroadcasts);
+    const offlineFollowsAt = useAppStore((s) => s.offlineFollowsAt);
+    const isLoadingOfflineChannels = isAuthenticated && offlineFollowsAt === null;
 
     // Fill in identity for favourites saved as bare ids, before the sidecar
     // existed. Without a name and a face those can't be drawn in the offline
@@ -444,44 +443,6 @@ const Home = () => {
         void useAppStore.getState().backfillFavoriteIdentities();
     }, [homeActiveTab, isAuthenticated]);
 
-    // Fetch offline followed channels when viewing the following tab
-    useEffect(() => {
-        if (homeActiveTab === 'following' && isAuthenticated && !offlineChannelsFetched && !isLoadingOfflineChannels) {
-            const fetchOfflineChannels = async () => {
-                setIsLoadingOfflineChannels(true);
-                try {
-                    const result = await invoke('get_all_followed_channels', { limit: 100, cursor: null }) as [TwitchStream[], string | null];
-                    const channels = result[0];
-                    
-                    // Filter out already live ones (that are in followedStreams)
-                    const liveIds = new Set(followedStreams.map(s => s.user_id));
-                    const offline = channels.filter(c => !liveIds.has(c.user_id));
-                    
-                    setOfflineFollowedChannels(offline);
-                    setOfflineChannelsFetched(true);
-
-                    // Fetch "last broadcast" metadata natively via GQL
-                    if (offline.length > 0) {
-                        try {
-                            const userIds = offline.map(c => c.user_id);
-                            const broadcasts = await invoke('get_offline_last_broadcasts', { userIds }) as Record<string, string | null>;
-                            // Count only: the payload is the user's whole follow list, which has no
-                            // place in a log file they hand to someone else.
-                            Logger.info(`Fetched last-broadcast times for ${Object.keys(broadcasts).length} offline channel(s)`);
-                            setOfflineLastBroadcasts(prev => ({ ...prev, ...broadcasts }));
-                        } catch(e) {
-                            Logger.error('Failed to fetch offline last broadcasts:', e);
-                        }
-                    }
-                } catch (e) {
-                    Logger.error('Failed to fetch offline followed channels:', e);
-                } finally {
-                    setIsLoadingOfflineChannels(false);
-                }
-            };
-            fetchOfflineChannels();
-        }
-    }, [homeActiveTab, isAuthenticated, followedStreams, offlineChannelsFetched, isLoadingOfflineChannels, setOfflineFollowedChannels]);
 
     // MultiNook ghost card state
     const multiNookSlots = usemultiNookStore(s => s.slots);
@@ -689,10 +650,28 @@ const Home = () => {
         return () => { isMountedRef.current = false; };
     }, []);
 
-    // Drops-enabled categories tracking (by game_id)
-    const [dropsGameIds, setDropsGameIds] = useState<Map<string, DropCampaign>>(new Map());
-    // Drops by game name (for stream cards which have game_name)
-    const [dropsGameNames, setDropsGameNames] = useState<Map<string, DropCampaign>>(new Map());
+    // A view that needs drop indicators before Rust has filled them asks for
+    // a refresh (15 s floor over there); the result lands through the snapshot.
+    const refreshDrops = useCallback(() => {
+        void invoke('refresh_home_section', { section: 'drops' }).catch(() => {});
+    }, []);
+    // Drops-enabled categories (by game_id) and by lower-cased game name, both
+    // derived from the campaign list Rust keeps in the Home snapshot.
+    const dropsCampaigns = useAppStore((s) => s.dropsCampaigns);
+    const dropsGameIds = useMemo(() => {
+        const map = new Map<string, DropCampaign>();
+        for (const campaign of dropsCampaigns) {
+            if (campaign.game_id) map.set(campaign.game_id, campaign);
+        }
+        return map;
+    }, [dropsCampaigns]);
+    const dropsGameNames = useMemo(() => {
+        const map = new Map<string, DropCampaign>();
+        for (const campaign of dropsCampaigns) {
+            if (campaign.game_name) map.set(campaign.game_name.toLowerCase(), campaign);
+        }
+        return map;
+    }, [dropsCampaigns]);
 
     const scrollContainerRef = useRef<HTMLDivElement>(null);
     const heroSentinelRef = useRef<HTMLDivElement>(null);
@@ -723,16 +702,40 @@ const Home = () => {
         // Mark as initialized immediately so we render cached store data if available
         setHasInitialized(true);
 
-        // Delay background fetches to allow AnimatePresence fade-in to complete smoothly
-        // and prevent HTTP connection pool starvation for active HLS video streams.
-        const initTimer = setTimeout(() => {
-            loadFollowedStreams();
-            loadRecommendedStreams();
-            loadActiveDrops(); // Load drops data so we can show indicators on stream cards
-        }, 300);
+        // Rust owns the Home data (src-tauri/src/services/home_snapshot.rs).
+        // Mounting hydrates the store from the current snapshot (no network on
+        // the critical path) and tells Rust a Home is on screen, which refreshes
+        // any stale section right away and runs the recommended poll while we
+        // are up. The old 300 ms deferred refetch is gone: nothing here fetches.
+        useAppStore.setState((state) => ({ homeOpenCount: state.homeOpenCount + 1 }));
+        void ensureHomeSnapshotSync();
+        void invoke('set_home_mounted', { mounted: true }).catch(() => {});
 
-        return () => clearTimeout(initTimer);
-    }, [loadFollowedStreams, loadRecommendedStreams]);
+        return () => {
+            void invoke('set_home_mounted', { mounted: false }).catch(() => {});
+        };
+    }, []);
+
+    // Save the grid's scroll offset for the next mount. A layout-effect cleanup
+    // runs before the node leaves the DOM (a passive cleanup would read 0).
+    useLayoutEffect(() => {
+        const container = scrollContainerRef.current;
+        return () => {
+            if (container) useAppStore.setState({ homeScrollTop: container.scrollTop });
+        };
+    }, []);
+
+    // Reopen where the user left off: the grid restores its scroll offset once
+    // its data is on screen. The stagger below runs on the first mount only.
+    const homeOpenCount = useAppStore((s) => s.homeOpenCount);
+    const isReopen = homeOpenCount > 1;
+    useLayoutEffect(() => {
+        if (!isReopen) return;
+        const container = scrollContainerRef.current;
+        const top = useAppStore.getState().homeScrollTop;
+        if (container && top > 0) container.scrollTop = top;
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [followedStreams.length, recommendedStreams.length]);
 
     // Scroll-Collapse Header Observer has been completely replaced by native framer-motion useScroll progressive tracking!    // Auto-select the appropriate tab based on auth status on initial mount only
     // This effect should NOT run when user clicks tabs - remove homeActiveTab from deps
@@ -823,57 +826,6 @@ const Home = () => {
     }, [hasMoreGames, isLoadingMoreGames, gamesCursor, appendCachedTopGames]);
 
     // Load active drops campaigns and build maps for both game_id and game_name lookup
-    const loadActiveDrops = async () => {
-        try {
-            // Use get_active_drop_campaigns for ALL active campaigns (not just inventory)
-            const campaigns = await invoke<DropCampaign[]>('get_active_drop_campaigns');
-            if (campaigns && campaigns.length > 0) {
-                const dropsIdMap = new Map<string, DropCampaign>();
-                const dropsNameMap = new Map<string, DropCampaign>();
-                for (const campaign of campaigns) {
-                    if (campaign.game_id) {
-                        dropsIdMap.set(campaign.game_id, campaign);
-                    }
-                    if (campaign.game_name) {
-                        dropsNameMap.set(campaign.game_name.toLowerCase(), campaign);
-                    }
-                }
-                setDropsGameIds(dropsIdMap);
-                setDropsGameNames(dropsNameMap);
-                Logger.debug(`[Home] Found ${dropsIdMap.size} categories with active drops`);
-
-                // Also sync the active-automation highlight from the bridge-cached
-                // status (a plugin powering automation reports through it).
-                try {
-                    const dropProgress = useAppStore.getState().liveDropProgress;
-                    if (dropProgress?.active) {
-                        // Find campaign ID by matching game_name from current_drop or current_channel
-                        const progressGameName = dropProgress.current_drop?.game_name?.toLowerCase() ||
-                            dropProgress.current_channel?.game_name?.toLowerCase();
-                        if (progressGameName) {
-                            for (const campaign of campaigns) {
-                                if (campaign.game_name?.toLowerCase() === progressGameName) {
-                                    Logger.debug(`[Home] Already automation campaign: ${campaign.name}`);
-                                    setActiveAutomationIds(prev => new Set(prev).add(campaign.id));
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                } catch (e) {
-                    Logger.warn('Could not get automation status:', e);
-                }
-            } else {
-                setDropsGameIds(new Map());
-                setDropsGameNames(new Map());
-            }
-        } catch (e) {
-            Logger.error('Failed to load active drops:', e);
-            setDropsGameIds(new Map());
-            setDropsGameNames(new Map());
-        }
-    };
-
     // State for automation animation and tracking actively automation campaigns
     const [activeAutomationIds, setActiveAutomationIds] = useState<Set<string>>(new Set());
     const [flyingDroplet, setFlyingDroplet] = useState<{ visible: boolean; x: number; y: number } | null>(null);
@@ -881,31 +833,37 @@ const Home = () => {
     // Create a map from campaign name to campaign ID for reverse lookup
     const campaignNameToIdRef = useRef<Map<string, string>>(new Map());
 
-    // Effect to refresh Hype Train status when streams are loaded or changed
+    // Highlight the campaign a running automation is farming, from the
+    // bridge-cached progress and the Rust-kept campaign list.
+    const liveDropProgressForHome = useAppStore((s) => s.liveDropProgress);
     useEffect(() => {
-        // Collect all channel IDs from all visible streams
-        const channelIds = new Set<string>();
-        followedStreams.forEach(s => channelIds.add(s.user_id));
-        recommendedStreams.forEach(s => channelIds.add(s.user_id));
-        categoryStreams.forEach(s => channelIds.add(s.user_id));
-        searchResults.forEach(s => channelIds.add(s.user_id));
-        
-        if (channelIds.size > 0) {
-            // Debounce the refresh to avoid rapid API calls and network starvation
-            if (hypeTrainRefreshTimeoutRef.current) {
-                clearTimeout(hypeTrainRefreshTimeoutRef.current);
-            }
-            hypeTrainRefreshTimeoutRef.current = setTimeout(() => {
-                refreshHypeTrainStatuses(Array.from(channelIds));
-            }, 2000); // 2000ms delay to prioritize HLS segments
+        if (!liveDropProgressForHome?.active || dropsCampaigns.length === 0) return;
+        const progressGameName = liveDropProgressForHome.current_drop?.game_name?.toLowerCase() ||
+            liveDropProgressForHome.current_channel?.game_name?.toLowerCase();
+        if (!progressGameName) return;
+        const match = dropsCampaigns.find((c) => c.game_name?.toLowerCase() === progressGameName);
+        if (match) setActiveAutomationIds(prev => (prev.has(match.id) ? prev : new Set(prev).add(match.id)));
+    }, [liveDropProgressForHome, dropsCampaigns]);
+
+    // Hype trains are polled in Rust for followed + recommended; the category
+    // grid and search results are only known here, so hand their ids over
+    // (debounced) and Rust folds them into the same poll.
+    useEffect(() => {
+        const ids = new Set<string>();
+        categoryStreams.forEach(s => ids.add(s.user_id));
+        searchResults.forEach(s => ids.add(s.user_id));
+        if (hypeTrainRefreshTimeoutRef.current) {
+            clearTimeout(hypeTrainRefreshTimeoutRef.current);
         }
-        
+        hypeTrainRefreshTimeoutRef.current = setTimeout(() => {
+            void invoke('set_home_extra_channels', { channelIds: Array.from(ids) }).catch(() => {});
+        }, 2000);
         return () => {
             if (hypeTrainRefreshTimeoutRef.current) {
                 clearTimeout(hypeTrainRefreshTimeoutRef.current);
             }
         };
-    }, [followedStreams, recommendedStreams, categoryStreams, searchResults, refreshHypeTrainStatuses]);
+    }, [categoryStreams, searchResults]);
 
     // Sync automation status with backend. Real-time updates arrive via the
     // 'automation-status-changed' event listener below; the periodic call is a
@@ -1054,7 +1012,7 @@ const Home = () => {
         
         // Also load drops data
         if (dropsGameIds.size === 0) {
-            loadActiveDrops();
+            refreshDrops();
         }
     };
 
@@ -1180,7 +1138,7 @@ const Home = () => {
             loadTopGames(true);
         }
         if (activeTab === 'browse' && dropsGameIds.size === 0) {
-            loadActiveDrops();
+            refreshDrops();
         }
     // topGames.length intentionally excluded to avoid re-fetch loops
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1203,7 +1161,7 @@ const Home = () => {
         }
         
         if (dropsGameIds.size === 0) {
-            loadActiveDrops();
+            refreshDrops();
         }
     };
 
@@ -1557,8 +1515,8 @@ const Home = () => {
 
     const getThumbnailUrl = (url: string) => {
         return url
-            .replace('%{width}', '1280').replace('%{height}', '720')
-            .replace('{width}', '1280').replace('{height}', '720');
+            .replace('%{width}', '640').replace('%{height}', '360')
+            .replace('{width}', '640').replace('{height}', '360');
     };
 
     const getGameBoxArt = (url: string) => {
@@ -2100,7 +2058,7 @@ const Home = () => {
                                                     // scaling element fights `layout`'s own scale
                                                     // correction and the card's text and rounded
                                                     // corners smear while it settles.
-                                                    initial={{ opacity: 0, y: 8 }}
+                                                    initial={isReopen ? false : { opacity: 0, y: 8 }}
                                                     animate={{ opacity: 1, y: 0 }}
                                                     exit={{ opacity: 0, y: -4 }}
                                                     transition={{
