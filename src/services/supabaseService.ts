@@ -1673,8 +1673,14 @@ export const subscribeToCosmeticsRegistry = (
         let connectedOnce = false;
         cosmeticsChannel = supabase
             .channel('cosmetics-registry')
+            // Every event, not just INSERT: the Discord bot takes badges back
+            // (Uplift when a boost ends, Kindred when a recruit leaves inside
+            // the dwell period), and a DELETE that nobody listens for leaves
+            // the revoked badge on screen until the next restart. Supabase
+            // sends DELETE events regardless of RLS (primary key only), and
+            // the handler just re-pulls, so the payload shape does not matter.
             .on('postgres_changes', {
-                event: 'INSERT',
+                event: '*',
                 schema: 'public',
                 table: 'user_cosmetics',
             }, () => { loadCosmetics(); })
