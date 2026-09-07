@@ -1692,6 +1692,10 @@ export async function ensureChannelHistory(
 
 // --- Incoming message routing ----------------------------------------------
 
+// Per-channel throttle for the no-slice drop warning (see handleWsMessage).
+const NO_SLICE_WARN_INTERVAL_MS = 60_000;
+const noSliceWarnedAt = new Map<string, number>();
+
 function handleWsMessage(raw: string) {
   // Global signals first. HEARTBEAT deliberately does NOT touch
   // lastMessageTime: the backend heartbeat only proves the socket reads
@@ -2125,12 +2129,19 @@ function handleWsMessage(raw: string) {
         }
         const slice = channels.get(targetChannel);
         if (!slice) {
-          // List the keys that DO exist. Without them this warning says what it
-          // wanted and not what it had, which is the whole reason a key mismatch
-          // here reads as "chat is patchy" rather than as a routing fault.
-          Logger.warn(
-            `[ChatStore] Dropping structured message: no slice for "${targetChannel}" (id=${messageId}, slices=${channels.size}, have=[${Array.from(channels.keys()).join(', ')}])`,
-          );
+          // Expected briefly after a switch: the slice is removed before the
+          // IRC PART lands, so a busy channel delivers a dozen more messages
+          // into nothing. One warn per channel per minute keeps a genuine
+          // routing fault visible (the keys that DO exist are listed for it)
+          // without writing a line per message (67 in one instrumented run).
+          const now = Date.now();
+          const last = noSliceWarnedAt.get(targetChannel) ?? 0;
+          if (now - last > NO_SLICE_WARN_INTERVAL_MS) {
+            noSliceWarnedAt.set(targetChannel, now);
+            Logger.warn(
+              `[ChatStore] Dropping structured message: no slice for "${targetChannel}" (id=${messageId}, slices=${channels.size}, have=[${Array.from(channels.keys()).join(', ')}]); further drops for this channel are silent for a minute`,
+            );
+          }
           return;
         }
         appendStructuredMessage(slice, parsed);
