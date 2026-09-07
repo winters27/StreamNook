@@ -496,6 +496,14 @@ jobs:
           $body = $body -replace '(?ms)^\s*##\s*\[?\d[\d\.]*\]?.*?\r?\n', ''
           $body = $body.Trim()
 
+          # The release hero: the first markdown image in the section. Compaction below keeps
+          # only headers and bullet leads, so without this the picture never reached Discord.
+          # It becomes a Media Gallery component under the title (Discord shows the webp,
+          # animated ones included). Must be an absolute https URL; the raw.githubusercontent
+          # link resolves because dev was force-pushed to main before this step ran.
+          $heroUrl = ''
+          if ($body -match '!\[[^\]]*\]\((https://[^)\s]+)\)') { $heroUrl = $Matches[1] }
+
           # Compact the changelog for Discord. Changelog bullets are written as
           # "- **Bold lead.** explanation prose"; keep only the bold lead so the
           # post is a short scannable list. Section headers survive, everything
@@ -571,6 +579,10 @@ jobs:
             components = @(@{ type = 10; content = "$titleText`n$liveLine" })
             accessory = @{ type = 11; media = @{ url = "https://raw.githubusercontent.com/winters27/StreamNook/main/src-tauri/icons/icon.png" } }
           })
+          if ($heroUrl) {
+            # Type 12 Media Gallery: one item, full width of the container.
+            $children.Add(@{ type = 12; items = @(@{ media = @{ url = $heroUrl } }) })
+          }
           $children.Add(@{ type = 14; divider = $true; spacing = 2 })
 
           # One Text Display per changelog section, thin divider between each.
