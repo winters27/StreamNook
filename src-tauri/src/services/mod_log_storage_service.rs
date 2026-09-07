@@ -209,3 +209,11 @@ impl ModLogStorageService {
         Ok(())
     }
 }
+
+/// (channels, entries) held in the in-memory mod-log store; `None` before the
+/// first seed or while locked. Diagnostics for the resource line.
+pub fn cache_counts() -> Option<(usize, usize)> {
+    let store = STORE.get()?.try_lock().ok()?;
+    let inner = store.as_ref()?;
+    Some((inner.channels.len(), inner.channels.values().map(|v| v.len()).sum()))
+}

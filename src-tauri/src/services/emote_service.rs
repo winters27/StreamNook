@@ -396,6 +396,13 @@ fn twitch_broadcaster_id<'a>(is_twitch: bool, channel_id: Option<&'a str>) -> Op
 }
 
 impl EmoteService {
+    /// Number of channel emote sets resident in the LRU (try-read; `None`
+    /// while a refresh holds the lock). Diagnostics for the resource line.
+    pub fn cache_len(&self) -> Option<usize> {
+        self.cache.try_read().ok().map(|c| c.len())
+    }
+
+
     pub fn new() -> Self {
         Self {
             cache: Arc::new(RwLock::new(lru::LruCache::new(

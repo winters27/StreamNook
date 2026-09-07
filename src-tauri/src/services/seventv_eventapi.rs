@@ -743,3 +743,9 @@ fn enqueue_entitlement_fetch(twitch_id: String, set_id: String) {
         log::warn!("[7TV] entitlement lane full; dropped fetch (re-delivered on next reconnect)");
     }
 }
+
+/// Channels the 7TV EventAPI socket is subscribed to (try-read). Diagnostics
+/// for the resource line.
+pub fn sub_count() -> Option<usize> {
+    SERVICE.get()?.subs.try_read().ok().map(|s| s.len())
+}

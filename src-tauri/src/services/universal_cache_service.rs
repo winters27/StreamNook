@@ -1577,3 +1577,9 @@ pub async fn auto_sync_if_stale() -> Result<bool> {
         Ok(false)
     }
 }
+
+/// Entries in the in-memory universal cache manifest (try-read). Diagnostics
+/// for the resource line.
+pub fn manifest_len() -> Option<usize> {
+    MANIFEST_MEMORY.try_read().ok().map(|m| m.entries.len())
+}

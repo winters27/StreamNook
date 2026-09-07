@@ -70,6 +70,15 @@ impl UserMessageHistoryService {
         })
     }
 
+    /// (users, messages) held, or `None` if the lock is busy. Diagnostics for
+    /// the resource line.
+    pub fn cache_counts(&self) -> Option<(usize, usize)> {
+        self.cache
+            .try_lock()
+            .ok()
+            .map(|c| (c.len(), c.values().map(|e| e.messages.len()).sum()))
+    }
+
     pub fn set_app_handle(app: tauri::AppHandle) {
         let _ = APP.set(app);
     }

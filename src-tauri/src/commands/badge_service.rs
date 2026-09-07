@@ -417,3 +417,8 @@ pub async fn ingest_badge_drops(
     feed::persist().await;
     Ok(())
 }
+
+/// Badge cache counts for the resource line, without waiting on the service lock.
+pub fn cache_counts() -> Option<(usize, usize)> {
+    BADGE_SERVICE.try_read().ok().and_then(|g| g.as_ref().and_then(|s| s.cache_counts()))
+}

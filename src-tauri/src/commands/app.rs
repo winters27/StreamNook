@@ -19,6 +19,11 @@ static EMOJI_CACHE: Lazy<Mutex<LruCache<String, String>>> = Lazy::new(|| {
     ))
 });
 
+/// Emoji entries resident in the LRU (try-lock). Diagnostics for the resource line.
+pub fn emoji_cache_len() -> Option<usize> {
+    EMOJI_CACHE.try_lock().ok().map(|c| c.len())
+}
+
 #[command]
 pub fn get_app_version() -> String {
     env!("CARGO_PKG_VERSION").to_string()

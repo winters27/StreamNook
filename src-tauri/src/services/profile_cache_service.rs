@@ -145,6 +145,12 @@ struct CachedProfile {
 }
 
 impl ProfileCacheService {
+    /// Resident profiles in the LRU (try-read). Diagnostics for the resource line.
+    pub fn cache_len(&self) -> Option<usize> {
+        self.profiles.try_read().ok().map(|c| c.len())
+    }
+
+
     pub fn new() -> Self {
         Self {
             profiles: Arc::new(RwLock::new(lru::LruCache::new(
