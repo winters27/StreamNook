@@ -150,6 +150,11 @@ async fn signed_in() -> bool {
     TwitchService::get_token().await.is_ok()
 }
 
+/// Never loaded, or loaded longer ago than `period`.
+fn is_stale(at: Option<u64>, period: Duration) -> bool {
+    at.map_or(true, |t| now_secs().saturating_sub(t) >= period.as_secs())
+}
+
 /// Content equality through the serialized form: sections are a few hundred
 /// KB at most and this runs once a minute, so it is cheaper to reason about
 /// than a hand-written comparator that misses a field.
@@ -187,15 +192,24 @@ pub fn start(app: AppHandle, notifications: Arc<LiveNotificationService>) {
         }
     });
 
-    // Offline roster: only once the followed poll has succeeded (signed in).
+    // Offline roster. The FIRST load is chained off the first successful
+    // followed poll (see refresh_followed), so Home gets it one round trip
+    // after the live list instead of waiting on a timer that may fire before
+    // sign-in completes. This loop only keeps it fresh afterwards; while the
+    // followed poll has not succeeded yet it re-checks often rather than
+    // sleeping a whole period.
     let offline = inner.clone();
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(Duration::from_secs(20)).await;
         loop {
-            if offline.snap.read().await.followed_live_at.is_some() {
+            let (signed, stale) = {
+                let s = offline.snap.read().await;
+                (s.followed_live_at.is_some(), is_stale(s.offline_at, OFFLINE_PERIOD))
+            };
+            if signed && stale {
                 refresh_offline(&offline).await;
             }
-            tokio::time::sleep(OFFLINE_PERIOD).await;
+            tokio::time::sleep(if signed { OFFLINE_PERIOD } else { Duration::from_secs(15) }).await;
         }
     });
 
@@ -223,15 +237,20 @@ pub fn start(app: AppHandle, notifications: Arc<LiveNotificationService>) {
         }
     });
 
-    // Drops: hourly while any window exists, once signed in.
+    // Drops: hourly while any window exists, once signed in. First load is
+    // chained off the first followed poll like the offline roster.
     let drops = inner;
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(Duration::from_secs(30)).await;
         loop {
-            if !drops.app.webview_windows().is_empty() && drops.snap.read().await.followed_live_at.is_some() {
+            let (signed, stale) = {
+                let s = drops.snap.read().await;
+                (s.followed_live_at.is_some(), is_stale(s.drops_at, DROPS_PERIOD))
+            };
+            if signed && stale && !drops.app.webview_windows().is_empty() {
                 refresh_drops(&drops).await;
             }
-            tokio::time::sleep(DROPS_PERIOD).await;
+            tokio::time::sleep(if signed { DROPS_PERIOD } else { Duration::from_secs(15) }).await;
         }
     });
 }
@@ -406,14 +425,10 @@ pub async fn set_home_mounted(mounted: bool) {
         inner.home_mounted.fetch_add(1, Ordering::Relaxed);
         let (offline_stale, recommended_stale, drops_stale) = {
             let s = inner.snap.read().await;
-            let now = now_secs();
-            let stale = |at: Option<u64>, period: Duration| {
-                at.map_or(true, |t| now.saturating_sub(t) >= period.as_secs())
-            };
             (
-                stale(s.offline_at, OFFLINE_PERIOD),
-                stale(s.recommended_at, RECOMMENDED_PERIOD),
-                stale(s.drops_at, DROPS_PERIOD),
+                is_stale(s.offline_at, OFFLINE_PERIOD),
+                is_stale(s.recommended_at, RECOMMENDED_PERIOD),
+                is_stale(s.drops_at, DROPS_PERIOD),
             )
         };
         let inner = inner.clone();
@@ -518,12 +533,24 @@ async fn refresh_followed(inner: &Inner) {
                 .notifications
                 .observe(&inner.app, &state, &streams)
                 .await;
-            let streaks_stale = inner
-                .snap
-                .read()
-                .await
-                .streaks_at
-                .map_or(true, |t| at.saturating_sub(t) >= STREAKS_PERIOD.as_secs());
+            let (streaks_stale, offline_never, drops_never) = {
+                let s = inner.snap.read().await;
+                (
+                    is_stale(s.streaks_at, STREAKS_PERIOD),
+                    s.offline_at.is_none(),
+                    s.drops_at.is_none(),
+                )
+            };
+            // The sections gated on sign-in load right behind the first
+            // successful followed poll, so a Home that mounted at launch (before
+            // this poll could run) is not left with a spinner until the offline
+            // and drops timers happen to line up with a signed-in state.
+            if offline_never {
+                refresh_offline(inner).await;
+            }
+            if drops_never && !inner.app.webview_windows().is_empty() {
+                refresh_drops(inner).await;
+            }
             if streaks_stale {
                 refresh_streaks(inner).await;
             }
