@@ -244,6 +244,20 @@ export const SAMPLE_MESSAGES: OverlayMessage[] = [
   base('m8', 'twitch', 'emoteonly', 'EmoteOnly', '#57c2a3',
     [e('Kappa', '25'), e('PogChamp', '305954156'), e('LUL', '425618')],
   ),
+  // A Twitch chat GIF (Tier 2/3 subscribers): the bracketed description Twitch
+  // puts in the text plus the GIPHY asset from the `gifs` tag, taken verbatim
+  // from Twitch's documented example so the preview shows the real shape.
+  base('m8b', 'twitch', 'gifdropper', 'GifDropper', '#f2a65a',
+    [
+      t('this stream is'),
+      {
+        type: 'gif',
+        content: '[Y A Y Yes GIF by Djemilah Birnie]',
+        gif_id: 'joSNxeswxuc74Juo8X',
+        gif_url: 'https://media4.giphy.com/media/joSNxeswxuc74Juo8X/giphy.gif?cid=095d7a5dzizsiwgabonagkmigggv8v1spfai91ac3x0dsiy0&ep=v1_gifs_trending&rid=giphy.gif&ct=g',
+      },
+    ],
+  ),
   base('m9', 'twitch', 'gifterpro', 'GifterPro', '#7bd88f',
     [t('twelve months and he still hasnt beaten the tutorial'), e('PogChamp', '305954156')],
     {

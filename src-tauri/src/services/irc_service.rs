@@ -719,6 +719,70 @@ fn get_channel_emotes() -> &'static Mutex<HashMap<String, EmoteSet>> {
     CHANNEL_EMOTES.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+/// Parse the `gifs` PRIVMSG tag (Twitch, 2026-07-17) into positions that ride
+/// the emote list. Format: comma-separated `<start>-<end>|<gifID>|<gifURL>`
+/// with zero-based INCLUSIVE codepoint indices, the same convention as
+/// `emotes`, so `parse_message_segments` places them with the same arithmetic
+/// and the reply-mention offset applies once. The URL is used exactly as sent
+/// (Twitch: "must not be modified"); IRCv3 tag escapes are undone first, which
+/// a Giphy URL never needs but the spec allows. Malformed entries are skipped.
+fn parse_gifs_tag(value: &str) -> Vec<EmotePos> {
+    let mut out = Vec::new();
+    if value.is_empty() {
+        return out;
+    }
+    for entry in value.split(',') {
+        let mut fields = entry.splitn(3, '|');
+        let (Some(range), Some(id), Some(url)) = (fields.next(), fields.next(), fields.next())
+        else {
+            continue;
+        };
+        let Some((start_s, end_s)) = range.split_once('-') else {
+            continue;
+        };
+        let (Ok(start), Ok(end)) = (start_s.parse::<usize>(), end_s.parse::<usize>()) else {
+            continue;
+        };
+        if id.is_empty() || url.is_empty() || start > end {
+            continue;
+        }
+        out.push(EmotePos {
+            id: unescape_irc_tag(id),
+            start,
+            end,
+            url: unescape_irc_tag(url),
+            gif: true,
+        });
+    }
+    out
+}
+
+/// Undo IRCv3 message-tag value escapes (`\:` for `;`, `\s` for space, `\\`,
+/// `\r`, `\n`). Tag values are kept raw in the tag map and unescaped per field.
+fn unescape_irc_tag(value: &str) -> String {
+    if !value.contains('\\') {
+        return value.to_string();
+    }
+    let mut out = String::with_capacity(value.len());
+    let mut chars = value.chars();
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+        match chars.next() {
+            Some(':') => out.push(';'),
+            Some('s') => out.push(' '),
+            Some('\\') => out.push('\\'),
+            Some('r') => out.push('\r'),
+            Some('n') => out.push('\n'),
+            Some(other) => out.push(other),
+            None => {}
+        }
+    }
+    out
+}
+
 /// Immutable per-channel parse context. Rebuilt only when the channel's
 /// third-party sets change; per-message parsing reads it through an Arc with
 /// no locks held and no data cloned. Personal emotes are deliberately NOT in
@@ -745,11 +809,11 @@ impl EmoteLookup {
     }
 
     /// 7TV art for a Twitch-native emote name. The map slot holds the 7TV
-    /// entry whenever the channel's 7TV set carries the name (inserted last),
-    /// so filtering the winner on provider gives channel-7TV-wins semantics.
-    /// (The old scan searched the raw seven_tv Vec first-match; where a name
-    /// appeared in both trending/globals and the channel set the two paths
-    /// disagreed - this deliberately unifies on channel-wins.)
+    /// entry whenever the composed 7TV dictionary carries the name (7TV is
+    /// inserted last, so it beats FFZ and BTTV on a name collision). Within
+    /// 7TV there is nothing left to arbitrate: `compose_seventv` keys the
+    /// dictionary by name with channel rows first, so every consumer,
+    /// first-wins or last-wins, resolves a name to the same row.
     fn seventv_override(&self, name: &str) -> Option<&Emote> {
         self.by_name
             .get(name)
@@ -2674,14 +2738,28 @@ impl IrcService {
         // First time this channel becomes desired: shared-chat lookup + 7TV
         // EventAPI + mod-view subscriptions. A health-probe re-issue must not
         // re-subscribe — those were set up when the key first entered the set.
+        //
+        // Spawned, not awaited. All three are network calls (Helix, 7TV, EventSub)
+        // and this runs inside start_chat for a channel added to a live session,
+        // so awaiting them held the socket handoff for as long as 7TV took:
+        // measured 4.8 to 9.2 s while the id lookup still downloaded the whole
+        // channel document. Guarded by a CURRENT_CHANNELS re-check like the
+        // connect-time task, and every call is idempotent.
         if newly_desired {
-            if let Ok(broadcaster_info) = TwitchService::get_user_by_login(key).await {
+            let key = key.to_string();
+            tokio::spawn(async move {
+                let Ok(broadcaster_info) = TwitchService::get_user_by_login(&key).await else {
+                    return;
+                };
+                if !get_current_channels().lock().await.contains(&key) {
+                    return; // parted before the lookup came back
+                }
                 Self::check_shared_chat_status(&broadcaster_info.id).await;
-                crate::services::seventv_eventapi::subscribe_channel(key, &broadcaster_info.id)
+                crate::services::seventv_eventapi::subscribe_channel(&key, &broadcaster_info.id)
                     .await;
-                crate::services::eventsub_moderation::subscribe_channel(key, &broadcaster_info.id)
+                crate::services::eventsub_moderation::subscribe_channel(&key, &broadcaster_info.id)
                     .await;
-            }
+            });
         }
 
         Ok(())
@@ -2902,14 +2980,17 @@ impl IrcService {
                 // Disk-first: seed the chat parse map from the saved per-channel
                 // dictionary so chat recognizes this channel's emotes instantly,
                 // with no network round-trip, even when 7TV is slow or down. The
-                // prefetch and earlier good fetches populate this on disk. Only
-                // seed when the saved set is more complete (by 7TV count) than
-                // whatever is already in memory, so a second window joining the
-                // same channel can't downgrade a good live set.
+                // prefetch and earlier good fetches populate this on disk. Seed
+                // ONLY when nothing is in memory yet: a set already there is at
+                // least as fresh (fetched or delta-patched this session), so a
+                // second window joining the same channel never downgrades it.
+                // The old "seed if disk has more 7TV rows" rule got that case
+                // backwards: a dictionary inflated by 287 trending rows outranked
+                // a correct live set and would have replaced it.
+                let mut seeded = false;
                 if let Some(disk_set) = crate::services::emote_set_cache::load(&user.id) {
                     let mut map = get_channel_emotes().lock().await;
-                    let current = map.get(&key).map(|s| s.seven_tv.len()).unwrap_or(0);
-                    if disk_set.seven_tv.len() > current {
+                    if !map.contains_key(&key) {
                         debug!(
                             "[IRC Chat] Seeded {} from disk dictionary (7TV: {})",
                             channel_name,
@@ -2917,10 +2998,16 @@ impl IrcService {
                         );
                         rebuild_parse_lookup(&key, &disk_set);
                         map.insert(key.clone(), disk_set);
+                        seeded = true;
                     }
                 }
 
-                if defer_refresh {
+                // A caller that asked to wait still gets the disk-seeded map back
+                // at once when one landed: the channel document budget is 25 s
+                // now (large channels need it) and nothing that can already parse
+                // should sit on that. Only a channel with no dictionary at all is
+                // worth waiting for.
+                if defer_refresh || seeded {
                     // The chat socket does NOT wait for emote providers. See
                     // `refresh_channel_emotes` for why, and for the measurement.
                     //
@@ -3017,6 +3104,65 @@ impl IrcService {
                 error!("[IRC Chat] Failed to fetch channel emotes: {}", e);
             }
         }
+    }
+
+    /// Apply a live 7TV set change to this channel's parse dictionary with no
+    /// network fetch. The dispatch carries the whole emote; re-downloading the
+    /// channel document per change cost 14 MB and 6 s on a large channel and
+    /// silently dropped the change whenever that fetch timed out (2026-09-07).
+    /// Returns what changed in the composed dictionary (channel rows plus any
+    /// global a removal stopped shadowing) so every other copy can be patched
+    /// the same way, or None when the channel is not in memory (a later join
+    /// fetches fresh).
+    pub async fn apply_seventv_delta(
+        key: &str,
+        user_id: &str,
+        delta: &crate::services::emote_service::SeventvSetDelta,
+        globals: &[Emote],
+    ) -> Option<crate::services::emote_service::SeventvComposedDelta> {
+        let composed = {
+            let mut map = get_channel_emotes().lock().await;
+            let set = map.get_mut(key)?;
+            let composed = crate::services::emote_service::apply_seventv_delta(
+                &mut set.seven_tv,
+                delta,
+                globals,
+            );
+            rebuild_parse_lookup(key, set);
+            composed
+        };
+        schedule_dictionary_write(key.to_string(), user_id.to_string());
+        Some(composed)
+    }
+
+    /// Re-pull a channel's set from the providers and install it (authoritative
+    /// only), for the EventAPI's resync after a reconnect it could not RESUME:
+    /// anything dispatched during the gap was never applied. Runs under the same
+    /// per-channel gate and permit as the join-time refresh.
+    pub async fn resync_channel_emotes(
+        channel_name: &str,
+        user_id: &str,
+        emote_service: Arc<tokio::sync::RwLock<EmoteService>>,
+    ) {
+        let key = channel_name.to_lowercase();
+        let Some(gate) = try_begin_emote_refresh(&key) else {
+            return; // a refresh is already in flight; it lands the same result
+        };
+        let _gate = gate;
+        let _permit = emote_refresh_permits().acquire_owned().await.ok();
+        {
+            let svc = emote_service.read().await;
+            svc.invalidate_channel(user_id).await;
+        }
+        let access_token = TwitchService::get_token().await.ok();
+        Self::refresh_channel_emotes(
+            channel_name.to_string(),
+            key,
+            user_id.to_string(),
+            access_token,
+            emote_service,
+        )
+        .await;
     }
 
     /// Ensure the channel's third-party emote set is in the parse cache for a
@@ -3289,6 +3435,18 @@ impl IrcService {
 
             // Add Twitch emote (check for 7TV override) - bounds already validated above
             let emote_name = &content[start_byte..end_byte_exclusive];
+
+            // A Twitch chat GIF: the span is a bracketed description, not an
+            // emote code, so it takes no 7TV override and no text parsing.
+            if emote.gif {
+                segments.push(MessageSegment::Gif {
+                    content: emote_name.to_string(),
+                    gif_id: emote.id.clone(),
+                    gif_url: emote.url.clone(),
+                });
+                last_char_index = emote.end + 1;
+                continue;
+            }
 
             // Check if 7TV has an emote with the same name (7TV takes priority)
             let seventv_override = ctx.channel.and_then(|c| c.seventv_override(emote_name));
@@ -3737,6 +3895,7 @@ impl IrcService {
                                     start,
                                     end,
                                     url,
+                                    gif: false,
                                 });
                             }
                         }
@@ -3744,6 +3903,12 @@ impl IrcService {
                 }
             }
         }
+
+        // Twitch chat GIFs: the text carries a bracketed description at the
+        // GIF's span and the `gifs` tag carries its id and URL with the same
+        // zero-based inclusive codepoint positions `emotes` uses, so they join
+        // the same position list and get the same reply-mention offset below.
+        emotes.extend(parse_gifs_tag(tag_map.get("gifs").unwrap_or(&"")));
 
         // Parse reply info FIRST (needed to strip @mention before segment parsing)
         let reply_parent_user_login = tag_map
@@ -4047,12 +4212,19 @@ impl IrcService {
                                     start,
                                     end,
                                     url,
+                                    gif: false,
                                 });
                             }
                         }
                     }
                 }
             }
+        }
+
+        // Twitch chat GIFs ride the same position list as emotes (see the
+        // PRIVMSG path for the tag shape).
+        if !content.is_empty() {
+            emotes.extend(parse_gifs_tag(tag_map.get("gifs").unwrap_or(&"")));
         }
 
         // Extract channel from the USERNOTICE line so segment parsing uses the
@@ -4486,6 +4658,64 @@ pub fn cache_counts() -> Vec<(&'static str, Option<usize>)> {
 
 #[cfg(test)]
 mod tests {
+    // Verbatim `gifs` tag value from Twitch's IRC tags reference (2026-07-17).
+    const TWITCH_GIFS_TAG: &str = "0-33|joSNxeswxuc74Juo8X|https://media4.giphy.com/media/joSNxeswxuc74Juo8X/giphy.gif?cid=095d7a5dzizsiwgabonagkmigggv8v1spfai91ac3x0dsiy0&ep=v1_gifs_trending&rid=giphy.gif&ct=g";
+
+    #[test]
+    fn gifs_tag_parses_the_documented_example_verbatim() {
+        let pos = parse_gifs_tag(TWITCH_GIFS_TAG);
+        assert_eq!(pos.len(), 1);
+        assert!(pos[0].gif);
+        assert_eq!(pos[0].id, "joSNxeswxuc74Juo8X");
+        assert_eq!((pos[0].start, pos[0].end), (0, 33));
+        // Every query parameter survives: Twitch says the URL must not be modified.
+        assert_eq!(pos[0].url, &TWITCH_GIFS_TAG[24..]);
+    }
+
+    #[test]
+    fn gifs_tag_skips_malformed_entries_and_unescapes_ircv3() {
+        let pos = parse_gifs_tag("bad,5-9|abc|https://x/y.gif?a=1\\:b\\sc,3|x|y");
+        assert_eq!(pos.len(), 1);
+        assert_eq!((pos[0].start, pos[0].end), (5, 9));
+        assert_eq!(pos[0].url, "https://x/y.gif?a=1;b c");
+        assert!(parse_gifs_tag("").is_empty());
+    }
+
+    #[test]
+    fn gif_position_becomes_a_gif_segment_and_the_placeholder_never_renders_as_text() {
+        let content = "[Y A Y Yes GIF by Djemilah Birnie] nice";
+        let pos = parse_gifs_tag(TWITCH_GIFS_TAG);
+        let ctx = ParseCtx {
+            channel: None,
+            personal: None,
+            cheermotes: None,
+        };
+        let segments = IrcService::parse_message_segments(content, &pos, &ctx);
+        match &segments[0] {
+            MessageSegment::Gif {
+                content,
+                gif_id,
+                gif_url,
+            } => {
+                assert_eq!(content, "[Y A Y Yes GIF by Djemilah Birnie]");
+                assert_eq!(gif_id, "joSNxeswxuc74Juo8X");
+                assert!(gif_url.starts_with(
+                    "https://media4.giphy.com/media/joSNxeswxuc74Juo8X/giphy.gif?cid="
+                ));
+            }
+            other => panic!("expected a gif segment first, got {other:?}"),
+        }
+        // The trailing text survives as text and never contains the placeholder.
+        let rest: String = segments[1..]
+            .iter()
+            .map(|s| match s {
+                MessageSegment::Text { content } => content.clone(),
+                _ => String::new(),
+            })
+            .collect();
+        assert_eq!(rest.trim(), "nice");
+    }
+
     use super::*;
 
     #[test]
@@ -4658,6 +4888,7 @@ mod tests {
             ffz: vec![mk("f1", "Clash", EmoteProvider::FFZ)],
             seven_tv: vec![mk("s1", "Clash", EmoteProvider::SevenTV)],
             kick: Vec::new(),
+            seven_tv_ok: true,
         };
         let lookup = EmoteLookup::build(&set);
         // Word tier: 7TV wins name collisions (inserted last).
@@ -4851,6 +5082,40 @@ mod tests {
             words
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// Debounced dictionary write after a live 7TV delta.
+//
+// A bot adding ten emotes in a row is ten dispatches in a few seconds; writing
+// the 1.5 MB dictionary after each would be ten writes for one outcome. Each
+// delta bumps a per-channel generation and schedules a write 2 s out; only the
+// task still holding the latest generation writes, from the set as it is THEN.
+// Memory is already current, so a lost write costs only the disk-first seed of
+// the next join, which that join's refresh corrects.
+static DICTIONARY_WRITE_GEN: OnceLock<std::sync::Mutex<HashMap<String, u64>>> = OnceLock::new();
+
+fn schedule_dictionary_write(key: String, user_id: String) {
+    let gens = DICTIONARY_WRITE_GEN.get_or_init(|| std::sync::Mutex::new(HashMap::new()));
+    let my_gen = {
+        let Ok(mut g) = gens.lock() else {
+            return;
+        };
+        let e = g.entry(key.clone()).or_insert(0);
+        *e += 1;
+        *e
+    };
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        let current = gens.lock().ok().and_then(|g| g.get(&key).copied());
+        if current != Some(my_gen) {
+            return; // a newer delta rescheduled the write
+        }
+        let snapshot = get_channel_emotes().lock().await.get(&key).cloned();
+        if let Some(set) = snapshot {
+            crate::services::emote_set_cache::save_force(&user_id, &set);
+        }
+    });
 }
 
 // ---------------------------------------------------------------------------

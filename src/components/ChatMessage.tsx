@@ -82,7 +82,7 @@ type SevenTVBadgeWithSelection = any;
 
 // EmoteSegment type definition (migrated from emoteParser.ts)
 interface EmoteSegment {
-  type: 'text' | 'emote' | 'emoji' | 'cheermote';
+  type: 'text' | 'emote' | 'emoji' | 'cheermote' | 'gif';
   content: string;
   emoteId?: string;
   emoteUrl?: string;
@@ -96,6 +96,9 @@ interface EmoteSegment {
   isZeroWidth?: boolean;
   /** Modifier bitmask; present only on modifier emotes (FFZ or BetterTTV) */
   modifierFlags?: number;
+  // Twitch chat GIF: the asset URL (used exactly as sent) and GIPHY id.
+  gifId?: string;
+  gifUrl?: string;
 }
 
 // Wrap a rendered emote group in the effect layers its aggregated modifier
@@ -809,6 +812,13 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
             tier: seg.tier,
             color: seg.color,
           }];
+        } else if (seg.type === 'gif') {
+          return [{
+            type: 'gif' as const,
+            content: seg.content,
+            gifId: seg.gif_id,
+            gifUrl: seg.gif_url,
+          }];
         } else if (isProvider) {
           return parseEmojisSync(seg.content).map((es): EmoteSegment =>
             es.type === 'emoji' && es.emojiUrl
@@ -1063,6 +1073,11 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
   // write it, so rows do not re-render on pointer traffic unless asked.
   const animateEmotes = chatDesign?.animate_emotes ?? 'always';
   const [rowHovering, setRowHovering] = useState(false);
+  // Twitch chat GIFs: shown, or a chip that reveals on click. Reveals are
+  // per row and per GIF, and follow the Animate emotes mode the same way
+  // animated emotes do (Never = chip, On hover = while hovered).
+  const showChatGifs = chatDesign?.show_chat_gifs ?? true;
+  const [revealedGifs, setRevealedGifs] = useState<Set<string>>(() => new Set());
   // Highlight, mention and reply-to-me are decided ONCE per message by the
   // Rust rule engine (src-tauri/src/services/chat_rules.rs) and stamped on
   // metadata; this row reads the stamp instead of running a regex loop per
@@ -1594,6 +1609,54 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
               {bits}
             </span>
           </span>
+        </Tooltip>
+      );
+    }
+
+    if (segment.type === 'gif' && segment.gifUrl) {
+      // A Twitch chat GIF (GIPHY-backed, Tier 2/3 subscribers). Fixed height so
+      // a late-loading image never shifts the list; width follows the asset.
+      // Twitch requires the URL exactly as sent, and a GIF is one-off per
+      // message, so it never enters the emote disk cache. The description
+      // Twitch puts in the message text is the tooltip and the chip label.
+      const gifKey = segment.gifId || segment.gifUrl;
+      const label = segment.content.replace(/^\[|\]$/g, '');
+      const reveal =
+        showChatGifs &&
+        (animateEmotes === 'always' ||
+          (animateEmotes === 'hover' && rowHovering) ||
+          revealedGifs.has(gifKey));
+      if (!reveal) {
+        return (
+          <button
+            key={key}
+            type="button"
+            title={label}
+            onClick={() => setRevealedGifs((prev) => new Set(prev).add(gifKey))}
+            className={`inline-flex max-w-[16rem] items-center gap-1 rounded-md border border-white/10 bg-white/5 px-1.5 py-0.5 text-xs text-textSecondary hover:bg-white/10 ${inGrid ? '' : 'align-middle'} ${marginClass}`}
+            style={gridStyle}
+          >
+            <span className="font-semibold tracking-wide">GIF</span>
+            <span className="truncate">{label}</span>
+          </button>
+        );
+      }
+      return (
+        <Tooltip key={key} content={label} side="top">
+          <img
+            src={segment.gifUrl}
+            alt={label}
+            loading="lazy"
+            decoding="async"
+            referrerPolicy="no-referrer"
+            className={`inline-block h-20 w-auto max-w-full rounded-md ${inGrid ? '' : 'align-middle'} ${marginClass}`}
+            style={gridStyle}
+            onError={(e) => {
+              // Asset gone: keep the description Twitch sent instead of a blank.
+              e.currentTarget.style.display = 'none';
+              e.currentTarget.insertAdjacentText('afterend', segment.content);
+            }}
+          />
         </Tooltip>
       );
     }
@@ -2198,7 +2261,8 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
           {thirdPartyBadges.filter(badge => badge && badge.imageUrl).map((badge, idx) => (
             <Tooltip key={`bits-tp-badge-${badge.id}-${idx}`} content={`${badge.title} (${badge.provider.toUpperCase()})`} side="top">
               <img
-                src={badge.imageUrl}
+                // 2x, not imageUrl's 4x; see the default layout's badge row.
+                src={badge.image2x || badge.imageUrl}
                 alt={badge.title}
                 className="sn-chat-badge inline-block"
                 onError={(e) => {
@@ -2365,7 +2429,8 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
           {thirdPartyBadges.filter(badge => badge && badge.imageUrl).map((badge, idx) => (
             <Tooltip key={`donation-tp-badge-${badge.id}-${idx}`} content={`${badge.title} (${badge.provider.toUpperCase()})`} side="top">
               <img
-                src={badge.imageUrl}
+                // 2x, not imageUrl's 4x; see the default layout's badge row.
+                src={badge.image2x || badge.imageUrl}
                 alt={badge.title}
                 className="sn-chat-badge inline-block"
                 onError={(e) => {
@@ -2547,7 +2612,8 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
           {thirdPartyBadges.filter(badge => badge && badge.imageUrl).map((badge, idx) => (
             <Tooltip key={`watchstreak-tp-badge-${badge.id}-${idx}`} content={`${badge.title} (${badge.provider.toUpperCase()})`} side="top">
               <img
-                src={badge.imageUrl}
+                // 2x, not imageUrl's 4x; see the default layout's badge row.
+                src={badge.image2x || badge.imageUrl}
                 alt={badge.title}
                 className="sn-chat-badge inline-block"
                 onError={(e) => {
@@ -2664,7 +2730,8 @@ const ChatMessage = memo(function ChatMessageInner({ message, onUsernameClick, o
           {thirdPartyBadges.filter(badge => badge && badge.imageUrl).map((badge, idx) => (
             <Tooltip key={`sub-tp-badge-${badge.id}-${idx}`} content={`${badge.title} (${badge.provider.toUpperCase()})`} side="top">
               <img
-                src={badge.imageUrl}
+                // 2x, not imageUrl's 4x; see the default layout's badge row.
+                src={badge.image2x || badge.imageUrl}
                 alt={badge.title}
                 className="sn-chat-badge inline-block"
                 onError={(e) => {

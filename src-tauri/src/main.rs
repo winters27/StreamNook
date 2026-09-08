@@ -38,7 +38,7 @@ use commands::{
     accounts::*, announcements::*, app::*, automation::*, badge_metadata::*, badge_service::*,
     badges::*, cache::*, channel_panels::*, channel_state::*, chat::*, chat_identity::*, components::*,
     cosmetics_cache::*, diagnostic_logging::*, discord::*, drops::*, emoji::*, emote_prefetch::*,
-    emotes::*, eventsub::*, ffz::*, helix::*, home_snapshot::*, hype_train::*, identity::*, justlog::*, layout::*,
+    emotes::*, eventsub::*, ffz::*, gifs::*, helix::*, home_snapshot::*, hype_train::*, identity::*, justlog::*, layout::*,
     link_preview::*, logs::*, mod_log_storage::*, modroom::*, multi_nook::*, plugins::*,
     profile_cache::*, provider_browse::*,
     resub::*, screen_capture::*, session::*, settings::*, seventv::*, seventv_cosmetics::*,
@@ -1349,6 +1349,9 @@ fn main() {
             fetch_channel_emotes,
             get_emote_by_name,
             clear_emote_cache,
+            get_gif_picker_status,
+            search_gifs,
+            send_gif_message,
             ffz_local_user_status,
             // Emote prefetch (AFK bulk cache) commands
             emote_prefetch_plan,

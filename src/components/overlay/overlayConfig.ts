@@ -317,6 +317,10 @@ export interface OverlayStyle {
   giantEmotes: boolean;
   /** Where the gigantified emote lands. See GiantEmoteAlign. */
   giantEmoteAlign: GiantEmoteAlign;
+  /** Twitch chat GIFs (GIPHY-backed, Tier 2/3 subscribers): draw them at the
+   *  gigantified size with the same placement. Off shows the description
+   *  Twitch puts in the message text instead. */
+  showGifs: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -655,6 +659,7 @@ export const DEFAULT_OVERLAY_STYLE: OverlayStyle = {
   restoreOnReload: false,
   giantEmotes: true,
   giantEmoteAlign: 'center',
+  showGifs: true,
 };
 
 // Clamp ranges so a builder (or a hand-edited saved config) can't produce a
@@ -761,6 +766,8 @@ export const clampOverlayStyle = (s: OverlayStyle): OverlayStyle => {
       s.giantEmoteAlign === 'left' || s.giantEmoteAlign === 'right' || s.giantEmoteAlign === 'inline'
         ? s.giantEmoteAlign
         : 'center',
+    // Absent on configs saved before chat GIFs existed → on, like Twitch.
+    showGifs: s.showGifs !== false,
     textAlign: s.textAlign === 'center' || s.textAlign === 'right' ? s.textAlign : 'left',
     cheerDisplay: s.cheerDisplay === 'event' ? 'event' : 'message',
     fontWeight:

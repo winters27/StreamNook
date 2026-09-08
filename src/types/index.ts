@@ -187,6 +187,9 @@ export interface ChatDesignSettings {
   // Animated emotes: play always (default), only while the row is hovered,
   // or never (first frame). Typed in Rust too; the CDNs serve static files.
   animate_emotes?: 'always' | 'hover' | 'never';
+  // Twitch chat GIFs (Tier 2/3 subscribers). Off swaps each for a chip that
+  // reveals on click. Typed in Rust too (ChatDesignSettings). Default true.
+  show_chat_gifs?: boolean;
   // Opacity of history rows loaded on join, 0-100. Default 100.
   backfill_opacity?: number;
   emote_margin?: number; // Horizontal margin around emotes in rem. Negative values overlap. Default 0.125.

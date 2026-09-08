@@ -131,6 +131,22 @@ const FallbackImg = ({ fallback = null, ...props }: FallbackImgProps) => {
   return <img {...props} onError={() => setFailed(true)} />;
 };
 
+// A Twitch chat GIF (GIPHY-backed, Tier 2/3 subscribers). Always drawn at the
+// gigantified size; the message renderer places it by the giant placement
+// setting. The URL is used exactly as Twitch sent it, and a failed load shows
+// the description Twitch put in the message text.
+const GifImg = ({ segment, emoteScale }: { segment: Extract<MessageSegment, { type: 'gif' }>; emoteScale: number }) => (
+  <FallbackImg
+    src={segment.gif_url}
+    alt={segment.content}
+    loading="lazy"
+    referrerPolicy="no-referrer"
+    className="inline-block w-auto align-middle"
+    style={{ height: `calc(8em * ${emoteScale})`, maxWidth: `calc(24em * ${emoteScale})`, margin: '0 0.125rem', borderRadius: '0.35em', verticalAlign: 'middle' }}
+    fallback={<span>{segment.content}</span>}
+  />
+);
+
 const badgeUrl = (b: OverlayMessage['badges'][number]): string | undefined =>
   b.image_url_4x || b.image_url_2x || b.image_url_1x;
 
@@ -350,6 +366,13 @@ const OverlaySegment = ({ segment, style, emoteScale, giant = false }: { segment
         <span style={{ color: segment.color, fontWeight: 700, marginLeft: 2 }}>{segment.bits}</span>
       </span>
     );
+  }
+  if (segment.type === 'gif') {
+    // Off renders the description Twitch sent, the way personal emotes off
+    // renders the word typed. On, the GIF draws at the gigantified size; the
+    // message renderer decides whether it sits inline or on its own line below.
+    if (style.showGifs === false) return <span>{segment.content}</span>;
+    return <GifImg segment={segment} emoteScale={scale} />;
   }
   if (segment.type === 'link') {
     // 'plain' inherits the body color from the container, so a link reads as
@@ -962,6 +985,14 @@ const OverlayRow = ({ message, style, expiring }: { message: OverlayMessage; sty
   const giantAlign = style.giantEmoteAlign ?? 'center';
   const giantInline = giantIdx >= 0 && giantAlign === 'inline';
 
+  // Twitch chat GIFs share the giant placement: plucked onto the line below
+  // (Left / Center / Right) or left where they were typed (Inline), always at
+  // the giant size. With the GIF toggle off they stay in the flow and
+  // OverlaySegment renders the description Twitch sent instead.
+  const gifIdxs: number[] = style.showGifs === false ? [] : bodySegs.flatMap((s, i) => (s.type === 'gif' ? [i] : []));
+  const gifsPlucked = gifIdxs.length > 0 && giantAlign !== 'inline';
+  const gifInline = gifIdxs.length > 0 && giantAlign === 'inline';
+
   // Long-message clamp: cap the whole rendered line block at N lines with an
   // ellipsis, so one copypasta can't eat the canvas. The -webkit-box line-clamp
   // works over the mixed inline content (badges, name, emotes) as line boxes.
@@ -969,7 +1000,7 @@ const OverlayRow = ({ message, style, expiring }: { message: OverlayMessage; sty
   // Skipped for an inline giant: the clamp would slice an 8em image mid-emote, and the
   // block placements dodge this by living outside the clamped div entirely.
   const lineClampStyle =
-    clampLines >= 1 && !giantInline
+    clampLines >= 1 && !giantInline && !gifInline
       ? { display: '-webkit-box', WebkitLineClamp: Math.min(6, clampLines), WebkitBoxOrient: 'vertical' as const, overflow: 'hidden' }
       : null;
 
@@ -1003,7 +1034,7 @@ const OverlayRow = ({ message, style, expiring }: { message: OverlayMessage; sty
           <span style={{ fontWeight: 700, opacity: 0.85 }}>@{stripAt(replyMention.parent_display_name)} </span>
         )}
         {bodySegs.map((seg, i) => (
-          i === giantIdx && !giantInline
+          (i === giantIdx && !giantInline) || (gifsPlucked && seg.type === 'gif')
             ? null
             : <OverlaySegment key={i} segment={seg} style={style} giant={i === giantIdx && giantInline} />
         ))}
@@ -1011,16 +1042,20 @@ const OverlayRow = ({ message, style, expiring }: { message: OverlayMessage; sty
     </div>
   );
 
-  // The plucked gigantified emote on its own line below the message line.
-  const giantBlock = giantIdx >= 0 && !giantInline ? (
+  // The plucked gigantified emote, and any chat GIFs, on their own line below
+  // the message line, sharing the giant placement.
+  const giantBlock = (giantIdx >= 0 && !giantInline) || gifsPlucked ? (
     <div
       style={{
         display: 'flex',
+        flexWrap: 'wrap',
+        gap: '0.25em',
         justifyContent: giantAlign === 'left' ? 'flex-start' : giantAlign === 'right' ? 'flex-end' : 'center',
         marginTop: '0.2em',
       }}
     >
-      <OverlaySegment segment={bodySegs[giantIdx]} style={style} giant />
+      {giantIdx >= 0 && !giantInline && <OverlaySegment segment={bodySegs[giantIdx]} style={style} giant />}
+      {gifsPlucked && gifIdxs.map((i) => <OverlaySegment key={`gif-${i}`} segment={bodySegs[i]} style={style} giant />)}
     </div>
   ) : null;
 

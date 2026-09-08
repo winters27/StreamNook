@@ -23,6 +23,7 @@ pub mod emote_prefetch;
 pub mod emotes;
 pub mod eventsub;
 pub mod ffz;
+pub mod gifs;
 pub mod home_snapshot;
 pub mod helix;
 pub mod hype_train;

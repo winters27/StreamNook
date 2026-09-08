@@ -32,12 +32,20 @@ type EmojiData = {
 };
 let emojiDataCache: EmojiData | null = null;
 import { getAppleEmojiUrl } from '../../services/emojiService';
+import {
+  getGifPickerStatus,
+  searchGifs,
+  sendGifMessage,
+  gifSendMessage,
+  type GifItem,
+  type GifPickerStatus,
+} from '../../services/gifService';
 import { useAppStore } from '../../stores/AppStore';
 import { Logger } from '../../utils/logger';
 import { MOD_PREFIX, staticModifierStyle } from '../../utils/emoteModifiers';
 import { PROVIDERS } from '../../types/providers';
 
-type ProviderTab = 'twitch' | 'bttv' | '7tv' | 'ffz' | 'favorites' | 'emoji' | 'kick' | 'youtube';
+type ProviderTab = 'twitch' | 'bttv' | '7tv' | 'ffz' | 'favorites' | 'emoji' | 'kick' | 'youtube' | 'gifs';
 
 // ── swapping smiley (shared trigger icon) ────────────────────────────────────
 const SMILEY_POOL = ['😀', '😄', '😁', '😆', '🤣', '😂', '😊', '😇', '🙂', '😉', '😌', '😍', '🥰', '😜', '🤪', '😎', '🤩', '🥳', '😏', '😋', '🤗', '🫠', '🫡', '😺'];
@@ -348,6 +356,76 @@ export function EmotePickerPanel({
   const [favoriteEmotes, setFavoriteEmotes] = useState<Emote[]>([]);
   const scrollRef = useRef<HTMLDivElement>(null);
 
+  // ── Twitch chat GIFs ───────────────────────────────────────────────────────
+  // Eligibility is Twitch's call (the server-side Tier 2/3 gate), so the tab
+  // asks once per channel and renders what it is told rather than guessing.
+  // Picking a GIF SENDS it, like Twitch's own keyboard: there is no text form
+  // to insert into the composer, the asset only exists as a `gifs` tag Twitch
+  // stamps on the outgoing message.
+  // Both bits of GIF state are stored WITH the key they belong to, and the key
+  // is compared during render. That keeps every write asynchronous (no
+  // setState inside an effect body, which cascades renders) and makes staleness
+  // impossible by construction rather than by a request-id guard: results for a
+  // channel or query you have moved on from simply do not match the key.
+  const [gifStatusFor, setGifStatusFor] = useState<{ key: string; status: GifPickerStatus } | null>(null);
+  const [gifResults, setGifResults] = useState<{ key: string; items: GifItem[] } | null>(null);
+  const [gifNotice, setGifNotice] = useState('');
+  const [sendingGifId, setSendingGifId] = useState<string | null>(null);
+
+  const gifStatus = gifStatusFor && gifStatusFor.key === channelId ? gifStatusFor.status : null;
+  const gifQueryKey = `${channelId ?? ''}|${searchQuery}`;
+  // null means "no results for THIS key yet", which is what renders the
+  // loading state; an empty array means the search genuinely returned nothing.
+  const gifs = gifResults && gifResults.key === gifQueryKey ? gifResults.items : null;
+
+  // Ask once per channel, and only where GIFs can exist: Twitch, with an id,
+  // while the picker is actually open. Nothing runs for a closed picker.
+  useEffect(() => {
+    if (!open || !isTwitch || !channelId) return;
+    let cancelled = false;
+    void getGifPickerStatus(channelId)
+      .then((status) => { if (!cancelled) setGifStatusFor({ key: channelId, status }); })
+      .catch(() => { if (!cancelled) setGifStatusFor(null); });
+    return () => { cancelled = true; };
+  }, [open, isTwitch, channelId]);
+
+  // Trending on open, debounced search as you type.
+  useEffect(() => {
+    if (selectedProvider !== 'gifs' || !channelId || !gifStatus?.can_use) return;
+    let cancelled = false;
+    const t = setTimeout(() => {
+      void searchGifs(channelId, searchQuery)
+        .then((items) => { if (!cancelled) setGifResults({ key: gifQueryKey, items }); })
+        .catch(() => {
+          if (cancelled) return;
+          setGifResults({ key: gifQueryKey, items: [] });
+          setGifNotice('GIF search is unavailable right now.');
+        });
+    }, searchQuery ? 250 : 0);
+    return () => { cancelled = true; clearTimeout(t); };
+  }, [selectedProvider, searchQuery, channelId, gifQueryKey, gifStatus?.can_use]);
+
+  const onPickGif = useCallback(
+    async (gif: GifItem) => {
+      if (!channelId || sendingGifId) return;
+      setSendingGifId(gif.id);
+      setGifNotice('');
+      try {
+        const outcome = await sendGifMessage(channelId, gif, searchQuery);
+        if (outcome.sent) {
+          onClose();
+        } else {
+          setGifNotice(gifSendMessage(outcome));
+        }
+      } catch {
+        setGifNotice('That GIF could not be sent.');
+      } finally {
+        setSendingGifId(null);
+      }
+    },
+    [channelId, searchQuery, sendingGifId, onClose],
+  );
+
   // Aggressive disk caching while the picker is open; polite trickle on close.
   useEffect(() => {
     if (!open) return;
@@ -394,7 +472,8 @@ export function EmotePickerPanel({
   );
 
   const filteredEmotes = useMemo((): Emote[] => {
-    if (selectedProvider === 'emoji') return [];
+    // Emoji and GIFs are not EmoteSet-backed: both render their own pane.
+    if (selectedProvider === 'emoji' || selectedProvider === 'gifs') return [];
     if (selectedProvider === 'favorites') {
       if (!searchQuery) return favoriteEmotes;
       const query = searchQuery.toLowerCase();
@@ -553,6 +632,8 @@ export function EmotePickerPanel({
     '7tv': '#29b6f6',
     bttv: '#d50014',
     ffz: '#ffffff',
+    // GIPHY's brand green, so the tab reads as the GIF source at a glance.
+    gifs: '#00ff99',
   };
   const tabClass = (active: boolean) =>
     `flex-1 py-1.5 text-xs transition-all flex items-center justify-center gap-1 ${active ? 'glass-button-active font-extrabold' : 'glass-button text-textSecondary hover:text-white'}`;
@@ -584,7 +665,7 @@ export function EmotePickerPanel({
             type="text"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Search emotes..."
+            placeholder={selectedProvider === 'gifs' ? 'Search GIFs...' : 'Search emotes...'}
             className="flex-1 min-w-0 glass-input text-xs px-3 py-1.5 placeholder-textSecondary"
           />
           {onManageEmotes && (
@@ -614,6 +695,28 @@ export function EmotePickerPanel({
               <img src={getAppleEmojiUrl('😀')} alt="😀" className="w-4 h-4" />
             </button>
           </Tooltip>
+          {/* Shown whenever Twitch ANSWERED the eligibility query, not only when
+              the answer is yes. Hiding it on a no made "this channel has GIFs
+              off" and "the feature is broken" look identical, with no tab, no
+              error and nothing to check. The pane below names which it is. A
+              failed query (signed out, offline) still hides the tab, because
+              then we genuinely do not know. */}
+          {gifStatus && (
+            <Tooltip
+              content={
+                gifStatus.can_use
+                  ? 'GIFs'
+                  : !gifStatus.is_enabled
+                    ? 'GIFs (turned off in this channel)'
+                    : 'GIFs (Tier 2 or Tier 3 subscribers)'
+              }
+              side="top"
+            >
+              <button onClick={() => setSelectedProvider('gifs')} className={tabClass(selectedProvider === 'gifs')} style={tabStyle(selectedProvider === 'gifs', 'gifs')}>
+                <span className="text-[10px] font-extrabold tracking-wide">GIF</span>
+              </button>
+            </Tooltip>
+          )}
           {isTwitch && (
             <Tooltip content={`Twitch (${emotes?.twitch.length || 0})`} side="top">
               <button onClick={() => setSelectedProvider('twitch')} className={tabClass(selectedProvider === 'twitch')} style={tabStyle(selectedProvider === 'twitch', 'twitch')}>
@@ -675,7 +778,65 @@ export function EmotePickerPanel({
         </div>
       </div>
       <div ref={scrollRef} className="flex-1 overflow-y-auto px-2 pb-2 scrollbar-thin">
-        {selectedProvider === 'emoji' ? (
+        {selectedProvider === 'gifs' ? (
+          !gifStatus?.can_use ? (
+            // Three distinct answers, so an empty pane is never ambiguous:
+            // the channel turned GIFs off, or you are not eligible to send here.
+            <div className="flex flex-col items-center justify-center h-40 px-6 gap-1.5 text-center">
+              <p className="text-xs text-textSecondary leading-relaxed">
+                {gifStatus && !gifStatus.is_enabled
+                  ? 'This channel has GIFs turned off.'
+                  : 'Tier 2 and Tier 3 subscribers can post GIFs in this channel.'}
+              </p>
+              <p className="text-[11px] text-textSecondary opacity-70 leading-relaxed">
+                GIFs other people post still show in your chat.
+              </p>
+            </div>
+          ) : (
+            <div className="flex flex-col pt-2">
+              {gifNotice && (
+                <p className="text-[11px] text-warning px-1 pb-2 leading-relaxed">{gifNotice}</p>
+              )}
+              {!gifs ? (
+                <div className="flex items-center justify-center h-32"><p className="text-xs text-textSecondary">Loading GIFs...</p></div>
+              ) : gifs.length === 0 ? (
+                <div className="flex items-center justify-center h-32"><p className="text-xs text-textSecondary">No GIFs found</p></div>
+              ) : (
+                // Two columns: GIPHY art is landscape, so a 7-wide emote grid
+                // would render them postage-stamp sized. Fixed row height keeps
+                // the scroll position stable while previews stream in.
+                <div className="grid grid-cols-2 gap-2 px-1">
+                  {gifs.map((gif) => (
+                    <button
+                      key={gif.id}
+                      onClick={() => void onPickGif(gif)}
+                      disabled={!!sendingGifId}
+                      title={gif.title || 'GIF'}
+                      className={`relative overflow-hidden rounded-md border border-borderSubtle bg-black/20 h-24 transition-opacity hover:border-white/25 ${sendingGifId && sendingGifId !== gif.id ? 'opacity-40' : ''}`}
+                    >
+                      <img
+                        src={gif.preview_url}
+                        alt={gif.title || 'GIF'}
+                        loading="lazy"
+                        decoding="async"
+                        referrerPolicy="no-referrer"
+                        className="h-full w-full object-cover"
+                      />
+                      {sendingGifId === gif.id && (
+                        <span className="absolute inset-0 flex items-center justify-center bg-black/60 text-[11px] font-semibold">
+                          Sending...
+                        </span>
+                      )}
+                    </button>
+                  ))}
+                </div>
+              )}
+              <p className="text-[10px] text-textSecondary opacity-60 text-center pt-3 pb-1">
+                Powered by GIPHY. Picking a GIF posts it straight to chat.
+              </p>
+            </div>
+          )
+        ) : selectedProvider === 'emoji' ? (
           filteredEmojis.length === 0 ? (
             <div className="flex items-center justify-center h-32"><p className="text-xs text-textSecondary">No emojis found</p></div>
           ) : (

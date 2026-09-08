@@ -23,6 +23,11 @@ pub struct EmotePos {
     pub start: usize,
     pub end: usize,
     pub url: String,
+    /// A Twitch chat GIF from the `gifs` tag rather than an emote from
+    /// `emotes`. Same position arithmetic, different segment: the span is a
+    /// bracketed description, so it gets no 7TV override and no text parsing.
+    #[serde(default)]
+    pub gif: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
@@ -174,6 +179,16 @@ pub enum MessageSegment {
         tier: String,          // e.g., "100" (tier ID for URL)
         color: String,         // e.g., "#9c3ee8" (tier color)
         cheermote_url: String, // Animated GIF URL
+    },
+    /// A Twitch chat GIF (GIPHY-backed, sent by Tier 2 and 3 subscribers).
+    /// The message text carries a bracketed description at the GIF's span,
+    /// e.g. `[Y A Y Yes GIF by Djemilah Birnie]`; that stays in `content` for
+    /// search, logs and tooltips while the renderer draws the asset. Twitch
+    /// requires the URL be used exactly as sent.
+    Gif {
+        content: String,
+        gif_id: String,
+        gif_url: String,
     },
 }
 

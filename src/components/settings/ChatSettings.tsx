@@ -352,6 +352,7 @@ const ChatSettings = ({ hidePlacement = false }: { hidePlacement?: boolean } = {
     mod_pin_style: stored?.mod_pin_style ?? 'both',
     emote_scale: stored?.emote_scale ?? 1,
     animate_emotes: stored?.animate_emotes ?? 'always',
+    show_chat_gifs: stored?.show_chat_gifs ?? true,
     backfill_opacity: stored?.backfill_opacity ?? 100,
     emote_margin: stored?.emote_margin ?? 0.125,
     emote_hover_size: stored?.emote_hover_size ?? 96,
@@ -1152,6 +1153,17 @@ const ChatSettings = ({ hidePlacement = false }: { hidePlacement?: boolean } = {
             ]}
           />
         </SettingsRow>
+        <SettingsRow
+          title="Show GIFs in chat"
+          description="Twitch lets Tier 2 and Tier 3 subscribers post GIFs. Off swaps each one for a small chip you can click to reveal."
+          help="GIFs also follow Animate emotes: Never shows the chip, On hover plays them while you hover the message."
+          control={
+            <Toggle
+              enabled={cd.show_chat_gifs ?? true}
+              onChange={() => setDesign({ show_chat_gifs: !(cd.show_chat_gifs ?? true) })}
+            />
+          }
+        />
         <SettingsRow
           title={`History opacity: ${cd.backfill_opacity ?? 100}%`}
           description="Dim the scrollback that loads when you join a chat, so live messages stand out."

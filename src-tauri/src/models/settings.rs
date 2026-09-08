@@ -205,6 +205,10 @@ pub struct ChatDesignSettings {
     /// while the row is hovered, or show their first frame. A real CPU lever.
     #[serde(default = "default_animate_emotes")]
     pub animate_emotes: String,
+    /// Twitch chat GIFs (Tier 2/3 subscribers): render the asset, or a chip
+    /// that reveals it on click. Default true.
+    #[serde(default = "default_true")]
+    pub show_chat_gifs: bool,
     /// Opacity of backfilled history rows, 0-100 (100 = same as live).
     #[serde(default = "default_backfill_opacity")]
     pub backfill_opacity: u32,
@@ -311,6 +315,7 @@ impl Default for ChatDesignSettings {
             timestamp_format: default_timestamp_format(),
             emote_scale: 1.0,
             animate_emotes: default_animate_emotes(),
+            show_chat_gifs: true,
             backfill_opacity: default_backfill_opacity(),
             emote_margin: 0.125,
             emote_hover_size: 96,
