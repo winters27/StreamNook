@@ -374,22 +374,27 @@ function normalizeHex(input: string | null | undefined): string {
 }
 
 // Friendly labels + display order for third-party chat-client badge providers.
-// In the profile path `provider` is the Rust enum's Debug form (PascalCase),
-// e.g. "FFZ" / "BTTV" / "DankChat" — see user_profile.rs `format!("{:?}", ..)`.
-// We group the badges under these per-provider headers instead of one flat
+// Keyed by the CANONICAL lowercase provider id (BadgeProvider::as_key in Rust)
+// and matched case-insensitively, because one provider string here legitimately
+// isn't lowercase: the BTTV Pro badge is tagged 'BTTV' on the client so that
+// `${provider}:${id}` reproduces BTTV_PRO_LOADOUT_KEY, which is already persisted
+// in members' loadouts as "BTTV:bttv-pro" and can't be renamed without orphaning
+// it. We group the badges under these per-provider headers instead of one flat
 // "Other" pile so each badge keeps its provenance, mirroring the Attainables
 // "Chat Clients" gallery. Any provider not listed here falls through to a
 // catch-all "Other" group, so a new Rust-side provider can't silently vanish.
 const THIRD_PARTY_PROVIDER_GROUPS: { key: string; label: string }[] = [
-  { key: 'FFZ', label: 'FrankerFaceZ' },
-  { key: 'BTTV', label: 'BetterTTV' },
-  { key: 'Chatterino', label: 'Chatterino' },
-  { key: 'Chatsen', label: 'Chatsen' },
-  { key: 'Chatty', label: 'Chatty' },
-  { key: 'DankChat', label: 'DankChat' },
-  { key: 'Homies', label: 'Homies' },
-  { key: 'Moltorino', label: 'Moltorino' },
+  { key: 'ffz', label: 'FrankerFaceZ' },
+  { key: 'bttv', label: 'BetterTTV' },
+  { key: 'chatterino', label: 'Chatterino' },
+  { key: 'chatsen', label: 'Chatsen' },
+  { key: 'chatty', label: 'Chatty' },
+  { key: 'dankchat', label: 'DankChat' },
+  { key: 'homies', label: 'Homies' },
+  { key: 'moltorino', label: 'Moltorino' },
 ];
+const providerGroupKey = (provider: unknown): string =>
+  typeof provider === 'string' ? provider.toLowerCase() : '';
 
 // Inline editor for the nickname + color overrides we expose on each user.
 // Reads the current override from the settings store on mount (lazy init)
@@ -2204,7 +2209,10 @@ const UserProfileCard = ({
                         alt={b.title}
                         className="w-5 h-5 cursor-pointer hover:scale-110 transition-transform"
                         onClick={() => openBadgesWithTargetInMain(
-                          b.provider === 'BTTV'
+                          // Case-insensitive for the same reason the groups are:
+                          // contributor badges come from Rust as 'bttv', while the
+                          // Pro badge is tagged 'BTTV' to match its loadout key.
+                          providerGroupKey(b.provider) === 'bttv'
                             ? { tab: 'bttv', query: b.title }
                             : { tab: 'chat-clients', query: b.title },
                         )}
@@ -2213,13 +2221,13 @@ const UserProfileCard = ({
                     </Tooltip>
                   );
                   const known = new Set(THIRD_PARTY_PROVIDER_GROUPS.map(g => g.key));
-                  const ungrouped = visibleThirdPartyBadges.filter(b => !known.has(b.provider));
+                  const ungrouped = visibleThirdPartyBadges.filter(b => !known.has(providerGroupKey(b.provider)));
                   return (
                     <>
                       {THIRD_PARTY_PROVIDER_GROUPS.map(({ key, label }) =>
                         renderBadgeGroup(
                           label,
-                          visibleThirdPartyBadges.filter(b => b.provider === key),
+                          visibleThirdPartyBadges.filter(b => providerGroupKey(b.provider) === key),
                           renderThirdPartyItem,
                           `3p-${key}`,
                         ),

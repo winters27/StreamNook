@@ -132,6 +132,36 @@ pub enum BadgeProvider {
     Moltorino,
 }
 
+impl BadgeProvider {
+    /// The canonical lowercase id this provider carries EVERYWHERE it crosses a
+    /// boundary: the serde wire form (`rename_all = "lowercase"` above), the
+    /// `<provider>:<id>` loadout key the Identity API dispatches on, and the
+    /// overlay's per-provider badge toggles.
+    ///
+    /// `format!("{:?}", provider)` yields PascalCase and must never reach any of
+    /// those. `get_user_profile_complete` used to send the Debug form while every
+    /// other command sent the serde form, so the profile card held two spellings
+    /// of one provider: it grouped third-party badges under a catch-all "Other"
+    /// whenever the cosmetics cache answered first, and built `FFZ:ffz-3` style
+    /// loadout keys that matched nothing whenever the Rust profile answered
+    /// first, hiding a member's curated badge outright.
+    ///
+    /// Pinned to the serde form by `provider_key_matches_the_serde_wire_form`.
+    pub fn as_key(&self) -> &'static str {
+        match self {
+            BadgeProvider::Twitch => "twitch",
+            BadgeProvider::FFZ => "ffz",
+            BadgeProvider::BTTV => "bttv",
+            BadgeProvider::Chatterino => "chatterino",
+            BadgeProvider::Homies => "homies",
+            BadgeProvider::Chatsen => "chatsen",
+            BadgeProvider::Chatty => "chatty",
+            BadgeProvider::DankChat => "dankchat",
+            BadgeProvider::Moltorino => "moltorino",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserBadgesResponse {
     pub display_badges: Vec<UserBadge>,
@@ -1906,7 +1936,7 @@ impl BadgeService {
         let mut deduped: Vec<ThirdPartyGalleryBadge> = Vec::with_capacity(out.len());
         let mut index: HashMap<(String, String), usize> = HashMap::new();
         for badge in out {
-            let key = (format!("{:?}", badge.provider), badge.title.clone());
+            let key = (badge.provider.as_key().to_string(), badge.title.clone());
             if let Some(&i) = index.get(&key) {
                 deduped[i].user_count += badge.user_count;
                 deduped[i].owned = deduped[i].owned || badge.owned;
@@ -2125,6 +2155,36 @@ mod tests {
             serde_json::to_string(&BadgeProvider::Moltorino).unwrap(),
             "\"moltorino\""
         );
+        // The Debug form differs, which is exactly why `as_key` exists: shipping
+        // this string to the page gave the profile card a second spelling of
+        // every provider. See BadgeProvider::as_key.
         assert_eq!(format!("{:?}", BadgeProvider::Moltorino), "Moltorino");
+    }
+
+    /// `as_key` is the id the page, the loadout keys and the overlay toggles all
+    /// match on, so it must stay identical to what serde puts on the wire. A new
+    /// variant that forgets an arm here (or spells it in PascalCase) fails this
+    /// instead of silently dropping that provider's badges on one surface.
+    #[test]
+    fn provider_key_matches_the_serde_wire_form() {
+        for provider in [
+            BadgeProvider::Twitch,
+            BadgeProvider::FFZ,
+            BadgeProvider::BTTV,
+            BadgeProvider::Chatterino,
+            BadgeProvider::Homies,
+            BadgeProvider::Chatsen,
+            BadgeProvider::Chatty,
+            BadgeProvider::DankChat,
+            BadgeProvider::Moltorino,
+        ] {
+            let wire = serde_json::to_string(&provider).unwrap();
+            assert_eq!(
+                format!("\"{}\"", provider.as_key()),
+                wire,
+                "as_key drifted from the serde form for {:?}",
+                provider
+            );
+        }
     }
 }
