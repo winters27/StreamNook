@@ -192,14 +192,15 @@ const UPDATE_PUBKEY: Option<&str> =
 
 /// Whether a missing or unverifiable signature ABORTS the update.
 ///
-/// Deliberately false for the first release that ships this. Verification going
-/// live and the signing pipeline going live cannot be made simultaneous across
-/// an already-installed user base, and if the CI side is wrong, failing closed
-/// bricks the update path for everyone at once, with the update path itself
-/// being the only way to fix it. So: one release that reports, then flip.
-///
-/// Flipping this to `true` is the actual completion of the work.
-const ENFORCE_UPDATE_SIGNATURE: bool = false;
+/// Shipped false first (v8.5.3 to v8.6.0) because verification going live and
+/// the signing pipeline going live cannot be made simultaneous across an
+/// already-installed user base, and a wrong CI side would have bricked the
+/// update path for everyone at once. Flipped 2026-09-07 after three
+/// consecutive real releases logged `Update signature verified` on an
+/// installed client and the live manifest carried a signature. From here an
+/// unsigned bundle, a bundle with no published hash, or a build with no
+/// pinned key all abort. See Brain runbook StreamNook_Update_Signing.
+const ENFORCE_UPDATE_SIGNATURE: bool = true;
 
 /// Verify a downloaded bundle before anything is unpacked or executed.
 ///
@@ -276,9 +277,21 @@ mod update_verification_tests {
         h.finalize().iter().map(|b| format!("{:02x}", b)).collect()
     }
 
+    /// A matching hash must clear the integrity step. With enforcement on the
+    /// call still fails, but on the NEXT step (no signature), never on the hash.
+    fn assert_hash_accepted(expected: &str) {
+        match verify_update_bundle(BYTES, Some(expected), None) {
+            Ok(()) => assert!(!ENFORCE_UPDATE_SIGNATURE, "enforcing must not accept an unsigned bundle"),
+            Err(err) => {
+                assert!(ENFORCE_UPDATE_SIGNATURE, "got: {err}");
+                assert!(err.contains("unsigned"), "failed on the wrong step: {err}");
+            }
+        }
+    }
+
     #[test]
     fn accepts_a_matching_hash() {
-        assert!(verify_update_bundle(BYTES, Some(&good_hash()), None).is_ok());
+        assert_hash_accepted(&good_hash());
     }
 
     #[test]
@@ -291,7 +304,7 @@ mod update_verification_tests {
     #[test]
     fn hash_comparison_ignores_case_and_surrounding_space() {
         let padded = format!("  {}  ", good_hash().to_uppercase());
-        assert!(verify_update_bundle(BYTES, Some(&padded), None).is_ok());
+        assert_hash_accepted(&padded);
     }
 
     /// The regression this whole stage exists to prevent: verification must not
