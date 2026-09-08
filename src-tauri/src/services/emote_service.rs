@@ -31,23 +31,54 @@ pub fn seventv_circuit_open() -> bool {
     unix_now_secs() < SEVENTV_CIRCUIT_OPEN_UNTIL.load(Ordering::Relaxed)
 }
 
-// Channel-independent 7TV data (trending search, global set) cached
-// process-wide: every channel join and every prefetch-scan worker previously
-// re-fetched both. Serve-stale-on-error: when 7TV is down an expired copy
-// still beats an empty picker.
+/// Open the 7TV circuit for the cooldown. Only a real outage signal (connect
+/// failure, 5xx, or the small global fetch failing) may call this: a slow body
+/// on a large channel document is not an outage, and opening the circuit on one
+/// took every other 7TV fetch down for a minute each time (2026-09-07, kathi).
+fn open_seventv_circuit() {
+    SEVENTV_CIRCUIT_OPEN_UNTIL.store(
+        unix_now_secs() + SEVENTV_CIRCUIT_COOLDOWN_SECS,
+        Ordering::Relaxed,
+    );
+}
+
+/// Budget for one channel document (a user's connection document or an emote
+/// set). Sized for what those are: kathi's set is a 14 MB document 7TV takes
+/// 5.6 to 8 s to produce (measured 2026-09-07). Nothing on a critical path
+/// waits on this since 2026-08-29 (chat is disk-first and the refresh is
+/// spawned), so it can afford Chatterino7's 20 to 25 s rather than the 4 s cap
+/// that guards the small calls.
+const SEVENTV_DOCUMENT_TIMEOUT: Duration = Duration::from_secs(25);
+
+// Channel-independent 7TV data (the global set) cached process-wide: every
+// channel join and every prefetch-scan worker previously re-fetched it.
+// Serve-stale-on-error: when 7TV is down an expired copy still beats an empty
+// picker.
+//
+// Trending used to live here too and was merged into every channel's
+// dictionary. It is gone on purpose: trending is a discovery list, not an emote
+// layer. Merged first and deduped by id, it silently replaced a channel's own
+// alias with the trending row for the same emote (measured 2026-09-07: 8 to 53
+// aliases per channel, and a channel with no 7TV set at all carried 287 rows),
+// and it made chat render emotes nobody else in the room could see. Nothing
+// consumed it except that merge.
 const SEVENTV_SHARED_TTL: Duration = Duration::from_secs(3600);
 
 type SharedEmoteCache = RwLock<Option<(Instant, Vec<Emote>)>>;
 
-static SEVENTV_TRENDING_CACHE: OnceLock<SharedEmoteCache> = OnceLock::new();
 static SEVENTV_GLOBALS_CACHE: OnceLock<SharedEmoteCache> = OnceLock::new();
-
-fn seventv_trending_cache() -> &'static SharedEmoteCache {
-    SEVENTV_TRENDING_CACHE.get_or_init(|| RwLock::new(None))
-}
 
 fn seventv_globals_cache() -> &'static SharedEmoteCache {
     SEVENTV_GLOBALS_CACHE.get_or_init(|| RwLock::new(None))
+}
+
+/// The last known 7TV global set, any age (empty if never fetched). Delta
+/// application needs it to restore a global whose name a channel row stopped
+/// shadowing; a stale copy is fine for that, globals change rarely.
+pub(crate) async fn seventv_globals_snapshot() -> Vec<Emote> {
+    shared_cache_any(seventv_globals_cache())
+        .await
+        .unwrap_or_default()
 }
 
 /// Fresh hit -> Some(clone). Stale/empty -> None (caller fetches, then stores).
@@ -68,32 +99,41 @@ async fn shared_cache_store(cache: &'static SharedEmoteCache, v: Vec<Emote>) {
     *cache.write().await = Some((Instant::now(), v));
 }
 
-// Last /v3/users/twitch/{id} payload per channel. The EventAPI's id
-// resolution runs seconds after the join's emote fetch and previously
-// re-fetched the same document; 60s is ample for that window.
-const SEVENTV_USER_PAYLOAD_TTL: Duration = Duration::from_secs(60);
+// The two 7TV ids the EventAPI subscribes with per channel (active emote set
+// id, 7TV user id), captured from the channel document the emote fetch already
+// parsed. Replaces a cache of the whole document (14 MB on a large channel,
+// held for 60 s) whose only reader wanted these two strings. A miss falls back
+// to one small v4 GQL lookup in the EventAPI, never to the document.
+const SEVENTV_IDS_TTL: Duration = Duration::from_secs(600);
 
-type UserPayloadCache = RwLock<HashMap<String, (Instant, Arc<serde_json::Value>)>>;
-
-static SEVENTV_USER_PAYLOAD: OnceLock<UserPayloadCache> = OnceLock::new();
-
-fn seventv_user_payload() -> &'static UserPayloadCache {
-    SEVENTV_USER_PAYLOAD.get_or_init(|| RwLock::new(HashMap::new()))
+#[derive(Clone, Debug, Default)]
+pub(crate) struct SeventvIds {
+    pub emote_set_id: Option<String>,
+    /// The 7TV user id (`/user/id` in the channel document), NOT the platform
+    /// id at the document root. The presence endpoint takes this one; the
+    /// platform id gets a 400 (measured 2026-09-07).
+    pub user_id: Option<String>,
 }
 
-pub(crate) async fn seventv_user_payload_cached(
-    channel_id: &str,
-) -> Option<Arc<serde_json::Value>> {
-    let map = seventv_user_payload().read().await;
+type SeventvIdCache = RwLock<HashMap<String, (Instant, SeventvIds)>>;
+
+static SEVENTV_IDS: OnceLock<SeventvIdCache> = OnceLock::new();
+
+fn seventv_ids() -> &'static SeventvIdCache {
+    SEVENTV_IDS.get_or_init(|| RwLock::new(HashMap::new()))
+}
+
+pub(crate) async fn seventv_ids_cached(channel_id: &str) -> Option<SeventvIds> {
+    let map = seventv_ids().read().await;
     map.get(channel_id)
-        .filter(|(at, _)| at.elapsed() < SEVENTV_USER_PAYLOAD_TTL)
-        .map(|(_, v)| Arc::clone(v))
+        .filter(|(at, _)| at.elapsed() < SEVENTV_IDS_TTL)
+        .map(|(_, ids)| ids.clone())
 }
 
-pub(crate) async fn seventv_user_payload_store(channel_id: &str, v: Arc<serde_json::Value>) {
-    let mut map = seventv_user_payload().write().await;
-    map.retain(|_, v| v.0.elapsed() < SEVENTV_USER_PAYLOAD_TTL);
-    map.insert(channel_id.to_string(), (Instant::now(), v));
+pub(crate) async fn seventv_ids_store(channel_id: &str, ids: SeventvIds) {
+    let mut map = seventv_ids().write().await;
+    map.retain(|_, v| v.0.elapsed() < SEVENTV_IDS_TTL);
+    map.insert(channel_id.to_string(), (Instant::now(), ids));
 }
 
 /// Fetch a 7TV personal emote set by id and return only the emotes a 7TV
@@ -178,11 +218,157 @@ pub(crate) fn seventv_active_set_id(json: &serde_json::Value) -> Option<String> 
         .map(|s| s.to_string())
 }
 
+/// The channel owner's 7TV user id from a `/v3/users/:platform/:id` payload.
+/// The document root is the CONNECTION, whose `id` is the platform id; the 7TV
+/// user id sits under `user.id`. (Measured 2026-09-07: the presence endpoint
+/// answers 400 to the platform id and 200 to this one.)
+pub(crate) fn seventv_user_id_from_payload(json: &serde_json::Value) -> Option<String> {
+    json.pointer("/user/id")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+}
+
+/// Compose a channel's 7TV dictionary: every row of the channel's own set, in
+/// set order, then the globals whose names the channel did not take.
+///
+/// Keyed by NAME and nothing else. 7TV keys a set entry by (emote id, alias),
+/// so one emote legitimately appears under two names in one set (kathi carried
+/// 44 such pairs on 2026-09-07); deduping by id destroyed the second alias
+/// every time. A channel row shadows a global with the same name, which is what
+/// 7TV's own client renders.
+///
+/// A repeated NAME within the channel set also happens: legacy rows from before
+/// 7TV enforced uniqueness (kathi has 12 such names, every pair from 2021). A
+/// name-keyed dictionary holds one row per name, and the LAST row wins: it is
+/// the newer add, it is what the delta path produces when an add takes an
+/// existing name (so an initial composition and a patched one agree), and it is
+/// how 7TV's own client builds its maps (forward assignment). The winner keeps
+/// the first occurrence's position so the picker order stays stable.
+pub(crate) fn compose_seventv(channel: Vec<Emote>, globals: &[Emote]) -> Vec<Emote> {
+    let mut slot: HashMap<String, usize> = HashMap::with_capacity(channel.len() + globals.len());
+    let mut out: Vec<Emote> = Vec::with_capacity(channel.len() + globals.len());
+    for e in channel {
+        match slot.get(&e.name) {
+            Some(&i) => out[i] = e,
+            None => {
+                slot.insert(e.name.clone(), out.len());
+                out.push(e);
+            }
+        }
+    }
+    for g in globals {
+        if !slot.contains_key(&g.name) {
+            slot.insert(g.name.clone(), out.len());
+            out.push(g.clone());
+        }
+    }
+    out
+}
+
+/// One change to a channel's 7TV set, as the EventAPI dispatches it.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct SeventvSetDelta {
+    /// `pushed`: full rows, already parsed.
+    pub added: Vec<Emote>,
+    /// `pulled`: (emote id, alias) of each removed row.
+    pub removed: Vec<(String, String)>,
+    /// `updated`: (emote id, old alias, new row). Covers renames and flag
+    /// changes; the new row carries whatever changed.
+    pub updated: Vec<(String, String, Emote)>,
+}
+
+/// A removed row, by the two things that identify it in a name-keyed set.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub(crate) struct RemovedRow {
+    pub id: String,
+    pub name: String,
+}
+
+/// What a delta actually changed in the COMPOSED dictionary: rows to drop and
+/// rows to add, including any global a removal or rename stopped shadowing.
+/// Windows apply this blindly; the precedence lives here, once.
+#[derive(Debug, Clone, Default, Serialize)]
+pub(crate) struct SeventvComposedDelta {
+    pub added: Vec<Emote>,
+    pub removed: Vec<RemovedRow>,
+}
+
+/// Apply a set delta to a composed dictionary in place, keeping the invariant
+/// that it always equals `compose_seventv(channel, globals)`. Returns the rows
+/// that changed so every other copy can be patched identically.
+pub(crate) fn apply_seventv_delta(
+    seven_tv: &mut Vec<Emote>,
+    delta: &SeventvSetDelta,
+    globals: &[Emote],
+) -> SeventvComposedDelta {
+    let mut out = SeventvComposedDelta::default();
+
+    // Drop every row carrying `name` (and, when given, only rows with that id,
+    // so a stale removal can never take out an emote that since took the name).
+    fn drop_name(
+        rows: &mut Vec<Emote>,
+        name: &str,
+        only_id: Option<&str>,
+        out: &mut SeventvComposedDelta,
+    ) {
+        let mut i = 0;
+        while i < rows.len() {
+            let hit = rows[i].name == name && only_id.is_none_or(|id| rows[i].id == id);
+            if hit {
+                let gone = rows.remove(i);
+                out.removed.push(RemovedRow {
+                    id: gone.id,
+                    name: gone.name,
+                });
+            } else {
+                i += 1;
+            }
+        }
+    }
+
+    // A name the channel stopped using goes back to the global that carries it.
+    fn restore_global(
+        rows: &mut Vec<Emote>,
+        name: &str,
+        globals: &[Emote],
+        out: &mut SeventvComposedDelta,
+    ) {
+        if rows.iter().any(|r| r.name == name) {
+            return;
+        }
+        if let Some(g) = globals.iter().find(|g| g.name == name) {
+            rows.push(g.clone());
+            out.added.push(g.clone());
+        }
+    }
+
+    for (id, old_name, row) in &delta.updated {
+        drop_name(seven_tv, old_name, Some(id), &mut out);
+        drop_name(seven_tv, &row.name, None, &mut out);
+        seven_tv.push(row.clone());
+        out.added.push(row.clone());
+        if old_name != &row.name {
+            restore_global(seven_tv, old_name, globals, &mut out);
+        }
+    }
+    for (id, name) in &delta.removed {
+        drop_name(seven_tv, name, Some(id), &mut out);
+        restore_global(seven_tv, name, globals, &mut out);
+    }
+    for row in &delta.added {
+        drop_name(seven_tv, &row.name, None, &mut out);
+        seven_tv.push(row.clone());
+        out.added.push(row.clone());
+    }
+    out
+}
+
 /// Parse 7TV "active emote" objects (name at the root, full emote under `data`)
 /// into ready-to-render Emotes. Both channel-set sources carry this shape: the
 /// inline `emote_set.emotes` array (pre-change user payloads) and the
 /// `/v3/emote-sets/{id}` endpoint (the post-change fetch).
-fn parse_seventv_active_emotes(items: &[serde_json::Value]) -> Vec<Emote> {
+pub(crate) fn parse_seventv_active_emotes(items: &[serde_json::Value]) -> Vec<Emote> {
     let mut out = Vec::new();
     for active_emote in items {
         let emote_data = active_emote.get("data").unwrap_or(active_emote);
@@ -336,6 +522,17 @@ pub struct EmoteSet {
     // payloads / the Twitch path deserialize without it.
     #[serde(default)]
     pub kick: Vec<Emote>,
+    /// Whether the 7TV rows are this channel's real dictionary (the channel
+    /// document answered, or the channel is simply not on 7TV). False means
+    /// they are a fallback (globals only, or a disk copy) because the fetch
+    /// failed, so a picker should keep retrying. Stored files are only ever
+    /// written from authoritative fetches, hence the default.
+    #[serde(default = "default_true")]
+    pub seven_tv_ok: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl EmoteSet {
@@ -346,12 +543,24 @@ impl EmoteSet {
             seven_tv: Vec::new(),
             ffz: Vec::new(),
             kick: Vec::new(),
+            seven_tv_ok: true,
         }
     }
 
     pub fn total_count(&self) -> usize {
         self.twitch.len() + self.bttv.len() + self.seven_tv.len() + self.ffz.len() + self.kick.len()
     }
+}
+
+/// Outcome of fetching one 7TV document. See `get_seventv_document`.
+enum DocFetch {
+    Ok(reqwest::Response),
+    /// A definitive "does not exist" (4xx other than 429): the channel is not
+    /// on 7TV, or the set was deleted. Globals-only is the correct answer.
+    NotFound,
+    /// Timeout, connect failure, 5xx, 429, or an open circuit. The result must
+    /// not be treated as this channel's set.
+    Failed,
 }
 
 #[derive(Debug, Clone)]
@@ -530,12 +739,13 @@ impl EmoteService {
         };
 
         // Build emote set
-        let emote_set = EmoteSet {
+        let mut emote_set = EmoteSet {
             twitch: twitch_emotes,
             bttv: bttv_emotes,
             seven_tv: seven_tv_emotes,
             ffz: ffz_emotes,
             kick: Vec::new(),
+            seven_tv_ok,
         };
 
         debug!(
@@ -545,6 +755,50 @@ impl EmoteService {
             emote_set.seven_tv.len(),
             emote_set.ffz.len()
         );
+
+        // Never hand back a worse 7TV set than the one already held. A
+        // deficient result (timed-out channel document, tripped circuit) used to
+        // replace whatever was cached, and the picker read it within
+        // milliseconds of the EventAPI emit: kathi's 6,000 emotes became the
+        // 287-row globals block (2026-09-07). The chat path already kept its
+        // disk-seeded set in this case; the cache the picker reads now gets the
+        // same rule. The returned bool still says the FETCH was not
+        // authoritative, so the chat path installs and saves nothing.
+        if !seven_tv_ok {
+            let good = {
+                let cache = self.cache.read().await;
+                cache
+                    .peek(&cache_key)
+                    .filter(|c| c.seven_tv_ok)
+                    .map(|c| c.set.clone())
+            };
+            if let Some(good) = good {
+                debug!(
+                    "[EmoteService] 7TV channel fetch deficient for {}; keeping the cached authoritative set ({} 7TV)",
+                    cache_key,
+                    good.seven_tv.len()
+                );
+                return Ok((good, false));
+            }
+            // Nothing good in memory: the disk dictionary (written only from
+            // authoritative fetches) is the next best thing, for the picker
+            // exactly as for chat. Its 7TV rows ride with THIS fetch's other
+            // providers, marked not authoritative so the picker keeps retrying
+            // until 7TV answers.
+            if let Some(disk) = channel_id
+                .as_deref()
+                .and_then(crate::services::emote_set_cache::load)
+            {
+                if !disk.seven_tv.is_empty() {
+                    debug!(
+                        "[EmoteService] 7TV channel fetch deficient for {}; serving the disk dictionary ({} 7TV)",
+                        cache_key,
+                        disk.seven_tv.len()
+                    );
+                    emote_set.seven_tv = disk.seven_tv;
+                }
+            }
+        }
 
         // Update memory cache
         {
@@ -587,6 +841,66 @@ impl EmoteService {
     /// stale set until the 5 minute TTL expires.
     pub async fn invalidate_channel(&self, channel_id: &str) {
         self.cache.write().await.pop(channel_id);
+    }
+
+    /// Patch the cached set for `channel_id` with a live 7TV delta, so a window
+    /// fetching after an EventAPI change gets the changed set without anyone
+    /// re-downloading the channel document. No-op when the channel is not
+    /// cached (the next fetch is fresh anyway).
+    pub async fn apply_seventv_delta_cached(
+        &self,
+        channel_id: &str,
+        delta: &SeventvSetDelta,
+        globals: &[Emote],
+    ) -> Option<SeventvComposedDelta> {
+        let mut cache = self.cache.write().await;
+        let entry = cache.get_mut(channel_id)?;
+        Some(apply_seventv_delta(&mut entry.set.seven_tv, delta, globals))
+    }
+
+    /// Fetch one 7TV channel document (a user's connection document or an emote
+    /// set) under [`SEVENTV_DOCUMENT_TIMEOUT`], keeping the two failure shapes
+    /// apart: "this does not exist" is an answer, "the fetch failed" is not.
+    ///
+    /// A slow body is NOT a 7TV outage, so a timeout here never opens the
+    /// circuit; only a connect failure or a 5xx does. This is also why it does
+    /// not share [`get_with_retry`]: that path's 4 s single attempt exists to
+    /// keep the small calls (globals, personal sets) from ever stalling a join,
+    /// and it failed a 14 MB document by construction.
+    async fn get_seventv_document(&self, url: &str) -> DocFetch {
+        if seventv_circuit_open() {
+            return DocFetch::Failed;
+        }
+        match self
+            .client
+            .get(url)
+            .timeout(SEVENTV_DOCUMENT_TIMEOUT)
+            .send()
+            .await
+        {
+            Ok(resp) if resp.status().is_success() => {
+                SEVENTV_CIRCUIT_OPEN_UNTIL.store(0, Ordering::Relaxed);
+                DocFetch::Ok(resp)
+            }
+            Ok(resp) => {
+                let s = resp.status();
+                if s.is_server_error() {
+                    open_seventv_circuit();
+                    DocFetch::Failed
+                } else if s == reqwest::StatusCode::TOO_MANY_REQUESTS {
+                    DocFetch::Failed
+                } else {
+                    DocFetch::NotFound
+                }
+            }
+            Err(e) => {
+                if e.is_connect() {
+                    open_seventv_circuit();
+                }
+                warn!("[EmoteService] 7TV document fetch failed ({}): {}", url, e);
+                DocFetch::Failed
+            }
+        }
     }
 
     /// Get emote by name from cached emote set
@@ -960,218 +1274,57 @@ impl EmoteService {
         _channel_name: Option<String>,
         channel_id: Option<String>,
     ) -> Result<(Vec<Emote>, bool)> {
-        let mut emotes = Vec::new();
         // True once we have a definitive answer for the channel's 7TV set: a 200
-        // (parsed below), a clean 404 (channel simply isn't on 7TV), or no channel
+        // that parsed, a clean 404 (channel simply isn't on 7TV), or no channel
         // requested at all. Stays false only when the channel fetch failed
-        // (timeout / 5xx / tripped circuit), meaning `emotes` is globals-only and
-        // the caller must not treat it as this channel's real set.
+        // (timeout / 5xx / tripped circuit), meaning the result is globals-only
+        // and the caller must not treat it as this channel's real set.
         let mut channel_ok = channel_id.is_none();
 
-        // Fetch trending 7TV emotes using GraphQL (v4 API). Channel-independent,
-        // so served from the process-wide cache between refreshes.
-        // Note: v4 API uses `defaultName` instead of `name`, and `flags` is now an object
-        if let Some(cached) = shared_cache_fresh(seventv_trending_cache()).await {
-            emotes.extend(cached);
-        } else {
-            let mut trending: Vec<Emote> = Vec::new();
-            let gql_query = r#"
-        query EmoteSearch(
-            $query: String,
-            $tags: [String!],
-            $sortBy: SortBy!,
-            $filters: Filters,
-            $page: Int,
-            $perPage: Int!
-        ) {
-            emotes {
-                search(
-                    query: $query
-                    tags: { tags: $tags, match: ANY }
-                    sort: { sortBy: $sortBy, order: DESCENDING }
-                    filters: $filters
-                    page: $page
-                    perPage: $perPage
-                ) {
-                    items {
-                        id
-                        defaultName
-                        flags {
-                            defaultZeroWidth
-                        }
-                        images {
-                            width
-                        }
-                    }
-                }
-            }
-        }
-        "#;
-
-            let variables = serde_json::json!({
-                // Removed "animated": true filter to include all emotes (both static and animated)
-                "page": 1,
-                // v4 caps perPage at 250; larger values are a validation error
-                "perPage": 250,
-                "query": null,
-                "sortBy": "TRENDING_MONTHLY",
-                "tags": []
-            });
-
-            let body = serde_json::json!({
-                "operationName": "EmoteSearch",
-                "query": gql_query,
-                "variables": variables
-            });
-
-            match self
-                .client
-                .post("https://api.7tv.app/v4/gql")
-                .header("Content-Type", "application/json")
-                .header(
-                    "Accept",
-                    "application/graphql-response+json, application/graphql+json, application/json",
-                )
-                .json(&body)
-                .send()
-                .await
-            {
-                Ok(response) if response.status().is_success() => {
-                    if let Ok(json) = response.json::<serde_json::Value>().await {
-                        // GQL failures arrive as HTTP 200 with an `errors` array;
-                        // without this they are silent (how the schema-drift
-                        // breakage went unnoticed).
-                        if let Some(errs) = json.get("errors") {
-                            error!("[EmoteService] 7TV GraphQL errors: {}", errs);
-                        }
-                        if let Some(items) = json
-                            .pointer("/data/emotes/search/items")
-                            .and_then(|v| v.as_array())
-                        {
-                            for item in items {
-                                if let (Some(id), Some(name)) = (
-                                    item.get("id").and_then(|v| v.as_str()),
-                                    item.get("defaultName").and_then(|v| v.as_str()),
-                                ) {
-                                    let is_zero_width = item
-                                        .pointer("/flags/defaultZeroWidth")
-                                        .and_then(|v| v.as_bool())
-                                        .unwrap_or(false);
-                                    let width = item
-                                        .pointer("/images/0/width")
-                                        .and_then(|v| v.as_u64())
-                                        .map(|v| v as u32);
-                                    trending.push(Emote {
-                                        id: id.to_string(),
-                                        name: name.to_string(),
-                                        url: format!("https://cdn.7tv.app/emote/{}/1x.avif", id),
-                                        provider: EmoteProvider::SevenTV,
-                                        is_zero_width: Some(is_zero_width),
-                                        local_url: None,
-                                        emote_type: None,
-                                        owner_id: None,
-                                        width,
-                                        owner_name: None,
-                                        modifier_flags: None,
-                                        ffz_sub_only: None,
-                                    });
-                                }
+        // Global 7TV emotes (v3). Channel-independent, cached process-wide.
+        let globals: Vec<Emote> =
+            if let Some(cached) = shared_cache_fresh(seventv_globals_cache()).await {
+                cached
+            } else {
+                let mut globals: Vec<Emote> = Vec::new();
+                match self
+                    .get_with_retry("https://7tv.io/v3/emote-sets/global", 3)
+                    .await
+                {
+                    Some(response) => {
+                        if let Ok(json) = response.json::<serde_json::Value>().await {
+                            if let Some(items) = json.get("emotes").and_then(|v| v.as_array()) {
+                                globals = parse_seventv_active_emotes(items);
                             }
                         }
                     }
+                    None => error!("[EmoteService] 7TV global unavailable (after retries)"),
                 }
-                Ok(_) => error!("[EmoteService] 7TV GraphQL: non-success status"),
-                Err(e) => error!("[EmoteService] 7TV GraphQL request failed: {}", e),
-            }
-
-            // One rule for every failure shape (non-success, request error,
-            // parse failure, empty answer): fall back to any stale copy.
-            if trending.is_empty() {
-                if let Some(stale) = shared_cache_any(seventv_trending_cache()).await {
-                    emotes.extend(stale);
+                // One rule for every failure shape: fall back to any stale copy.
+                if globals.is_empty() {
+                    shared_cache_any(seventv_globals_cache())
+                        .await
+                        .unwrap_or_default()
+                } else {
+                    shared_cache_store(seventv_globals_cache(), globals.clone()).await;
+                    globals
                 }
-            } else {
-                shared_cache_store(seventv_trending_cache(), trending.clone()).await;
-                emotes.extend(trending);
-            }
-        }
+            };
 
-        // Fetch global 7TV emotes (v3 API). Also channel-independent + cached.
-        if let Some(cached) = shared_cache_fresh(seventv_globals_cache()).await {
-            emotes.extend(cached);
-        } else {
-            let mut globals: Vec<Emote> = Vec::new();
-            match self
-                .get_with_retry("https://7tv.io/v3/emote-sets/global", 3)
-                .await
-            {
-                Some(response) => {
-                    if let Ok(json) = response.json::<serde_json::Value>().await {
-                        if let Some(global_emotes) = json.get("emotes").and_then(|v| v.as_array()) {
-                            for item in global_emotes {
-                                let emote_data = item.get("data").unwrap_or(item);
-                                if let (Some(id), Some(name)) = (
-                                    emote_data
-                                        .get("id")
-                                        .or_else(|| item.get("id"))
-                                        .and_then(|v| v.as_str()),
-                                    item.get("name").and_then(|v| v.as_str()),
-                                ) {
-                                    let flags = emote_data
-                                        .get("flags")
-                                        .or_else(|| item.get("flags"))
-                                        .and_then(|v| v.as_i64())
-                                        .unwrap_or(0);
-                                    let width = emote_data
-                                        .pointer("/host/files/0/width")
-                                        .and_then(|v| v.as_u64())
-                                        .map(|v| v as u32);
-                                    globals.push(Emote {
-                                        id: id.to_string(),
-                                        name: name.to_string(),
-                                        url: format!("https://cdn.7tv.app/emote/{}/1x.avif", id),
-                                        provider: EmoteProvider::SevenTV,
-                                        is_zero_width: Some((flags & 256) == 256),
-                                        local_url: None,
-                                        emote_type: None,
-                                        owner_id: None,
-                                        width,
-                                        owner_name: None,
-                                        modifier_flags: None,
-                                        ffz_sub_only: None,
-                                    });
-                                }
-                            }
-                        }
-                    }
-                }
-                None => error!("[EmoteService] 7TV global unavailable (after retries)"),
-            }
-
-            if globals.is_empty() {
-                if let Some(stale) = shared_cache_any(seventv_globals_cache()).await {
-                    emotes.extend(stale);
-                }
-            } else {
-                shared_cache_store(seventv_globals_cache(), globals.clone()).await;
-                emotes.extend(globals);
-            }
-        }
-
-        // Fetch channel-specific 7TV emotes
+        // The channel's own active set, under the channel-document budget.
+        let mut channel: Vec<Emote> = Vec::new();
         if let Some(channel_id) = channel_id {
             match self
-                .get_with_retry(&format!("https://7tv.io/v3/users/twitch/{}", channel_id), 3)
+                .get_seventv_document(&format!("https://7tv.io/v3/users/twitch/{}", channel_id))
                 .await
             {
-                Some(response) => {
+                DocFetch::Ok(response) => {
                     // A 200 is a definitive answer for this channel only once its
                     // body has parsed. A body that did not arrive or did not parse
                     // is a failed fetch, not "no channel emotes": marking it ok
-                    // before parsing wrote a trending-plus-globals set to disk as
-                    // the authoritative dictionary (2026-09-05, ohnepixel: 295
-                    // cached of 950 live, every channel emote rendered as text).
-                    // The separate set fetch below can still demote it.
+                    // before parsing wrote a globals-only set to disk as the
+                    // authoritative dictionary (2026-09-05, ohnepixel: 295 cached
+                    // of 950 live, every channel emote rendered as text).
                     let parsed = response.json::<serde_json::Value>().await;
                     if let Err(e) = &parsed {
                         warn!(
@@ -1181,65 +1334,71 @@ impl EmoteService {
                     }
                     channel_ok = parsed.is_ok();
                     if let Ok(json) = parsed {
-                        // Share the payload with the EventAPI's id resolution,
-                        // which runs on the same join moments later.
-                        let json = Arc::new(json);
-                        seventv_user_payload_store(&channel_id, Arc::clone(&json)).await;
+                        // Hand the EventAPI the two ids it subscribes with, so it
+                        // never re-downloads this document to find them.
+                        seventv_ids_store(
+                            &channel_id,
+                            SeventvIds {
+                                emote_set_id: seventv_active_set_id(&json),
+                                user_id: seventv_user_id_from_payload(&json),
+                            },
+                        )
+                        .await;
                         if let Some(items) =
                             json.pointer("/emote_set/emotes").and_then(|v| v.as_array())
                         {
-                            // Inline set (pre-change payload): authoritative, even
-                            // if empty.
-                            emotes.extend(parse_seventv_active_emotes(items));
+                            // Inline set: authoritative, even if empty.
+                            channel = parse_seventv_active_emotes(items);
                         } else if let Some(set_id) = seventv_active_set_id(&json) {
-                            // Post-change payload: `emote_set` is null, fetch the
-                            // set by id.
+                            // `emote_set` omitted: fetch the set by id.
                             match self
-                                .get_with_retry(
-                                    &format!("https://7tv.io/v3/emote-sets/{}", set_id),
-                                    3,
-                                )
+                                .get_seventv_document(&format!(
+                                    "https://7tv.io/v3/emote-sets/{}",
+                                    set_id
+                                ))
                                 .await
                             {
-                                Some(set_resp) => {
-                                    if let Ok(set_json) =
-                                        set_resp.json::<serde_json::Value>().await
-                                    {
-                                        if let Some(items) =
-                                            set_json.get("emotes").and_then(|v| v.as_array())
-                                        {
-                                            emotes.extend(parse_seventv_active_emotes(items));
+                                DocFetch::Ok(set_resp) => {
+                                    match set_resp.json::<serde_json::Value>().await {
+                                        Ok(set_json) => {
+                                            if let Some(items) =
+                                                set_json.get("emotes").and_then(|v| v.as_array())
+                                            {
+                                                channel = parse_seventv_active_emotes(items);
+                                            }
+                                        }
+                                        Err(e) => {
+                                            warn!(
+                                                "[EmoteService] 7TV emote set {} did not parse: {}",
+                                                set_id, e
+                                            );
+                                            channel_ok = false;
                                         }
                                     }
                                 }
-                                None => {
-                                    // Same discrimination as the user-fetch failure
-                                    // arm below: open circuit = real failure,
-                                    // closed = clean 404.
-                                    channel_ok = !seventv_circuit_open();
-                                }
+                                // The set was deleted: on 7TV, no active set.
+                                // The user document already parsed, so this
+                                // stays a definitive answer.
+                                DocFetch::NotFound => channel_ok = true,
+                                DocFetch::Failed => channel_ok = false,
                             }
                         }
-                        // else: on 7TV but no active set — globals-only is the
+                        // else: on 7TV but no active set, globals-only is the
                         // real answer.
                     }
                 }
-                None => {
-                    // None is either a clean 404 (channel not on 7TV, so a
-                    // globals-only result is correct) or a failure (timeout / 5xx).
-                    // The circuit breaker only opens on failure, so an open circuit
-                    // here means the channel fetch genuinely failed and this 7TV
-                    // set is deficient; a closed circuit means a real 404.
-                    channel_ok = !seventv_circuit_open();
-                }
+                // Not on 7TV: globals-only is correct, and definitive. This
+                // MUST be marked authoritative: channel_ok starts false for a
+                // requested channel, and leaving it there would make every
+                // channel that simply is not on 7TV look like a failed fetch
+                // (chat keeps a stale seed, the picker retries forever). The
+                // live dictionary test caught exactly that on 2026-09-07.
+                DocFetch::NotFound => channel_ok = true,
+                DocFetch::Failed => channel_ok = false,
             }
         }
 
-        // Deduplicate by ID
-        let mut seen = std::collections::HashSet::new();
-        emotes.retain(|emote| seen.insert(emote.id.clone()));
-
-        Ok((emotes, channel_ok))
+        Ok((compose_seventv(channel, &globals), channel_ok))
     }
 
     /// Pick the best CDN URL for an FFZ emoticon.
@@ -1660,6 +1819,292 @@ mod tests {
             seventv_active_set_id(&serde_json::json!({ "emote_set_id": "" })),
             None
         );
+    }
+
+    #[test]
+    fn user_id_comes_from_the_nested_user_not_the_connection_root() {
+        // The root `id` is the PLATFORM id; the presence endpoint 400s on it.
+        let json = serde_json::json!({
+            "id": "71092938",
+            "emote_set_id": "01FE9DRF000009TR6M9N941CYW",
+            "user": { "id": "01FE9DRF000009TR6M9N941CYW" }
+        });
+        assert_eq!(
+            seventv_user_id_from_payload(&json).as_deref(),
+            Some("01FE9DRF000009TR6M9N941CYW")
+        );
+        assert_eq!(seventv_user_id_from_payload(&serde_json::json!({ "id": "1" })), None);
+    }
+
+    fn stv(id: &str, name: &str) -> Emote {
+        Emote {
+            id: id.to_string(),
+            name: name.to_string(),
+            url: format!("https://cdn.7tv.app/emote/{}/1x.avif", id),
+            provider: EmoteProvider::SevenTV,
+            is_zero_width: Some(false),
+            local_url: None,
+            emote_type: None,
+            owner_id: None,
+            width: None,
+            owner_name: None,
+            modifier_flags: None,
+            ffz_sub_only: None,
+        }
+    }
+
+    fn names(rows: &[Emote]) -> Vec<(&str, &str)> {
+        rows.iter().map(|e| (e.id.as_str(), e.name.as_str())).collect()
+    }
+
+    // The seam the 2026-09-07 report sat on: a channel alias for an emote that
+    // is also a global must survive, under the channel's name. Positive control:
+    // revert compose_seventv to a dedupe-by-id and this fails.
+    #[test]
+    fn compose_channel_alias_beats_global_by_name_and_keeps_the_global_id() {
+        let channel = vec![stv("X", "Cinema")];
+        let globals = vec![stv("X", "7Cinema")];
+        let out = compose_seventv(channel, &globals);
+        // Same emote id twice is fine: two names, two words in chat.
+        assert_eq!(names(&out), vec![("X", "Cinema"), ("X", "7Cinema")]);
+    }
+
+    #[test]
+    fn compose_keeps_two_aliases_of_one_emote() {
+        // kathi carried 44 of these pairs; dedupe-by-id kept only the first.
+        let channel = vec![stv("X", "shutup"), stv("X", "shadup")];
+        let out = compose_seventv(channel, &[]);
+        assert_eq!(names(&out), vec![("X", "shutup"), ("X", "shadup")]);
+    }
+
+    #[test]
+    fn compose_channel_shadows_global_with_the_same_name() {
+        let channel = vec![stv("X", "Pog")];
+        let globals = vec![stv("G", "Pog"), stv("G2", "Kappa")];
+        let out = compose_seventv(channel, &globals);
+        assert_eq!(names(&out), vec![("X", "Pog"), ("G2", "Kappa")]);
+    }
+
+    #[test]
+    fn compose_repeated_name_within_the_channel_resolves_to_the_last_row() {
+        // Legacy sets repeat names (kathi: MEGALUL from 2021-03 and again from
+        // 2021-05). The newer add wins, in the first row's position, and the
+        // result matches what a delta add of the same name would produce.
+        let channel = vec![stv("A", "dup"), stv("C", "other"), stv("B", "dup")];
+        let out = compose_seventv(channel, &[]);
+        assert_eq!(names(&out), vec![("B", "dup"), ("C", "other")]);
+
+        let mut patched = compose_seventv(vec![stv("A", "dup"), stv("C", "other")], &[]);
+        let add = SeventvSetDelta {
+            added: vec![stv("B", "dup")],
+            ..Default::default()
+        };
+        apply_seventv_delta(&mut patched, &add, &[]);
+        let mut a: Vec<(&str, &str)> = names(&out);
+        let mut b: Vec<(&str, &str)> = names(&patched);
+        a.sort();
+        b.sort();
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn delta_add_shadows_global_and_remove_restores_it() {
+        let globals = vec![stv("G", "Pog")];
+        let mut set = compose_seventv(vec![], &globals);
+        assert_eq!(names(&set), vec![("G", "Pog")]);
+
+        let add = SeventvSetDelta {
+            added: vec![stv("X", "Pog")],
+            ..Default::default()
+        };
+        let out = apply_seventv_delta(&mut set, &add, &globals);
+        assert_eq!(names(&set), vec![("X", "Pog")]);
+        assert_eq!(out.removed, vec![RemovedRow { id: "G".into(), name: "Pog".into() }]);
+        assert_eq!(names(&out.added), vec![("X", "Pog")]);
+
+        let remove = SeventvSetDelta {
+            removed: vec![("X".into(), "Pog".into())],
+            ..Default::default()
+        };
+        let out = apply_seventv_delta(&mut set, &remove, &globals);
+        assert_eq!(names(&set), vec![("G", "Pog")]);
+        assert_eq!(out.removed, vec![RemovedRow { id: "X".into(), name: "Pog".into() }]);
+        assert_eq!(names(&out.added), vec![("G", "Pog")]);
+        // The invariant: the patched set equals a fresh composition.
+        assert_eq!(names(&set), names(&compose_seventv(vec![], &globals)));
+    }
+
+    #[test]
+    fn delta_rename_frees_the_old_name_and_restores_its_global() {
+        let globals = vec![stv("G", "Pog")];
+        let mut set = compose_seventv(vec![stv("X", "Pog")], &globals);
+        let rename = SeventvSetDelta {
+            updated: vec![("X".into(), "Pog".into(), stv("X", "Pog2"))],
+            ..Default::default()
+        };
+        apply_seventv_delta(&mut set, &rename, &globals);
+        assert_eq!(names(&set), vec![("X", "Pog2"), ("G", "Pog")]);
+        assert_eq!(
+            names(&set),
+            names(&compose_seventv(vec![stv("X", "Pog2")], &globals))
+        );
+    }
+
+    #[test]
+    fn delta_second_alias_add_keeps_the_first_alias() {
+        let mut set = compose_seventv(vec![stv("X", "shutup")], &[]);
+        let add = SeventvSetDelta {
+            added: vec![stv("X", "shadup")],
+            ..Default::default()
+        };
+        let out = apply_seventv_delta(&mut set, &add, &[]);
+        assert_eq!(names(&set), vec![("X", "shutup"), ("X", "shadup")]);
+        assert!(out.removed.is_empty());
+    }
+
+    #[test]
+    fn delta_stale_removal_never_takes_a_row_that_since_took_the_name() {
+        // Channel removed X/"Pog" long ago and later added Y/"Pog"; a late
+        // replay of the first removal must not delete Y.
+        let mut set = compose_seventv(vec![stv("Y", "Pog")], &[]);
+        let remove = SeventvSetDelta {
+            removed: vec![("X".into(), "Pog".into())],
+            ..Default::default()
+        };
+        let out = apply_seventv_delta(&mut set, &remove, &[]);
+        assert_eq!(names(&set), vec![("Y", "Pog")]);
+        assert!(out.removed.is_empty() && out.added.is_empty());
+    }
+
+    /// Live proof that the composed dictionary is complete for a real channel:
+    /// every (id, alias) row 7TV serves is present, and every extra row is a
+    /// global. Network-bound and slow (a 14 MB document, twice), so ignored by
+    /// default; run it as the acceptance check for the dictionary:
+    ///
+    ///   cargo test --no-default-features live_channel_dictionary -- --ignored --nocapture
+    ///
+    /// SEVENTV_LIVE_CHANNEL_ID overrides the channel. The default is kathi:
+    /// about 6,200 rows with 44 duplicate-alias pairs, the case that broke.
+    #[test]
+    #[ignore = "network: fetches a real channel from 7TV"]
+    fn live_channel_dictionary_is_complete() {
+        let channel_id = std::env::var("SEVENTV_LIVE_CHANNEL_ID")
+            .unwrap_or_else(|_| "418422047".to_string());
+        tauri::async_runtime::block_on(async {
+            let svc = EmoteService::new();
+            let started = Instant::now();
+            let (rows, ok) = svc
+                .fetch_7tv_emotes(None, Some(channel_id.clone()))
+                .await
+                .expect("fetch_7tv_emotes");
+            let fetch_ms = started.elapsed().as_millis();
+            assert!(ok, "channel document fetch was not authoritative");
+
+            // Independent truth: the raw document, read with a plain client.
+            let http = reqwest::Client::builder()
+                .timeout(Duration::from_secs(60))
+                .build()
+                .expect("client");
+            let truth: serde_json::Value = http
+                .get(format!("https://7tv.io/v3/users/twitch/{channel_id}"))
+                .send()
+                .await
+                .expect("truth fetch")
+                .json()
+                .await
+                .expect("truth json");
+            let live: Vec<(String, String)> = truth
+                .pointer("/emote_set/emotes")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|e| {
+                            let id = e.pointer("/data/id").or_else(|| e.get("id"))?.as_str()?;
+                            let name = e.get("name")?.as_str()?;
+                            Some((id.to_string(), name.to_string()))
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            let globals: serde_json::Value = http
+                .get("https://7tv.io/v3/emote-sets/global")
+                .send()
+                .await
+                .expect("globals fetch")
+                .json()
+                .await
+                .expect("globals json");
+            let global_names: std::collections::HashSet<String> = globals
+                .get("emotes")
+                .and_then(|v| v.as_array())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|e| e.get("name")?.as_str().map(String::from))
+                        .collect()
+                })
+                .unwrap_or_default();
+
+            // Coverage is by NAME: a name-keyed dictionary holds one row per
+            // name, so a set that repeats a name (legacy rows) is complete when
+            // every distinct name is present and each repeated name resolves to
+            // its LAST row, as the delta path and 7TV's own client do.
+            let ours_by_name: HashMap<&str, &Emote> =
+                rows.iter().map(|e| (e.name.as_str(), e)).collect();
+            let mut last_by_name: HashMap<&str, &str> = HashMap::new();
+            let mut name_counts: HashMap<&str, usize> = HashMap::new();
+            let mut id_counts: HashMap<&str, usize> = HashMap::new();
+            for (id, name) in &live {
+                last_by_name.insert(name.as_str(), id.as_str());
+                *name_counts.entry(name.as_str()).or_insert(0) += 1;
+                *id_counts.entry(id.as_str()).or_insert(0) += 1;
+            }
+            let repeated_names = name_counts.values().filter(|n| **n > 1).count();
+            let dup_alias_ids = id_counts.values().filter(|n| **n > 1).count();
+            let missing: Vec<&str> = last_by_name
+                .keys()
+                .copied()
+                .filter(|n| !ours_by_name.contains_key(n))
+                .collect();
+            let wrong_winner: Vec<(&str, &str, &str)> = last_by_name
+                .iter()
+                .filter_map(|(n, want)| {
+                    let got = ours_by_name.get(n)?;
+                    (got.id != *want).then_some((*n, *want, got.id.as_str()))
+                })
+                .collect();
+            let extra: Vec<&Emote> = rows
+                .iter()
+                .filter(|e| {
+                    !last_by_name.contains_key(e.name.as_str()) && !global_names.contains(&e.name)
+                })
+                .collect();
+            eprintln!(
+                "channel {channel_id}: fetched in {fetch_ms} ms; live rows {}, distinct names {}, composed rows {}, duplicate-alias ids {}, repeated names {}, missing names {}, wrong winners {}, extra {}",
+                live.len(),
+                last_by_name.len(),
+                rows.len(),
+                dup_alias_ids,
+                repeated_names,
+                missing.len(),
+                wrong_winner.len(),
+                extra.len()
+            );
+            assert!(
+                missing.is_empty(),
+                "live names missing from the dictionary: {:?}",
+                missing.iter().take(10).collect::<Vec<_>>()
+            );
+            assert!(
+                wrong_winner.is_empty(),
+                "repeated names not resolved to their last row (name, want, got): {:?}",
+                wrong_winner.iter().take(10).collect::<Vec<_>>()
+            );
+            assert!(
+                extra.is_empty(),
+                "rows that are neither channel nor global: {:?}",
+                extra.iter().map(|e| &e.name).take(10).collect::<Vec<_>>()
+            );
+        });
     }
 
     #[test]

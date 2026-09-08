@@ -1499,16 +1499,12 @@ export default function MultiChatWindow() {
       try {
         const { listen } = await import('@tauri-apps/api/event');
         const { handleSeventvEmoteSetUpdate } = await import('../../services/seventvEventApi');
-        const u = await listen<{
-          channel: string;
-          channel_id: string;
-          actor_name: string;
-          added: string[];
-          removed: string[];
-          renamed: { old: string; new: string }[];
-        }>('7tv://emote-set-update', (event) => {
-          void handleSeventvEmoteSetUpdate(event.payload);
-        });
+        const u = await listen<import('../../services/seventvEventApi').EmoteSetUpdatePayload>(
+          '7tv://emote-set-update',
+          (event) => {
+            void handleSeventvEmoteSetUpdate(event.payload);
+          },
+        );
         if (cancelled) {
           // Unmounted before listen resolved (StrictMode): guard the unlisten —
           // Tauri's unlisten can reject during teardown (registry gone).

@@ -5,8 +5,21 @@
 // changes live. Each window applies it to ITS OWN per-window emote cache and
 // injects the in-chat notice into its own chat store, so main and any MultiChat
 // popout showing the channel both update independently.
+//
+// The payload carries the COMPOSED delta (rows to drop, rows to add), computed
+// once in Rust with the dictionary's precedence rules, so a window patches its
+// cached set in place and fetches nothing. The old path refetched the whole
+// channel document per change; on a large channel that is 14 MB, and when the
+// fetch failed the picker was left holding a globals-only set (2026-09-07).
 
-import { injectSystemMessage, refreshChannelEmotes, systemSourceFor } from '../stores/chatConnectionStore';
+import {
+  applyChannelEmoteDelta,
+  getChannelEmotes,
+  injectSystemMessage,
+  refreshChannelEmotes,
+  systemSourceFor,
+} from '../stores/chatConnectionStore';
+import type { Emote } from '../services/emoteService';
 import type { ProviderId } from '../types/providers';
 import { forceRefreshCosmetics } from '../services/cosmeticsCache';
 import { useAppStore } from '../stores/AppStore';
@@ -20,30 +33,47 @@ export interface EmoteSetUpdatePayload {
   added: string[];
   removed: string[];
   renamed: { old: string; new: string }[];
+  /** Composed dictionary delta from Rust: rows to drop (by id AND name) then
+   *  rows to add, including any global a removal stopped shadowing. Null when
+   *  Rust holds no copy of the set (no chat open on it there); the window then
+   *  refetches, and the Rust cache was invalidated for that. */
+  composed?: { added: Emote[]; removed: { id: string; name: string }[] } | null;
 }
 
 /**
- * Apply a live 7TV emote-set change to the current window: refresh the channel's
- * emote cache (so the picker, autocomplete, and new messages pick up the change)
- * and, if enabled, drop a notice line in chat for each add/remove/rename.
+ * Apply a live 7TV emote-set change to the current window: patch the channel's
+ * cached set from the composed delta (so the picker, autocomplete, and the
+ * local-echo fallback pick up the change) and, if enabled, drop a notice line in
+ * chat for each add/remove/rename. Incoming chat needs nothing here: Rust
+ * tokenizes it against a dictionary it already patched.
  */
 export async function handleSeventvEmoteSetUpdate(payload: EmoteSetUpdatePayload): Promise<void> {
   const { channel, channel_id, actor_name, added, removed, renamed } = payload;
   // 7TV supports all three platforms, so an update can be for any of them. The
   // chat slice is keyed by the composite key for a provider and by the bare
-  // login for Twitch, and the emote refresh needs the provider so it hits that
-  // platform's store rather than Twitch's Helix.
+  // login for Twitch; the emote cache is keyed by emoteCacheKey, which the store
+  // helpers derive from (channel, platform) themselves.
   const platform = (payload.platform || 'twitch') as ProviderId;
   const chatKey = platform === 'twitch' ? channel : `${platform}:${channel}`;
 
-  // Refresh this window's emote cache from the (already refreshed) Rust cache.
-  // refreshChannelEmotes busts the per-window cache and notifies subscribers,
-  // so the emote picker and autocomplete repaint; chat does render-time emote
-  // lookup, so new messages get the change with no extra work.
-  try {
-    await refreshChannelEmotes(channel, channel_id, platform);
-  } catch (e) {
-    Logger.warn('[7TV EventAPI] failed to refresh emotes for', channel, e);
+  let patched = false;
+  if (payload.composed) {
+    try {
+      patched = applyChannelEmoteDelta(channel, platform, payload.composed);
+    } catch (e) {
+      Logger.warn('[7TV EventAPI] failed to patch emotes for', channel, e);
+    }
+  }
+  // No composed delta (Kick and YouTube refetch in Rust; or Rust held no copy)
+  // and this window has a set cached: that set is stale, refetch it. The Rust
+  // cache was refreshed or invalidated, so this is one round trip to it. A
+  // window with nothing cached has nothing to update.
+  if (!patched && getChannelEmotes(channel, platform)) {
+    try {
+      await refreshChannelEmotes(channel, channel_id, platform);
+    } catch (e) {
+      Logger.warn('[7TV EventAPI] failed to refresh emotes for', channel, e);
+    }
   }
 
   const noticesEnabled =

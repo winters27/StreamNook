@@ -42,6 +42,11 @@ export interface EmoteSet {
   /** YouTube custom emoji, learned from chat rather than fetched: YouTube exposes
    *  no channel emote-set endpoint, so this fills in as the channel uses them. */
   youtube: Emote[];
+  /** Whether the 7TV rows are this channel's real dictionary. Rust sets it false
+   *  when the channel document fetch failed and the rows are a fallback (globals
+   *  only, or a disk copy), so a picker should keep retrying. Absent on sets that
+   *  predate the flag; treat absent as true. */
+  seven_tv_ok?: boolean;
 }
 
 // Module-level registry of cached emote files (cacheKey -> localPath).
@@ -75,6 +80,27 @@ export function getEmoteLookup(set: EmoteSet): { byName: Map<string, Emote>; low
     emoteLookupCache.set(set, entry);
   }
   return entry;
+}
+
+/**
+ * Shape emote rows from Rust for the page: camelCase the flags and attach a
+ * local URL ONLY when the file is already cached (a Map lookup, never a fetch);
+ * the browser loads from the CDN when localUrl is undefined. Used for whole sets
+ * and for the rows a live 7TV delta adds, so both paths produce identical rows.
+ */
+export function enhanceRustEmotes(emotes: any[]): Emote[] {
+  return emotes.map((emote) => {
+    // 7TV is looked up at the per-DPI tier so the cached size matches what renders.
+    const localPath = cachedEmoteFiles.get(emoteCacheKey(emote.id, emote.provider));
+    const zeroWidth = emote.is_zero_width !== undefined ? emote.is_zero_width : emote.isZeroWidth;
+    return {
+      ...emote,
+      isZeroWidth: zeroWidth,
+      modifierFlags: emote.modifier_flags ?? emote.modifierFlags,
+      ffzSubOnly: emote.ffz_sub_only ?? emote.ffzSubOnly,
+      localUrl: localPath ? convertFileSrc(localPath) : undefined,
+    } as Emote;
+  });
 }
 
 // --- Per-DPI emote sizing -------------------------------------------------
@@ -452,21 +478,7 @@ export async function fetchAllEmotes(channelName?: string, channelId?: string): 
 
     // Enhance with local URLs ONLY if they're already cached (non-blocking lookup)
     // The browser will load from CDN if localUrl is undefined
-    const enhanceWithLocalUrls = (emotes: any[]) => {
-      return emotes.map(emote => {
-        // Only use cached path if it's already in memory - no blocking. 7TV is
-        // looked up at the per-DPI tier so the cached size matches what renders.
-        const localPath = cachedEmoteFiles.get(emoteCacheKey(emote.id, emote.provider));
-        const zeroWidth = emote.is_zero_width !== undefined ? emote.is_zero_width : emote.isZeroWidth;
-        return {
-          ...emote,
-          isZeroWidth: zeroWidth,
-          modifierFlags: emote.modifier_flags ?? emote.modifierFlags,
-          ffzSubOnly: emote.ffz_sub_only ?? emote.ffzSubOnly,
-          localUrl: localPath ? convertFileSrc(localPath) : undefined
-        };
-      });
-    };
+    const enhanceWithLocalUrls = enhanceRustEmotes;
 
     const enhancedSet: EmoteSet = {
       twitch: enhanceWithLocalUrls(emoteSet.twitch),
@@ -476,6 +488,7 @@ export async function fetchAllEmotes(channelName?: string, channelId?: string): 
       kick: enhanceWithLocalUrls(emoteSet.kick ?? []),
       // Learned from chat, not fetched — merged in by the picker at render time.
       youtube: [],
+      seven_tv_ok: emoteSet.seven_tv_ok ?? true,
     };
 
     // Count how many emotes got local URLs

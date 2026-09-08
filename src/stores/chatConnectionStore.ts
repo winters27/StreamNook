@@ -35,7 +35,7 @@ import { makeKey, parseKey } from '../utils/providerKey';
 import { streamProvider } from '../utils/streamProvider';
 import { parseBadges } from '../services/twitchBadges';
 import { invoke } from '@tauri-apps/api/core';
-import { fetchAllEmotes, fetchKickChannelEmotes, fetchYouTubeChannelEmotes, type EmoteSet } from '../services/emoteService';
+import { fetchAllEmotes, fetchKickChannelEmotes, fetchYouTubeChannelEmotes, enhanceRustEmotes, type Emote, type EmoteSet } from '../services/emoteService';
 import { Logger } from '../utils/logger';
 import { useAppStore } from './AppStore';
 import { useGiftBombStore, type GiftRecipient } from './giftBombStore';
@@ -479,8 +479,8 @@ export function subscribeChannelEmotes(channel: string, cb: () => void): () => v
 
 /** Returns the cached EmoteSet for a channel if present, else null. Does NOT
  *  fetch — call `ensureChannelEmotes` first or alongside. */
-export function getChannelEmotes(channel: string): EmoteSet | null {
-  return emoteCache.get(channel.toLowerCase()) ?? null;
+export function getChannelEmotes(channel: string, provider: ProviderId = 'twitch'): EmoteSet | null {
+  return emoteCache.get(emoteCacheKey(channel, provider)) ?? null;
 }
 
 /** Fetch the channel's emote set if not already cached. Coalesces concurrent
@@ -501,10 +501,42 @@ export async function refreshChannelEmotes(
   // numeric"). Absent still means twitch, so Twitch callers are unchanged.
   provider: ProviderId = 'twitch',
 ): Promise<EmoteSet | null> {
-  const key = channel.toLowerCase();
+  // The cache is keyed by emoteCacheKey (provider-namespaced for Kick and
+  // YouTube). Busting the bare login here missed those entries, so a live 7TV
+  // change on a Kick or YouTube channel never reached the picker: the stale set
+  // was handed straight back (2026-09-07).
+  const key = emoteCacheKey(channel, provider);
   emoteCache.delete(key);
   inflightEmoteFetches.delete(key);
-  return ensureChannelEmotes(key, channelId, provider);
+  return ensureChannelEmotes(channel, channelId, provider);
+}
+
+/**
+ * Patch this window's cached set with the composed 7TV delta Rust emitted for a
+ * live emote-set change: drop the rows it names (by id AND name, since one emote
+ * can legitimately sit under two aliases), then add the rows it sends, which
+ * already include any global a removal stopped shadowing. No fetch. A fresh
+ * object is stored so identity-keyed indexes (getEmoteLookup) rebuild and
+ * subscribers re-render. Returns false when nothing is cached for the channel;
+ * the next ensureChannelEmotes fetches the already-patched Rust cache.
+ */
+export function applyChannelEmoteDelta(
+  channel: string,
+  provider: ProviderId,
+  composed: { added: Emote[]; removed: { id: string; name: string }[] },
+): boolean {
+  const key = emoteCacheKey(channel, provider);
+  const current = emoteCache.get(key);
+  if (!current) return false;
+  const rowKey = (id: string, name: string) => `${id}\u0000${name}`;
+  const gone = new Set(composed.removed.map((r) => rowKey(r.id, r.name)));
+  const kept = gone.size
+    ? current['7tv'].filter((e) => !gone.has(rowKey(e.id, e.name)))
+    : current['7tv'].slice();
+  const next: EmoteSet = { ...current, '7tv': [...kept, ...enhanceRustEmotes(composed.added)] };
+  emoteCache.set(key, next);
+  notifyEmoteSubscribers(key);
+  return true;
 }
 
 // The emote-cache key namespaces non-Twitch providers so the SAME channel slug on

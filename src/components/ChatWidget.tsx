@@ -1908,11 +1908,13 @@ const ChatWidget = ({ channelOverride, hypeTrainOverride, filterId: filterIdProp
     setViewerCount(channelState?.viewer_count ?? null);
   }, [isTwitch, currentStream?.viewer_count, channelState?.viewer_count]);
 
-  // Auto-heal a degraded emote set. If this channel's set was fetched while 7TV
-  // was down, its 7TV array is empty (7TV's trending+global are always present
-  // when the API is healthy). Re-fetch on a gentle, visibility-gated cadence so
-  // emotes recover on their own once 7TV is back, instead of needing a manual
-  // /refresh. Stops as soon as 7TV returns (the set is no longer empty).
+  // Auto-heal a set whose 7TV rows are not this channel's real dictionary. Rust
+  // says so with `seven_tv_ok`: false when the channel document fetch failed and
+  // the rows are a fallback (globals only, or a disk copy). Re-fetch on a gentle,
+  // visibility-gated cadence so the picker converges on its own once 7TV
+  // answers, instead of needing a manual /refresh. Length zero is the legacy
+  // signal for sets that predate the flag; a globals-only set is NOT empty,
+  // which is why the flag exists.
   useVisibleInterval(() => {
     const login = currentStream?.user_login;
     const id = currentStream?.user_id;
@@ -1922,8 +1924,8 @@ const ChatWidget = ({ channelOverride, hypeTrainOverride, filterId: filterIdProp
     // each attempt hit Twitch's Helix emote API with a non-Twitch channel id.
     const p = streamProvider(currentStream);
     if (p !== 'twitch' && p !== 'kick') return;
-    const set = getChannelEmotes(login);
-    if (set && set['7tv'].length === 0) {
+    const set = getChannelEmotes(login, p);
+    if (set && (set.seven_tv_ok === false || set['7tv'].length === 0)) {
       void refreshChannelEmotes(login, id, p);
     }
   }, 60000);
@@ -4662,7 +4664,7 @@ const ChatWidget = ({ channelOverride, hypeTrainOverride, filterId: filterIdProp
                       setIsPinnedExpanded(true);
                       seenPinIdRef.current = pin.id;
                     }}
-                    className="sn-popover group w-full max-w-sm hover:bg-background/[0.6] mt-2 pointer-events-auto overflow-hidden flex items-center gap-2.5 px-3.5 py-2.5 text-left transition-colors"
+                    className="sn-popover sn-popover-hover group w-full max-w-sm mt-2 pointer-events-auto overflow-hidden flex items-center gap-2.5 px-3.5 py-2.5 text-left transition-colors"
                   >
                     <svg className="w-3.5 h-3.5 text-accent flex-shrink-0" fill="currentColor" viewBox="0 0 16 16">
                       <path d="M4.146.146A.5.5 0 0 1 4.5 0h7a.5.5 0 0 1 .5.5c0 .68-.342 1.174-.646 1.479-.126.125-.25.224-.354.298v4.431l.078.048c.203.127.476.314.751.555C12.36 7.775 13 8.527 13 9.5a.5.5 0 0 1-.5.5h-4v4.5a.5.5 0 0 1-1 0V10h-4A.5.5 0 0 1 3 9.5c0-.973.64-1.725 1.17-2.189A5.921 5.921 0 0 1 5 6.708V2.277a2.77 2.77 0 0 1-.354-.298C4.342 1.674 4 1.179 4 .5a.5.5 0 0 1 .146-.354z"/>
