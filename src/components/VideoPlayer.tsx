@@ -22,6 +22,7 @@ import StreamTitleWithEmojis from './StreamTitleWithEmojis';
 import PlayerStatsOverlay from './PlayerStatsOverlay';
 import { useVodProgressReporter } from '../hooks/useVodProgressReporter';
 import { formatVodTime } from '../utils/vodProgress';
+import { createLiveEdgeTracker } from '../utils/liveEdge';
 import BroadcastTimeline from './BroadcastTimeline';
 import { Tooltip } from './ui/Tooltip';
 import { TwitchVerifiedMark } from './ui/TwitchGlyph';
@@ -700,6 +701,14 @@ const VideoPlayer = () => {
   // elapsed time at the playhead when behind it.
   const liveTimeNodeRef = useRef<Element | null>(null);
   const liveStartedAtRef = useRef<{ raw: string; ms: number } | null>(null);
+  // Smoothed distance from the live edge. The raw `buffered.end - currentTime`
+  // is a sawtooth that swings by a whole segment, which made this label flip
+  // between LIVE and a timestamp, and the timestamp itself jump backwards,
+  // several times a minute on a perfectly healthy stream. See utils/liveEdge.
+  const liveEdgeRef = useRef(createLiveEdgeTracker());
+  const liveTextComputedAtRef = useRef(0);
+  const liveTextRef = useRef('LIVE');
+  const liveAtLiveRef = useRef(true);
   const updateLiveTimeDisplay = useCallback(() => {
     const video = videoRef.current;
     const container = containerRef.current;
@@ -731,15 +740,17 @@ const VideoPlayer = () => {
       liveTimeNodeRef.current = currentTimeDisplay;
     }
     if (currentTimeDisplay) {
-      const buffered = video.buffered;
-      let nextText = 'LIVE';
-      let atLive = true;
-      if (buffered.length > 0) {
-        const bufferedEnd = buffered.end(buffered.length - 1);
-        const timeFromLive = bufferedEnd - video.currentTime;
-        if (timeFromLive >= 5) {
-          atLive = false;
-          const behindSeconds = Math.floor(timeFromLive);
+      // The VALUE only changes about once a second, but this loop runs every
+      // frame to repair Plyr's clobbering (below). Recomputing per frame is
+      // what let the raw sawtooth reach the screen. Sample at 4 Hz, cache the
+      // result, and let the per-frame half do nothing but repair.
+      const now = performance.now();
+      if (now - liveTextComputedAtRef.current >= 250) {
+        liveTextComputedAtRef.current = now;
+        let nextText = 'LIVE';
+        const nextAtLive = !liveEdgeRef.current.isBehind(video);
+        if (!nextAtLive) {
+          const behindSeconds = Math.floor(liveEdgeRef.current.behind(video));
           // Position in the broadcast's elapsed timeline (uptime minus how far
           // behind the edge the playhead sits), like a VOD timestamp for the
           // point being watched. started_at parse is memoized on the string.
@@ -770,7 +781,11 @@ const VideoPlayer = () => {
             nextText = `-${mins}:${secs.toString().padStart(2, '0')}`;
           }
         }
+        liveTextRef.current = nextText;
+        liveAtLiveRef.current = nextAtLive;
       }
+      const nextText = liveTextRef.current;
+      const atLive = liveAtLiveRef.current;
       // Compare against what is ACTUALLY in the DOM, never against a cached
       // copy of our own last write, so a Plyr clobber is caught and repaired
       // on the next frame. Reading textContent does not force layout; the

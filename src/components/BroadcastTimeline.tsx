@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState, type RefObject } from 'react'
 import { createPortal } from 'react-dom';
 import { formatAgo, formatVodTime } from '../utils/vodProgress';
 import { broadcastScale, formatBehindShort } from '../utils/broadcastScale';
+import { createLiveEdgeTracker } from '../utils/liveEdge';
 
 /**
  * The broadcast timeline for a live Twitch stream: a scrubber that spans the
@@ -70,6 +71,7 @@ function BroadcastTimelineBar({
   const anchorMs = Date.parse(anchorIso);
   const barRef = useRef<HTMLDivElement | null>(null);
   const [state, setState] = useState({ total: 0, pos: 0, tail: 0 });
+  const liveEdge = useRef(createLiveEdgeTracker());
   const [drag, setDrag] = useState<number | null>(null);
   const [hover, setHover] = useState<number | null>(null);
 
@@ -85,9 +87,11 @@ function BroadcastTimelineBar({
       const tail = Number.isFinite(v.duration) ? v.duration : total - RECORDING_TAIL_GAP_SECS;
       next = { total, pos: Math.min(v.currentTime, total), tail: Math.min(tail, total) };
     } else {
-      const b = v.buffered;
-      const edge = b.length > 0 ? b.end(b.length - 1) : v.currentTime;
-      const behind = Math.max(0, edge - v.currentTime);
+      // Smoothed: the raw distance to the buffered end is a sawtooth swinging
+      // by a whole segment, and `pos` is derived straight from it, so the
+      // playhead marker slid backwards and forwards by seconds on a healthy
+      // stream. The 0.5 s deadband below cannot absorb a 2-6 s swing.
+      const behind = liveEdge.current.behind(v);
       next = { total, pos: Math.max(0, total - behind), tail: total };
     }
     // Paused or at a steady live edge, nothing moved by a visible amount:
@@ -98,6 +102,14 @@ function BroadcastTimelineBar({
         : next,
     );
   }, [videoRef, anchorMs, rewound]);
+
+  // Switching between the live edge and the recording swaps the media
+  // timeline underneath us, so the peak window's history describes a stream
+  // that is no longer playing. The tracker detects most discontinuities on its
+  // own; this is the one we are told about, so say it outright.
+  useEffect(() => {
+    liveEdge.current.reset();
+  }, [rewound]);
 
   useEffect(() => {
     if (!visible) return;

@@ -13,6 +13,7 @@ import { useAppStore } from '../../stores/AppStore';
 import { Logger } from '../../utils/logger';
 import { syncTauriWindowFullscreen } from '../../utils/windowFullscreen';
 import { startLatencyGovernor } from '../../utils/liveLatencyGovernor';
+import { createLiveEdgeTracker } from '../../utils/liveEdge';
 import { multiNookHlsRegistry } from './useMultiNookSync';
 
 interface UseMultiNookPlayerProps {
@@ -42,6 +43,8 @@ export const useMultiNookPlayer = ({
   const [error, setError] = useState<string | null>(null);
   const [showControls, setShowControls] = useState(false);
   const progressUpdateIntervalRef = useRef<number | null>(null);
+  /** Per-tile smoothed distance from the live edge (see utils/liveEdge). */
+  const liveEdgeRef = useRef(createLiveEdgeTracker());
   
   // Handlers for cleanup
   const onPlayingRef = useRef<(() => void) | null>(null);
@@ -82,19 +85,17 @@ export const useMultiNookPlayer = ({
     // Update time display to show "LIVE"
     const currentTimeDisplay = container.querySelector('.plyr__time--current');
     if (currentTimeDisplay) {
-      const buffered = video.buffered;
+      // Smoothed, with hysteresis: the raw `buffered.end - currentTime` is a
+      // sawtooth swinging by a whole segment, which flipped this label between
+      // LIVE and a timestamp several times a minute on a healthy stream. Same
+      // tracker the solo player uses. See utils/liveEdge.
       let nextText = 'LIVE';
-      let atLive = true;
-      if (buffered.length > 0) {
-        const bufferedEnd = buffered.end(buffered.length - 1);
-        const timeFromLive = bufferedEnd - video.currentTime;
-        if (timeFromLive >= 5) {
-          const behindSeconds = Math.floor(timeFromLive);
-          const mins = Math.floor(behindSeconds / 60);
-          const secs = behindSeconds % 60;
-          nextText = `-${mins}:${secs.toString().padStart(2, '0')}`;
-          atLive = false;
-        }
+      const atLive = !liveEdgeRef.current.isBehind(video);
+      if (!atLive) {
+        const behindSeconds = Math.floor(liveEdgeRef.current.behind(video));
+        const mins = Math.floor(behindSeconds / 60);
+        const secs = behindSeconds % 60;
+        nextText = `-${mins}:${secs.toString().padStart(2, '0')}`;
       }
       // Compare against what is ACTUALLY in the DOM, never against a cached
       // copy of our own last write. Plyr writes its own playback time into this
