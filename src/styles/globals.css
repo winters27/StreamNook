@@ -3626,7 +3626,14 @@ html[data-watching] .drops-progress-inline {
    popover is ever OBSERVED to flicker over chat, flatten that one site with an
    inline backdrop-filter override; do not de-blur the class. */
 .sn-popover {
-  background-color: color-mix(in srgb, var(--color-background) 50%, transparent);
+  /* The tint rides the Glassiness slider exactly like .glass-panel's base:
+     50% at full glass (the look every theme is tuned around), fully opaque at
+     0%. It has to, because html[data-glass="off"] strips the blur at 0% on the
+     understanding that every surface has already gone solid on its own. This
+     one had a FIXED 50% alpha, so at Glassiness 0 it lost its frost and kept
+     its transparency, and chat scrolled straight through the popover. */
+  --sn-popover-tint: calc(50% + (1 - var(--glass-strength)) * 50%);
+  background-color: color-mix(in srgb, var(--color-background) var(--sn-popover-tint), transparent);
   border: 1px solid var(--color-border-subtle);
   border-radius: 8px;
   -webkit-backdrop-filter: blur(calc(64px * var(--glass-strength))) saturate(300%);
@@ -3637,6 +3644,13 @@ html[data-watching] .drops-progress-inline {
     0 8px 24px -8px rgba(0, 0, 0, 0.55);
   transition: background-color 0.2s ease, box-shadow 0.2s ease,
     border-color 0.2s ease, opacity 0.2s ease, transform 0.2s ease;
+}
+
+/* Hover lift for an .sn-popover that is itself a button (the collapsed pinned
+   message). Rides the same ramp so hovering can never re-introduce the
+   see-through state at Glassiness 0; it just deepens the tint at full glass. */
+.sn-popover-hover:hover {
+  --sn-popover-tint: calc(60% + (1 - var(--glass-strength)) * 40%);
 }
 
 /* Bonus-chest "claim me" attention. The chest button rests most of the cycle,

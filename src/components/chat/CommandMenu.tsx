@@ -350,7 +350,16 @@ const CommandMenuPanel = ({
         return (
           <div key={`${cmd.category}:${cmd.name}`}>
             {first && grouped && (
-              <div className="sticky top-0 z-[1] -mx-2 mb-0.5 mt-1.5 bg-[color-mix(in_srgb,var(--color-background)_88%,transparent)] px-4 py-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-white/40 backdrop-blur-md">
+              <div
+                className="sticky top-0 z-[1] -mx-2 mb-0.5 mt-1.5 px-4 py-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-white/40 backdrop-blur-md"
+                // Rides the Glassiness slider like the panel under it: rows
+                // scroll beneath this header, and at Glassiness 0 the blur is
+                // stripped globally, so a fixed 88% would ghost them through.
+                style={{
+                  backgroundColor:
+                    'color-mix(in srgb, var(--color-background) calc(88% + (1 - var(--glass-strength)) * 12%), transparent)',
+                }}
+              >
                 {RAIL.find((r) => r.key === cmd.category)?.label ?? cmd.category}
               </div>
             )}
