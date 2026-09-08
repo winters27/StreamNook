@@ -10,7 +10,10 @@ export type MessageSegment =
   | { type: 'emoji'; content: string; emoji_url: string }
   | { type: 'link'; content: string; url: string }
   // Cheermote segment for animated bits (e.g., Cheer500)
-  | { type: 'cheermote'; content: string; prefix: string; bits: number; tier: string; color: string; cheermote_url: string };
+  | { type: 'cheermote'; content: string; prefix: string; bits: number; tier: string; color: string; cheermote_url: string }
+  // Twitch chat GIF (GIPHY-backed). `content` is the bracketed description the
+  // message text carries at the GIF's span; the URL must be used as sent.
+  | { type: 'gif'; content: string; gif_id: string; gif_url: string };
 
 // Reply information parsed from IRC tags - matches Rust ReplyInfo
 export interface BackendReplyInfo {
