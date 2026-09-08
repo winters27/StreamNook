@@ -1,3 +1,71 @@
+## [8.6.1] - 2026-09-07
+
+> [!NOTE]
+> **Two releases in one day, so nothing gets missed.** 8.6.0 shipped a few hours
+> before this one. If you are updating from an older build you may never see its
+> release page, so its notes are repeated here in full.
+>
+> **8.6.1 is not just a fix release.** It adds GIFs in chat and live 7TV emote
+> updates. Those are listed at the very bottom of these notes, under
+> "New in 8.6.1", below the 8.6.0 notes.
+
+---
+
+## From 8.6.0
+
+## 🎉 New: Chat grows up
+> The biggest chat release StreamNook has had. Search any chat, save filters, hide phrases, review AutoMod holds without leaving chat, split MultiChat however you like, float a see-through chat over a fullscreen game, paste a screenshot straight into your message, and browse every command with plain explanations and examples. The AutoMod queue needs two new Twitch permissions, so StreamNook asks you to sign in once more on first launch.
+
+![Chat grows up](https://raw.githubusercontent.com/winters27/StreamNook/main/.github/assets/release-8.6.0-chat-grows-up.webp)
+
+---
+
+### ✨ Features
+- **Paste an image to upload it.** Copy a screenshot, press Ctrl+V in the chat box, and the link lands in your message. Choose i.nuuls.com, catbox, Litterbox, uguu or your own host; links from all of them render as image cards in chat.
+- **Search any chat with Ctrl+F.** Searches the recent history of that chat, with filters like from:, badge:, has:link and regex:, and a result list you can step through.
+- **Saved filters and ignored phrases.** Build reusable chat filters from eight presets or short expressions of your own, and pick one from a chip above chat. Phrases you never want to see are dropped before they reach the screen.
+- **Highlights, mentions and filters are decided in one place.** Every message is checked once, in Rust, so popouts and MultiChat panes always agree, and custom highlight sounds can be your own files.
+- **AutoMod queue inside chat.** Held messages appear in a strip above the message box with Allow and Deny, and restricted users show up marked so moderators can act on them.
+- **Streamer mode.** Turn it on, or let StreamNook notice OBS and friends, and chat hides link previews, viewer counts, sounds and low-trust users while you are live.
+- **MultiChat splits, mentions feed and more windows.** Arrange panes in any split layout, open a mentions-only feed, spin up extra MultiChat windows, and move focus between panes with Ctrl+Alt+Arrows.
+- **Chat over a fullscreen stream, and a floating see-through chat.** Fullscreen keeps chat readable over the video, and /overlay opens an always-on-top glass chat you can park over a game, fade to invisible, and make click-through (Ctrl+Alt+N, or the tray).
+- **A command menu that explains itself.** The new button left of the emote picker lists every command, what it does, who can use it, and examples you can click into the box. Commands you cannot run in this channel show locked, and there is a larger reference view when you want more room.
+- **New slash commands.** /r replies to your last whisper, /clip, /chatters, /ignore, /uptime, /overlay, /settitle and /setgame, and /popup for a new MultiChat window.
+- **Pronouns and private notes on user cards.** Pronouns come from pronouns.alejo.io when you opt in; notes stay on your PC.
+- **12-hour or 24-hour timestamps, animated emotes on hover only, dimmer backfill.** Three small chat design options people kept asking for.
+- **See every StreamNook badge and Atmosphere in profile customization,** with the ones you have not earned yet shown locked.
+- **Moltorino supporter badges**, and a Chat Clients gallery in the Badges window showing the badges every third-party client hands its developers and supporters.
+- **Settings explain themselves.** Every row now says what you get and what it costs in plain language, long tabs have a section rail that follows you as you scroll, and image uploads have their own section.
+
+### 🐛 Bug Fixes
+- **Community badges that are taken back now disappear right away** instead of lingering until the next restart.
+- **Release posts in Discord now carry the release picture.**
+
+### 🔧 Maintenance
+- **A resource line in the log every minute** breaks memory down by process (app, browser, GPU, each window, plugins), so a memory report can be read off the log.
+
+---
+
+## New in 8.6.1
+
+### ✨ Features
+- **GIFs in chat.** Chat GIFs appear as the animated image rather than a bracketed description, with a new GIF tab in the emote picker for searching and sending. The tab only appears in channels where your account can actually use it.
+- **GIFs on the stream overlay.** The overlay draws chat GIFs at the gigantified size and follows your Giant emote placement, with its own toggle if you would rather show the description instead.
+- **Chat GIF controls.** A Chat GIFs switch shows GIFs, or a chip that reveals them on click, and it follows your Animate emotes setting the same way animated emotes do.
+- **7TV emote changes apply live.** When a channel adds, removes or renames a 7TV emote, chat and the emote picker pick it up as it happens instead of at the next restart.
+
+### 🐛 Bug Fixes
+- **Channel emote aliases are back.** Channels using one emote under two names kept only one of them, and a discovery list was being merged into channel sets, which could replace a channel's own name for an emote and render emotes nobody else in the room could see.
+- **Large 7TV channels load again.** Very large emote sets timed out and tripped a cooldown that briefly took every other 7TV request down with it. Big sets now get the time they need, and only a genuine outage triggers the cooldown.
+- **A steady live indicator.** The player flipped between LIVE and a timestamp, and the broadcast timeline's playhead slid backwards, several times a minute on a perfectly healthy stream.
+- **Profile badges show up reliably.** A naming mismatch could group third-party badges under Other, or hide a member's chosen badge outright, depending on which lookup answered first.
+- **Popovers stay readable at low glassiness.** At Glassiness 0 popovers kept their transparency but lost their frost, so chat scrolled visibly through them.
+- **Emote picker recovers on its own.** When a channel's 7TV data failed to load, the picker held a fallback set until a manual refresh. It now re-checks quietly and fills in once 7TV answers.
+
+### 🔧 Maintenance
+- Refreshed dependencies, including the video playback libraries.
+- Update packages are now rejected unless their signature verifies.
+
 ## [8.6.0] - 2026-09-07
 
 ## 🎉 New: Chat grows up
